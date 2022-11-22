@@ -1,13 +1,11 @@
 import json
 import os
 import click
-import datetime as dt
 
 import pandas as pd
 
 import tmdb_data_management.get_tmdb_data as tdm
 import watchlist_management.get_watchlist_infos as wm
-import get_showtimes.get_showtimes as gs
 
 @click.command()
 @click.option('--refresh_tmdb', is_flag=True, help='Do you need to refresh the TMDB database?')
@@ -49,14 +47,6 @@ def movies_management(refresh_tmdb):
         watchlist_df = wm.update_watchlist_with_tmdb(data_watchlist, data_tmdb_df, watchlist_output_path)
     else:
         watchlist_df = pd.read_pickle(watchlist_output_path)
-
-    with open(input_path + "theaters_allocine_urls.txt", encoding="utf-8") as file:
-        theaters_urls = [line.rstrip() for line in file]
-
-    showtimes_output_path = output_path + "showtimes.pkl"
-    selenium_bin_path = output_path = config["path"]["selenium_bin"]
-
-    #showtimes_df = gs.get_showtimes(theaters_urls, selenium_bin_path, showtimes_output_path)
 
 if __name__ == '__main__':
     movies_management()

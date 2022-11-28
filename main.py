@@ -1,6 +1,7 @@
 import json
 import os
 import click
+import pathlib
 
 import pandas as pd
 
@@ -11,9 +12,10 @@ import watchlist_management.get_watchlist_infos as wm
 @click.option('--refresh_tmdb', is_flag=True, help='Do you need to refresh the TMDB database?')
 def movies_management(refresh_tmdb):
 
-    current_path = os.getcwd()
+    current_path = pathlib.Path(__file__).parent.resolve()
+    print(current_path)
 
-    with open(current_path + '/config.secrets.json', encoding='utf-8') as f:
+    with open(os.path.join(current_path, 'config.secrets.json'), encoding='utf-8') as f:
         config = json.load(f)
 
     input_path = config["path"]["input"]

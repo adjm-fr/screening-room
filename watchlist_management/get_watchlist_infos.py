@@ -1,4 +1,4 @@
-def update_watchlist_with_tmdb(watchlist_df, data_tmdb_df, watchlist_output_path):
+def merge_watchlist_with_tmdb(watchlist_df, data_tmdb_df, watchlist_output_path):
 
     print("Watchlist has", watchlist_df.shape[0], "movies.")
 
@@ -9,7 +9,7 @@ def update_watchlist_with_tmdb(watchlist_df, data_tmdb_df, watchlist_output_path
     watchlist_dup = watchlist_df[watchlist_df.duplicated("Const")].shape[0]
     if  watchlist_dup > 0:
         print("Watchlist has ", watchlist_dup, " duplicates")
-        raise "Whatlist has duplicates, please fix it."
+        raise "Watchlist has duplicates, please fix it."
 
     watchlist_df.to_pickle(watchlist_output_path)
 

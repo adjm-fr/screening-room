@@ -11,6 +11,7 @@ def merge_watchlist_with_tmdb(watchlist_df, data_tmdb_df, watchlist_output_path)
         print("Watchlist has ", watchlist_dup, " duplicates")
         raise "Watchlist has duplicates, please fix it."
 
+    print("Saving watchlist data to ", watchlist_output_path)
     watchlist_df.to_pickle(watchlist_output_path)
 
     return watchlist_df

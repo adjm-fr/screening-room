@@ -37,6 +37,7 @@ def movies_management(refresh_tmdb):
     else:
         data_watchlist = pd.read_csv(watchlist_input_path, encoding = 'utf8')
     
+    # TMDB database creation
     tmdb_data_output_path = os.path.join(output_path, 'data_tmdb.pkl')    
     tmdb_data_file_exists = os.path.exists(tmdb_data_output_path)
     
@@ -50,9 +51,9 @@ def movies_management(refresh_tmdb):
             if refresh_tmdb:
                 print("User asked to refresh TMDB database")
             if ratings_file_after_tmdb:
-                print("TMDB database might be deprecated as a newer ratings file is present. The TMDB database will refreshed.")
-            if ratings_file_after_tmdb:
-                print("TMDB database might be deprecated as a newer watchlist file is present. The TMDB database will refreshed.")
+                print("TMDB database might be deprecated as a newer ratings file is present. The TMDB database will be refreshed.")
+            if watchlist_file_after_tmdb:
+                print("TMDB database might be deprecated as a newer watchlist file is present. The TMDB database will be refreshed.")
             data_tmdb_df = tdm.refresh_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, config)
         else:
             data_tmdb_df = pd.read_pickle(tmdb_data_output_path)

@@ -37,7 +37,7 @@ def movies_management(refresh_tmdb):
     else:
         data_watchlist = pd.read_csv(watchlist_input_path, encoding = 'utf8')
     
-    # TMDB database creation
+    # TMDB database creation or update
     tmdb_data_output_path = os.path.join(output_path, 'data_tmdb.pkl')    
     tmdb_data_file_exists = os.path.exists(tmdb_data_output_path)
     

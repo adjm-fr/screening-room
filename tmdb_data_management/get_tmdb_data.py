@@ -3,6 +3,53 @@ from datetime import datetime
 import pandas as pd
 import requests
 
+def get_tmdb_movie_data(movie_list, config):
+    
+    result = []
+    # get english tmdb info
+    # defining a params dict for the parameters to be sent to the API 
+    params = {'api_key': config["tmdb"]["api_key"]}
+    
+    for i, movie_id in enumerate(movie_list):
+        print(str((i+1)/len(movie_list) * 100) + "%")
+        try:
+            print("Trying {}".format(movie_id))
+            r = requests.get(url = config["tmdb"]["api_url"] + "/movie/" + movie_id, params = params)
+            r_json = r.json()
+            del r_json["adult"]
+            del r_json["backdrop_path"]
+            del r_json["belongs_to_collection"]
+            del r_json["homepage"]
+            print(r_json["title"])            
+        except Exception as e:        
+            print("Request failed for ", movie_id)
+            print(r.status_code)
+            print(e)
+        else:
+            result.append(r_json)
+    
+    # get french tmdb title
+    # add french language to PARAMS
+    params["language"] = "fr-FR"
+    
+    result_french_title = []
+    for i, movie_id in enumerate(movie_list):
+        print(str((i+1)/len(movie_list) * 100) + "%")
+        try:
+            print("Trying {}".format(movie_id))
+            r = requests.get(url = config["tmdb"]["api_url"] + "/movie/" + movie_id, params = params)
+            r_json = r.json()
+            r_json = {"title": r_json["title"], "id": r_json["id"]}
+            print(r_json["title"])            
+        except Exception as e:        
+            print("Request failed for ", movie_id)
+            print(r.status_code)
+            print(e)
+        else:
+            result_french_title.append(r_json)
+
+    return result, result_french_title
+
 
 def refresh_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, config):
     
@@ -25,48 +72,7 @@ def refresh_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, confi
     new_movies_number = len(new_movies)
     print("New movies to retrieve from TMBD API: ", new_movies_number)
     
-    result = []
-    # get english tmdb info
-    # defining a params dict for the parameters to be sent to the API 
-    params = {'api_key': config["tmdb"]["api_key"]}
-    
-    for i, movie_id in enumerate(new_movies):
-        print(str((i+1)/new_movies_number * 100) + "%")
-        try:
-            print("Trying {}".format(movie_id))
-            r = requests.get(url = config["tmdb"]["api_url"] + "/movie/" + movie_id, params = params)
-            r_json = r.json()
-            del r_json["adult"]
-            del r_json["backdrop_path"]
-            del r_json["belongs_to_collection"]
-            del r_json["homepage"]
-            print(r_json["title"])            
-        except Exception as e:        
-            print("Request failed for ", movie_id)
-            print(r.status_code)
-            print(e)
-        else:
-            result.append(r_json)
-    
-    # get french tmdb title
-    # add french language to PARAMS
-    params["language"] = "fr-FR"
-    
-    result_french_title = []
-    for i, movie_id in enumerate(new_movies):
-        print(str((i+1)/new_movies_number * 100) + "%")
-        try:
-            print("Trying {}".format(movie_id))
-            r = requests.get(url = config["tmdb"]["api_url"] + "/movie/" + movie_id, params = params)
-            r_json = r.json()
-            r_json = {"title": r_json["title"], "id": r_json["id"]}
-            print(r_json["title"])            
-        except Exception as e:        
-            print("Request failed for ", movie_id)
-            print(r.status_code)
-            print(e)
-        else:
-            result_french_title.append(r_json)
+    result, result_french_title = get_tmdb_movie_data(new_movies, config)
     
     if len(result) > 0:
         result_df = pd.DataFrame(result)

@@ -6,7 +6,7 @@ def get_names(x, key="name"):
     return ", ".join(list(map(itemgetter(key), x)))
 
 def concat_distinct_genres(x):
-    l = x["imdb_Genres"].split(", ")
+    l = x["imdb_genres"].split(", ")
     if "Short" in l:
         l.remove("Short")    
     m = x["tmdb_genres"].split(", ")
@@ -20,6 +20,8 @@ def merge_ratings_with_tmdb(ratings_df, data_tmdb_df, ratings_output_path):
     ratings_df = ratings_df.add_prefix("imdb_").rename(
         columns={"imdb_Const": "imdb_id"})
     
+    ratings_df.columns = ratings_df.columns.str.strip().str.lower().str.replace(' ', '_', regex=False).str.replace('(', '', regex=False).str.replace(')', '', regex=False)
+    
     data_tmdb_df = data_tmdb_df.add_prefix("tmdb_").rename(
         columns={"tmdb_imdb_id": "imdb_id"})
 
@@ -31,14 +33,21 @@ def merge_ratings_with_tmdb(ratings_df, data_tmdb_df, ratings_output_path):
         raise "Ratings has duplicates, please fix it."
 
     # Parsing dates
-    ratings_df["imdb_last_date_rated"] = pd.to_datetime(ratings_df["imdb_Date Rated"])
+    ratings_df["imdb_last_date_rated"] = pd.to_datetime(ratings_df["imdb_date_rated"])
 
     # Merging genres from imdb and tmdb
     ratings_df["tmdb_genres"] = ratings_df["tmdb_genres"].apply(get_names)
-    ratings_df["imdb_Genres"].fillna("", inplace=True)
+    ratings_df["imdb_genres"].fillna("", inplace=True)
     ratings_df["tmdb_genres"].fillna("", inplace=True)
     ratings_df["genres"] = ratings_df.apply(concat_distinct_genres,axis=1)
-    ratings_df.drop(columns=["tmdb_genres", "imdb_Genres", "imdb_Date Rated"], inplace=True)
+
+    # Deleting non needed columns
+    ratings_df.drop(columns=["tmdb_genres", "imdb_genres", "imdb_date_rated", "tmdb_video", "tmdb_status", "tmdb_poster_path"], inplace=True)
+
+    # Rename columns
+    ratings_df.rename(columns={
+        "imdb_imdb_rating": "imdb_rating"
+    }, inplace=True)
 
     print("Saving ratings data to ", ratings_output_path)
     ratings_df.to_pickle(ratings_output_path)

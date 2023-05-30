@@ -1,6 +1,6 @@
 from datetime import datetime
 
-import pandas as pd
+import pandas as pd, numpy as np
 import requests
 
 def get_tmdb_movie_data(movie_list, config):
@@ -51,7 +51,7 @@ def get_tmdb_movie_data(movie_list, config):
     return result, result_french_title
 
 
-def refresh_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, config):
+def get_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, config):
     
     data = pd.concat([data_ratings, data_watchlist], ignore_index=True, join='inner')
     print(data.shape)
@@ -89,15 +89,58 @@ def refresh_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, confi
         new_tmdb_data = result_df.merge(result_french_title_df, on="id")
         new_tmdb_data = new_tmdb_data[['imdb_id'] + [col for col in new_tmdb_data if col != 'imdb_id']]
     
-        now = datetime.now()
-        dt_string = now.strftime("%d/%m/%Y")
-        new_tmdb_data["intgration_date"] = dt_string
+        now = datetime.now().date()
+        new_tmdb_data["intgration_date"] = now
         
         print("Adding {} new movies in TMBD data file.".format(new_tmdb_data.shape[0]))
         data_tmdb_df = pd.concat([data_tmdb_df, new_tmdb_data], ignore_index=True)
         data_tmdb_df.to_pickle(tmdb_data_output_path)
     elif new_movies_number == 0:
         print("No new data to add")
+    else:
+        print("The TMBD API gave 0 result")
+    
+    return data_tmdb_df
+
+def refresh_tmdb_data(data_tmdb_df, tmdb_data_output_path, config):
+        
+    print("Number of duplicates movies in TMBD data", data_tmdb_df[data_tmdb_df.duplicated("id")].shape[0])
+    
+    movies_old_integration = ((pd.to_datetime(datetime.now()) - data_tmdb_df["integration_date"]) / np.timedelta64(1, 'D')) > 274
+
+    movies_to_update = data_tmdb_df[movies_old_integration]["id"].unique()     
+    movies_to_update_number = len(movies_to_update)
+    print("Movies to update from TMBD API: ", movies_to_update_number)
+    
+    result, result_french_title = get_tmdb_movie_data(movies_to_update, config)
+    
+    if len(result) > 0:
+        result_df = pd.DataFrame(result)
+        result_df["id"] = result_df["id"].astype(str)
+        print("Number of movies retrieved by TMBD API", result_df.shape[0])
+        
+        result_df = result_df.rename(columns={"title": "english_title", "tagline": "english_tagline", "overview": "english_overview"})
+    
+        result_french_title_df = pd.DataFrame(result_french_title)
+        print("Number of movies retrieved by TMBD API to get the french titles", result_french_title_df.shape[0])
+        result_french_title_df["id"] = result_french_title_df["id"].astype(str)
+        result_french_title_df = result_french_title_df.rename(columns={"title": "french_title"})
+    
+        new_tmdb_data = result_df.merge(result_french_title_df, on="id")
+        new_tmdb_data = new_tmdb_data[['imdb_id'] + [col for col in new_tmdb_data if col != 'imdb_id']]
+    
+        now = pd.to_datetime(datetime.now().date())
+        new_tmdb_data["integration_date"] = now
+
+        print("Updating {} movies in TMBD data file.".format(new_tmdb_data.shape[0]))
+        new_data_tmdb_df = data_tmdb_df.set_index("imdb_id")
+        new_data_tmdb_df.update(new_tmdb_data.set_index("imdb_id"))
+
+        new_data_tmdb_df.reset_index(inplace=True)        
+        new_data_tmdb_df.to_pickle(tmdb_data_output_path)
+
+    elif movies_to_update_number == 0:
+        print("No movies to update")
     else:
         print("The TMBD API gave 0 result")
     

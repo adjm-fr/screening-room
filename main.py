@@ -5,13 +5,15 @@ import pathlib
 
 import pandas as pd
 
+from datetime import datetime
+
 import tmdb_data_management.get_tmdb_data as tdm
 import watchlist_management.get_watchlist_infos as wm
 import ratings_management.get_ratings_infos as rm
 
 @click.command()
-@click.option('--refresh_tmdb', is_flag=True, help='Do you need to refresh the TMDB database?')
-def movies_management(refresh_tmdb):
+@click.option('--get_tmdb', is_flag=True, help='Do you need to refresh the TMDB database?')
+def movies_management(get_tmdb):
 
     current_path = pathlib.Path(__file__).parent.resolve()
     print(current_path)
@@ -43,21 +45,29 @@ def movies_management(refresh_tmdb):
     
     if not tmdb_data_file_exists:
         print("TMDB database doesn't exist. The TMDB database will be created.")
-        data_tmdb_df = tdm.refresh_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, config)
+        data_tmdb_df = tdm.get_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, config)
     else:
         ratings_file_after_tmdb = os.path.getmtime(tmdb_data_output_path) < os.path.getmtime(ratings_input_path)    
         watchlist_file_after_tmdb = os.path.getmtime(tmdb_data_output_path) < os.path.getmtime(watchlist_input_path)
-        if refresh_tmdb | ratings_file_after_tmdb | watchlist_file_after_tmdb:
-            if refresh_tmdb:
+        if get_tmdb | ratings_file_after_tmdb | watchlist_file_after_tmdb:
+            if get_tmdb:
                 print("User asked to refresh TMDB database")
             if ratings_file_after_tmdb:
                 print("TMDB database might be deprecated as a newer ratings file is present. The TMDB database will be refreshed.")
             if watchlist_file_after_tmdb:
                 print("TMDB database might be deprecated as a newer watchlist file is present. The TMDB database will be refreshed.")
-            data_tmdb_df = tdm.refresh_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, config)
+            data_tmdb_df = tdm.get_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, config)
         else:
             data_tmdb_df = pd.read_pickle(tmdb_data_output_path)
     print(data_tmdb_df.shape)
+
+    print(data_tmdb_df["integration_date"].min())
+    check_tmdb_integration_old = pd.to_datetime(datetime.now()) - data_tmdb_df["integration_date"].min()
+
+    # If the minimum is lower than 9 months
+    if check_tmdb_integration_old.days > 274:
+        print("Some movies needs to be updated in the TMDB database (integration date greater than 9 months)")
+        data_tmdb_df = tdm.refresh_tmdb_data(data_tmdb_df, tmdb_data_output_path, config)
 
     watchlist_output_path = os.path.join(output_path, 'watchlist_with_tmdb.pkl')
     watchlist_output_exists = os.path.exists(watchlist_output_path)

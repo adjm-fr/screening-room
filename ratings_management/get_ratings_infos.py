@@ -1,17 +1,21 @@
-import pandas as pd
+import pandas as pd, numpy as np
 
 from operator import itemgetter
 
 def get_names(x, key="name"):
-    return ", ".join(list(map(itemgetter(key), x)))
+    if type(x) == list and len(x) != 0:
+        return ", ".join(list(map(itemgetter(key), x)))
 
 def concat_distinct_genres(x):
-    l = x["imdb_genres"].split(", ")
+    l = x["imdb_genres"].split(", ") if type(x["imdb_genres"]) == str else []
     if "Short" in l:
         l.remove("Short")    
-    m = x["tmdb_genres"].split(", ")
+    m = x["tmdb_genres"].split(", ") if type(x["tmdb_genres"]) == str else []
     n = l + m
-    return sorted(set(n))
+    if len(n) == 0:
+        return np.nan
+    else:
+        return ",".join(sorted(set(n)))
 
 def merge_ratings_with_tmdb(ratings_df, data_tmdb_df, ratings_output_path):
 
@@ -34,15 +38,15 @@ def merge_ratings_with_tmdb(ratings_df, data_tmdb_df, ratings_output_path):
 
     # Parsing dates
     ratings_df["imdb_last_date_rated"] = pd.to_datetime(ratings_df["imdb_date_rated"])
+    ratings_df["imdb_release_date"] = pd.to_datetime(ratings_df["imdb_release_date"])
+    ratings_df["tmdb_release_date"] = pd.to_datetime(ratings_df["tmdb_release_date"])
 
     # Merging genres from imdb and tmdb
-    ratings_df["tmdb_genres"] = ratings_df["tmdb_genres"].apply(get_names)
-    ratings_df["imdb_genres"].fillna("", inplace=True)
-    ratings_df["tmdb_genres"].fillna("", inplace=True)
+    ratings_df["tmdb_genres"] = ratings_df["tmdb_genres"].apply(get_names)    
     ratings_df["genres"] = ratings_df.apply(concat_distinct_genres,axis=1)
 
     # Deleting non needed columns
-    ratings_df.drop(columns=["tmdb_genres", "imdb_genres", "imdb_date_rated", "tmdb_video", "tmdb_status", "tmdb_poster_path"], inplace=True)
+    ratings_df.drop(columns=["imdb_date_rated", "tmdb_video", "tmdb_status", "tmdb_poster_path"], inplace=True)
 
     # Rename columns
     ratings_df.rename(columns={

@@ -89,8 +89,8 @@ def get_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, config):
         new_tmdb_data = result_df.merge(result_french_title_df, on="id")
         new_tmdb_data = new_tmdb_data[['imdb_id'] + [col for col in new_tmdb_data if col != 'imdb_id']]
     
-        now = datetime.now().date()
-        new_tmdb_data["intgration_date"] = now
+        now = pd.to_datetime(datetime.now().date())
+        new_tmdb_data["integration_date"] = now
         
         print("Adding {} new movies in TMBD data file.".format(new_tmdb_data.shape[0]))
         data_tmdb_df = pd.concat([data_tmdb_df, new_tmdb_data], ignore_index=True)

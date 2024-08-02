@@ -38,7 +38,7 @@ def merge_ratings_with_tmdb(ratings_df, data_tmdb_df, ratings_output_path):
 
     # Parsing dates
     ratings_df["imdb_last_date_rated"] = pd.to_datetime(ratings_df["imdb_date_rated"])
-    ratings_df["imdb_release_date"] = pd.to_datetime(ratings_df["imdb_release_date"])
+    ratings_df["imdb_release_date"] = pd.to_datetime(ratings_df["imdb_release_date"], errors='coerce')
     ratings_df["tmdb_release_date"] = pd.to_datetime(ratings_df["tmdb_release_date"])
 
     # Merging genres from imdb and tmdb

@@ -64,8 +64,8 @@ def movies_management(get_tmdb):
     print(data_tmdb_df["integration_date"].min())
     check_tmdb_integration_old = pd.to_datetime(datetime.now()) - data_tmdb_df["integration_date"].min()
 
-    # If the minimum is lower than 9 months
-    if check_tmdb_integration_old.days > 274:
+    # If the minimum is lower than 12 months
+    if check_tmdb_integration_old.days > config['tmdb']['days_to_update']:
         print("Some movies needs to be updated in the TMDB database (integration date greater than 9 months)")
         data_tmdb_df = tdm.refresh_tmdb_data(data_tmdb_df, tmdb_data_output_path, config)
 

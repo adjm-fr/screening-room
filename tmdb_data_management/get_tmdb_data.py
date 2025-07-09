@@ -106,7 +106,7 @@ def refresh_tmdb_data(data_tmdb_df, tmdb_data_output_path, config):
         
     print("Number of duplicates movies in TMBD data", data_tmdb_df[data_tmdb_df.duplicated("id")].shape[0])
     
-    movies_old_integration = ((pd.to_datetime(datetime.now()) - data_tmdb_df["integration_date"]) / np.timedelta64(1, 'D')) > 274
+    movies_old_integration = ((pd.to_datetime(datetime.now()) - data_tmdb_df["integration_date"]) / np.timedelta64(1, 'D')) > config['tmdb']['days_to_update']
 
     movies_to_update = data_tmdb_df[movies_old_integration]["id"].unique()     
     movies_to_update_number = len(movies_to_update)

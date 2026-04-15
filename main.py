@@ -1,89 +1,87 @@
-import json
+import logging
 import os
-import click
 import pathlib
-
-import pandas as pd
-
 from datetime import datetime
 
-import tmdb_data_management.get_tmdb_data as tdm
+import click
+import pandas as pd
+from dotenv import load_dotenv
+from letterboxdpy.user import User
+
+import letterboxd_data_management.get_letterboxd_data as ldm
 import watchlist_management.get_watchlist_infos as wm
 import ratings_management.get_ratings_infos as rm
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
+
 @click.command()
-@click.option('--get_tmdb', is_flag=True, help='Do you need to refresh the TMDB database?')
-def movies_management(get_tmdb):
+@click.option('--get_letterboxd', is_flag=True, help='Force a full refresh of the Letterboxd movie cache.')
+def movies_management(get_letterboxd):
 
     current_path = pathlib.Path(__file__).parent.resolve()
-    print(current_path)
+    load_dotenv(os.path.join(current_path, '.env'))
 
-    with open(os.path.join(current_path, 'config.secrets.json'), encoding='utf-8') as f:
-        config = json.load(f)
+    username = os.getenv("LETTERBOXD_USERNAME")
+    output_path = os.getenv("OUTPUT_PATH")
+    days_to_update = int(os.getenv("LETTERBOXD_DAYS_TO_UPDATE", 365))
 
-    input_path = config["path"]["input"]
-    output_path = config["path"]["output"]
-    
-    # Inputs loading
-    ratings_input_path = os.path.join(input_path, 'ratings.csv')
-    ratings_input_file_exists = os.path.exists(ratings_input_path)
-    if not ratings_input_file_exists:
-        raise "The ratings file doesn't exist: you need to put the ratings.csv file in this location: " + ratings_input_path
-    else:
-        data_ratings = pd.read_csv(ratings_input_path, encoding = 'utf8')
-    
-    watchlist_input_path = os.path.join(input_path, 'WATCHLIST.csv')
-    watchlist_input_file_exists = os.path.exists(watchlist_input_path)
-    if not watchlist_input_file_exists:
-        raise "The watchlist file doesn't exist: you need to put the WATCHLIST.csv file in this location: " + watchlist_input_path
-    else:
-        data_watchlist = pd.read_csv(watchlist_input_path, encoding = 'utf8')
-    
-    # TMDB database creation or update
-    tmdb_data_output_path = os.path.join(output_path, 'data_tmdb.pkl')    
-    tmdb_data_file_exists = os.path.exists(tmdb_data_output_path)
-    
-    if not tmdb_data_file_exists:
-        print("TMDB database doesn't exist. The TMDB database will be created.")
-        data_tmdb_df = tdm.get_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, config)
-    else:
-        ratings_file_after_tmdb = os.path.getmtime(tmdb_data_output_path) < os.path.getmtime(ratings_input_path)    
-        watchlist_file_after_tmdb = os.path.getmtime(tmdb_data_output_path) < os.path.getmtime(watchlist_input_path)
-        if get_tmdb | ratings_file_after_tmdb | watchlist_file_after_tmdb:
-            if get_tmdb:
-                print("User asked to refresh TMDB database")
-            if ratings_file_after_tmdb:
-                print("TMDB database might be deprecated as a newer ratings file is present. The TMDB database will be refreshed.")
-            if watchlist_file_after_tmdb:
-                print("TMDB database might be deprecated as a newer watchlist file is present. The TMDB database will be refreshed.")
-            data_tmdb_df = tdm.get_tmdb_data(data_ratings, data_watchlist, tmdb_data_output_path, config)
-        else:
-            data_tmdb_df = pd.read_pickle(tmdb_data_output_path)
-    print(data_tmdb_df.shape)
+    if not username:
+        raise ValueError("LETTERBOXD_USERNAME is not set in your .env file.")
+    if not output_path:
+        raise ValueError("OUTPUT_PATH is not set in your .env file.")
 
-    print(data_tmdb_df["integration_date"].min())
-    check_tmdb_integration_old = pd.to_datetime(datetime.now()) - data_tmdb_df["integration_date"].min()
+    config = {"days_to_update": days_to_update}
 
-    # If the minimum is lower than 12 months
-    if check_tmdb_integration_old.days > config['tmdb']['days_to_update']:
-        print("Some movies needs to be updated in the TMDB database (integration date greater than 9 months)")
-        data_tmdb_df = tdm.refresh_tmdb_data(data_tmdb_df, tmdb_data_output_path, config)
+    logger.info("Fetching Letterboxd data for user: %s", username)
+    user = User(username)
 
-    watchlist_output_path = os.path.join(output_path, 'watchlist_with_tmdb.pkl')
-    watchlist_output_exists = os.path.exists(watchlist_output_path)
+    films_dict = user.get_films()
+    watchlist_dict = user.get_watchlist()
 
-    if (not watchlist_output_exists) or (os.path.getmtime(watchlist_output_path) < os.path.getmtime(watchlist_input_path)):
-        watchlist_df = wm.merge_watchlist_with_tmdb(data_watchlist, data_tmdb_df, watchlist_output_path)
-    else:
-        watchlist_df = pd.read_pickle(watchlist_output_path)
+    all_slugs = list(films_dict.get("movies", {}).keys()) + [v["slug"] for v in watchlist_dict.get("data", {}).values() if "slug" in v]
+    all_slugs = list(set(all_slugs))
+    logger.info("Total unique slugs: %d", len(all_slugs))
 
-    ratings_output_path = os.path.join(output_path, 'ratings_with_tmdb.pkl')
-    ratings_output_file_exists = os.path.exists(ratings_output_path)
+    # Letterboxd movie cache
+    letterboxd_data_output_path = os.path.join(output_path, 'data_letterboxd.parquet')
 
-    if (not ratings_output_file_exists) or (os.path.getmtime(ratings_output_path) < os.path.getmtime(ratings_input_path)):
-        ratings_df = rm.merge_ratings_with_tmdb(data_ratings, data_tmdb_df, ratings_output_path)
-    else:
-        ratings_df = pd.read_pickle(ratings_output_path)
+    if get_letterboxd:
+        logger.info("User requested full refresh of Letterboxd movie cache.")
+    data_letterboxd_df = ldm.get_letterboxd_data(all_slugs, letterboxd_data_output_path)
+
+    logger.info("Cache size: %s", data_letterboxd_df.shape)
+
+    # Determine slugs that need refreshing
+    slugs_to_refresh = set()
+
+    # 1. Movies older than days_to_update
+    if data_letterboxd_df.shape[0] > 0 and "integration_date" in data_letterboxd_df.columns:
+        now = pd.to_datetime(datetime.now())
+        age_days = (now - data_letterboxd_df["integration_date"]).dt.days
+        old_slugs = data_letterboxd_df[age_days > days_to_update]["slug"].tolist()
+        if old_slugs:
+            logger.info("%d movies need refreshing due to age (>%d days).", len(old_slugs), days_to_update)
+            slugs_to_refresh.update(old_slugs)
+
+    if slugs_to_refresh:
+        logger.info("Refreshing %d movies.", len(slugs_to_refresh))
+        data_letterboxd_df = ldm.refresh_letterboxd_data(
+            data_letterboxd_df, list(slugs_to_refresh), letterboxd_data_output_path, config
+        )
+
+    # Watchlist output
+    watchlist_output_path = os.path.join(output_path, 'watchlist_with_letterboxd.parquet')
+    wm.merge_watchlist_with_letterboxd(watchlist_dict, data_letterboxd_df, watchlist_output_path)
+
+    # Ratings output
+    ratings_output_path = os.path.join(output_path, 'ratings_with_letterboxd.parquet')
+    rm.merge_ratings_with_letterboxd(films_dict, data_letterboxd_df, ratings_output_path)
 
 
 if __name__ == '__main__':

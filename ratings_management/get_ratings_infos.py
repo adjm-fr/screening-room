@@ -1,59 +1,57 @@
-import pandas as pd, numpy as np
+import logging
 
-from operator import itemgetter
+import pandas as pd
 
-def get_names(x, key="name"):
-    if type(x) == list and len(x) != 0:
-        return ", ".join(list(map(itemgetter(key), x)))
+logger = logging.getLogger(__name__)
 
-def concat_distinct_genres(x):
-    l = x["imdb_genres"].split(", ") if type(x["imdb_genres"]) == str else []
-    if "Short" in l:
-        l.remove("Short")    
-    m = x["tmdb_genres"].split(", ") if type(x["tmdb_genres"]) == str else []
-    n = l + m
-    if len(n) == 0:
-        return np.nan
-    else:
-        return ",".join(sorted(set(n)))
 
-def merge_ratings_with_tmdb(ratings_df, data_tmdb_df, ratings_output_path):
+def merge_ratings_with_letterboxd(films_dict, data_letterboxd_df, ratings_output_path):
+    movies = films_dict.get("movies", {})
+    logger.info("Ratings has %d movies.", len(movies))
 
-    print("Ratings has", ratings_df.shape[0], "movies.")
+    rows = [
+        {
+            "slug": slug,
+            "user_rating": info.get("rating"),
+            "name": info.get("name"),
+            "release_year": info.get("year"),
+            "liked": info.get("liked"),
+        }
+        for slug, info in movies.items()
+    ]
+    ratings_df = pd.DataFrame(rows)
 
-    ratings_df = ratings_df.add_prefix("imdb_").rename(
-        columns={"imdb_Const": "imdb_id"})
-    
-    ratings_df.columns = ratings_df.columns.str.strip().str.lower().str.replace(' ', '_', regex=False).str.replace('(', '', regex=False).str.replace(')', '', regex=False)
-    
-    data_tmdb_df = data_tmdb_df.add_prefix("tmdb_").rename(
-        columns={"tmdb_imdb_id": "imdb_id"})
+    ratings_df = ratings_df.merge(data_letterboxd_df, on="slug", how="left", suffixes=("_user", ""))
 
-    ratings_df = ratings_df.merge(data_tmdb_df, on="imdb_id", how="left", validate="one_to_one")    
+    # release_year from letterboxd movie data takes precedence; fall back to user data
+    if "release_year_user" in ratings_df.columns:
+        ratings_df["release_year"] = ratings_df["release_year"].fillna(ratings_df["release_year_user"])
+        ratings_df.drop(columns=["release_year_user"], inplace=True)
 
-    ratings_dup = ratings_df[ratings_df.duplicated("imdb_id")].shape[0]
-    if  ratings_dup > 0:
-        print("Ratings has ", ratings_dup, " duplicates")
-        raise "Ratings has duplicates, please fix it."
+    # Drop name from user data (title from Movie object is more complete)
+    if "name" in ratings_df.columns:
+        ratings_df.drop(columns=["name"], inplace=True)
 
-    # Parsing dates
-    ratings_df["imdb_last_date_rated"] = pd.to_datetime(ratings_df["imdb_date_rated"])
-    ratings_df["imdb_release_date"] = pd.to_datetime(ratings_df["imdb_release_date"], errors='coerce')
-    ratings_df["tmdb_release_date"] = pd.to_datetime(ratings_df["tmdb_release_date"])
+    dup_count = ratings_df[ratings_df.duplicated("slug")].shape[0]
+    if dup_count > 0:
+        logger.error("Ratings has %d duplicates", dup_count)
+        raise ValueError("Ratings has duplicates, please fix it.")
 
-    # Merging genres from imdb and tmdb
-    ratings_df["tmdb_genres"] = ratings_df["tmdb_genres"].apply(get_names)    
-    ratings_df["genres"] = ratings_df.apply(concat_distinct_genres,axis=1)
+    # Drop cache metadata column not needed in output
+    if "integration_date" in ratings_df.columns:
+        ratings_df.drop(columns=["integration_date"], inplace=True)
 
-    # Deleting non needed columns
-    ratings_df.drop(columns=["imdb_date_rated", "tmdb_video", "tmdb_status", "tmdb_poster_path"], inplace=True)
+    column_order = [
+        "slug", "user_rating", "liked", "title", "release_year",
+        "letterboxd_avg_rating", "genres", "description", "tagline",
+        "directors", "runtime", "imdb_id", "tmdb_id",
+        "letterboxd_url", "imdb_url", "tmdb_url",
+    ]
+    existing_cols = [c for c in column_order if c in ratings_df.columns]
+    extra_cols = [c for c in ratings_df.columns if c not in column_order]
+    ratings_df = ratings_df[existing_cols + extra_cols]
 
-    # Rename columns
-    ratings_df.rename(columns={
-        "imdb_imdb_rating": "imdb_rating"
-    }, inplace=True)
-
-    print("Saving ratings data to ", ratings_output_path)
-    ratings_df.to_pickle(ratings_output_path)
+    logger.info("Saving ratings data to %s", ratings_output_path)
+    ratings_df.to_parquet(ratings_output_path, index=False)
 
     return ratings_df

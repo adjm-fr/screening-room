@@ -15,13 +15,14 @@ All data is stored locally in parquet format for efficient storage and analysis.
 
 ## Features
 
-- 🎬 **Automatic metadata enrichment** - Combines user data with complete Letterboxd movie information
+- 🎬 **Automatic metadata enrichment** - Combines user data with comprehensive Letterboxd movie information
 - ⚡ **Intelligent caching** - Stores metadata locally to minimize API calls and improve performance
 - 🔄 **Smart refresh strategy** - Automatically updates movie data older than a configurable threshold
-- 📊 **Structured output** - Generates clean parquet files ready for analysis
+- 📊 **Rich data extraction** - Captures genres, themes, crew roles, studio info, country, language, and more
 - 🧵 **Parallel processing** - Uses thread pools for concurrent API requests
 - 📋 **Dual outputs** - Separate enriched files for ratings and watchlist data
 - ✅ **Data validation** - Detects and prevents duplicate entries
+- 🎨 **Media assets** - Includes poster and banner URLs for visual applications
 
 ## Installation
 
@@ -110,34 +111,69 @@ The application generates three parquet files in your `OUTPUT_PATH`:
 ### 1. `data_letterboxd.parquet`
 **Internal cache** of all movie metadata. Used for incremental updates.
 
-**Columns:**
+**Identifier Columns:**
 - `slug` - Letterboxd unique identifier
-- `title` - Official movie title
-- `release_year` - Year of release
-- `runtime` - Duration in minutes
-- `genres` - Comma-separated genre list
-- `description` - Full plot description
-- `tagline` - Movie tagline
-- `letterboxd_avg_rating` - Letterboxd community average rating
-- `directors` - Comma-separated director list
+- `movie_id` - Letterboxd internal movie ID
+- `letterboxd_url` - Link to Letterboxd page
 - `imdb_id` - IMDB identifier
 - `tmdb_id` - TMDB identifier
-- `letterboxd_url` - Link to Letterboxd page
 - `imdb_url` - Link to IMDB page
 - `tmdb_url` - Link to TMDB page
+
+**Core Information:**
+- `title` - Official movie title
+- `original_title` - Original title in native language (if different)
+- `release_year` - Year of release
+- `runtime` - Duration in minutes
+- `tagline` - Movie tagline/slogan
+- `description` - Full plot description
+- `letterboxd_avg_rating` - Letterboxd community average rating (0-10)
+
+**Media:**
+- `poster_url` - URL to movie poster image
+- `banner_url` - URL to movie banner image
+
+**Genres & Themes:**
+- `genres` - Comma-separated primary genres (e.g., "Drama, Sci-Fi")
+- `themes` - Comma-separated Letterboxd themes (e.g., "Time Travel, Alternate History")
+- `mini_themes` - Comma-separated Letterboxd mini-themes (more specific classifications)
+
+**Crew:**
+- `directors` - Comma-separated director names
+- `producers` - Comma-separated producer names
+- `writers` - Comma-separated writer names
+
+**Dynamic Details Columns:**
+- `studio` - Production studio(s)
+- `country` - Country/countries of origin
+- `language` - Primary language(s)
+- *(Other detail types may be present based on Letterboxd data)*
+
+**Metadata:**
 - `integration_date` - When metadata was fetched (used for refresh logic)
 
 ### 2. `ratings_with_letterboxd.parquet`
 **Enriched user ratings** combining your ratings with full metadata.
 
-**Additional columns** (beyond movie metadata):
+**User Data Columns:**
 - `user_rating` - Your rating (0-10 or null if unrated)
-- `liked` - Whether you marked as liked
+- `liked` - Whether you marked as liked (boolean)
+
+**All movie metadata columns** from `data_letterboxd.parquet` (see above), including:
+- Identifiers (slug, movie_id, imdb_id, tmdb_id, URLs)
+- Core info (title, original_title, release_year, runtime, tagline, description, rating)
+- Media (poster_url, banner_url)
+- Classification (genres, themes, mini_themes)
+- Crew (directors, producers, writers)
+- Details (studio, country, language, etc.)
 
 ### 3. `watchlist_with_letterboxd.parquet`
 **Enriched watchlist** combining your watchlist with full metadata.
 
-Only contains movies on your watchlist with available metadata.
+Contains all columns from `data_letterboxd.parquet` (see above) for movies on your watchlist:
+- Identifiers, core info, media, classification, crew, and details
+
+*Note: Only contains movies where metadata was successfully fetched from Letterboxd.*
 
 ## Architecture
 
@@ -145,13 +181,9 @@ Only contains movies on your watchlist with available metadata.
 
 ```
 movies_management/
-├── main.py                           # Orchestration and configuration
+├── main.py                           # Orchestration, enrichment, and export
 ├── letterboxd_data_management/       # Movie metadata fetching and caching
 │   └── get_letterboxd_data.py        # Letterboxd API interactions
-├── ratings_management/               # User ratings enrichment
-│   └── get_ratings_infos.py          # Ratings data processing
-├── watchlist_management/             # User watchlist enrichment
-│   └── get_watchlist_infos.py        # Watchlist data processing
 └── .env                              # Configuration file
 ```
 
@@ -162,15 +194,13 @@ Letterboxd API
     ↓
 User Data (films + watchlist)
     ↓
-Extract slugs → Fetch metadata (parallel, cached)
+Build unified DataFrame with source column (ratings | watchlist)
     ↓
-Movie Metadata Cache (parquet)
+Fetch / update metadata cache (parallel, cached)
     ↓
-Merge with user data (left join)
+Enrich unified DataFrame with metadata (single left join)
     ↓
-Enrich & Validate
-    ↓
-Output files (ratings + watchlist)
+Split by source → Output files (ratings + watchlist)
 ```
 
 ### Key Design Decisions
@@ -181,9 +211,17 @@ Output files (ratings + watchlist)
 
 3. **Parallel Fetching** - Uses thread pool (10 workers) to fetch movies concurrently, improving performance for large libraries.
 
-4. **Left Join Merges** - Watchlist and ratings use left joins to preserve all user entries even if metadata fetch fails.
+4. **Unified DataFrame** - Ratings and watchlist rows are stacked into one DataFrame before any API calls. A single enrichment join produces both outputs, avoiding redundant merges.
 
-5. **Data Validation** - Enforces no-duplicate-by-slug constraint to catch data quality issues early.
+5. **Data Validation** - Enforces no-duplicate-by-slug constraint across both sources before fetching metadata, catching data quality issues early.
+
+6. **Rich Metadata Extraction** - Extracts comprehensive data from Letterboxd including:
+   - **Genre classification** - Separates genres, themes, and mini-themes based on Letterboxd's classification system
+   - **Crew roles** - Extracts directors, producers, and writers separately for flexibility
+   - **Dynamic detail columns** - Automatically captures studio, country, language, and other attributes as separate columns
+   - **Media assets** - Includes poster and banner URLs for visual integration
+
+7. **Flexible Detail Handling** - Uses `**details_by_type` to dynamically expand Letterboxd detail data, so new detail types are automatically captured without code changes
 
 ## Development
 
@@ -212,8 +250,8 @@ Cache is stored as parquet for fast I/O and can handle thousands of movies effic
 ### "LETTERBOXD_USERNAME is not set"
 Ensure your `.env` file is in the project root and contains the required variables.
 
-### "Watchlist has duplicates"
-This indicates data integrity issues in your Letterboxd profile. Check the error logs to identify affected movies.
+### "Duplicate slugs found across ratings and watchlist"
+A movie appears in both your ratings and watchlist, which Letterboxd normally prevents. Check the listed slugs and clean up your Letterboxd profile.
 
 ### Slow performance
 This is normal on initial runs with large libraries. Subsequent runs are much faster due to caching.
@@ -226,9 +264,10 @@ The application gracefully handles transient API failures by skipping individual
 ## Known Limitations
 
 - Requires public Letterboxd profile (API limitation)
-- Some movies may lack complete metadata on Letterboxd
-- Genre/director data structure is inconsistent across movies
+- Some movies may lack complete metadata on Letterboxd (e.g., missing crew or details)
+- Detail types are dynamic based on Letterboxd's available data; not all movies will have all detail columns populated
 - Rating data may be sparse for new/obscure films
+- Poster and banner URLs may be unavailable for some movies
 
 ## Contributing
 

@@ -8,7 +8,7 @@ This module is the entry point for the application and coordinates:
 1. Fetching user data (films, watchlist) from Letterboxd
 2. Building and maintaining a cache of movie metadata
 3. Refreshing cached data for movies older than configured age
-4. Merging user data with enriched metadata for export
+4. Enriching the unified dataset with metadata and splitting for export
 
 Configuration via .env file:
     LETTERBOXD_USERNAME: Letterboxd username to fetch data for
@@ -27,8 +27,6 @@ from dotenv import load_dotenv
 from letterboxdpy.user import User
 
 import letterboxd_data_management.get_letterboxd_data as ldm
-import ratings_management.get_ratings_infos as rm
-import watchlist_management.get_watchlist_infos as wm
 
 # Configure structured logging with timestamps and level indicators
 logging.basicConfig(
@@ -79,20 +77,40 @@ def movies_management(get_letterboxd: bool) -> None:
     config = {"days_to_update": days_to_update}
 
     logger.info("Fetching Letterboxd data for user: %s", username)
-    # Fetch user's film ratings and watchlist from Letterboxd
     user = User(username)
 
     films_dict = user.get_films()
     watchlist_dict = user.get_watchlist()
 
-    # Consolidate all unique movie slugs from both films and watchlist
-    all_slugs = list(films_dict.get("movies", {}).keys()) + [
-        v["slug"]
-        for v in watchlist_dict.get("data", {}).values()
-        if "slug" in v
+    # Build unified DataFrame from both sources before any API calls
+    ratings_rows = [
+        {
+            "slug": slug,
+            "user_rating": info.get("rating"),
+            "liked": info.get("liked"),
+            "name": info.get("name"),
+            "release_year": info.get("year"),
+            "source": "ratings",
+        }
+        for slug, info in films_dict.get("movies", {}).items()
     ]
-    all_slugs = list(set(all_slugs))  # Remove duplicates
-    logger.info("Total unique slugs: %d", len(all_slugs))
+    watchlist_rows = [
+        {
+            "slug": info["slug"],
+            "name": info.get("name"),
+            "release_year": info.get("year"),
+            "source": "watchlist",
+        }
+        for info in watchlist_dict.get("data", {}).values()
+        if "slug" in info
+    ]
+    all_movies_df = pd.DataFrame(ratings_rows + watchlist_rows)
+
+    dup_slugs = all_movies_df[all_movies_df.duplicated("slug")]["slug"].tolist()
+    if dup_slugs:
+        raise ValueError(f"Duplicate slugs found across ratings and watchlist: {dup_slugs}")
+
+    logger.info("Total unique slugs: %d", len(all_movies_df))
 
     # === LETTERBOXD MOVIE CACHE ===
     # Maintain a persistent cache of movie metadata to minimize API calls
@@ -100,8 +118,7 @@ def movies_management(get_letterboxd: bool) -> None:
 
     if get_letterboxd:
         logger.info("User requested full refresh of Letterboxd movie cache.")
-    # Fetch new movies and merge with existing cache
-    data_letterboxd_df = ldm.get_letterboxd_data(all_slugs, letterboxd_data_output_path)
+    data_letterboxd_df = ldm.get_letterboxd_data(all_movies_df["slug"].tolist(), letterboxd_data_output_path)
 
     logger.info("Cache size: %s", data_letterboxd_df.shape)
 
@@ -140,21 +157,44 @@ def movies_management(get_letterboxd: bool) -> None:
             config,
         )
 
-    # === EXPORT ENRICHED DATASETS ===
-    # Merge user data with movie metadata for downstream analysis
-    watchlist_output_path = os.path.join(
-        output_path, "watchlist_with_letterboxd.parquet"
-    )
-    wm.merge_watchlist_with_letterboxd(
-        watchlist_dict, data_letterboxd_df, watchlist_output_path
-    )
+    # === ENRICH AND EXPORT ===
+    all_movies_df = all_movies_df.merge(data_letterboxd_df, on="slug", how="left", suffixes=("_user", ""))
 
-    ratings_output_path = os.path.join(
-        output_path, "ratings_with_letterboxd.parquet"
-    )
-    rm.merge_ratings_with_letterboxd(
-        films_dict, data_letterboxd_df, ratings_output_path
-    )
+    if "release_year_user" in all_movies_df.columns:
+        all_movies_df["release_year"] = all_movies_df["release_year"].fillna(all_movies_df["release_year_user"])
+        all_movies_df.drop(columns=["release_year_user"], inplace=True)
+    if "name" in all_movies_df.columns:
+        all_movies_df.drop(columns=["name"], inplace=True)
+    if "integration_date" in all_movies_df.columns:
+        all_movies_df.drop(columns=["integration_date"], inplace=True)
+
+    ratings_column_order = [
+        "slug", "user_rating", "liked", "title", "release_year",
+        "letterboxd_avg_rating", "genres", "description", "tagline",
+        "directors", "runtime", "imdb_id", "tmdb_id",
+        "letterboxd_url", "imdb_url", "tmdb_url",
+    ]
+    watchlist_column_order = [
+        "slug", "title", "release_year", "letterboxd_avg_rating",
+        "genres", "description", "tagline", "directors", "runtime",
+        "imdb_id", "tmdb_id", "letterboxd_url", "imdb_url", "tmdb_url",
+    ]
+
+    def _save(df: pd.DataFrame, column_order: list, path: str) -> None:
+        existing = [c for c in column_order if c in df.columns]
+        extra = [c for c in df.columns if c not in column_order]
+        df[existing + extra].to_parquet(path, index=False)
+
+    ratings_df = all_movies_df[all_movies_df["source"] == "ratings"].drop(columns=["source"])
+    watchlist_df = all_movies_df[all_movies_df["source"] == "watchlist"].drop(columns=["source"])
+
+    ratings_output_path = os.path.join(output_path, "ratings_with_letterboxd.parquet")
+    logger.info("Saving ratings data to %s", ratings_output_path)
+    _save(ratings_df, ratings_column_order, ratings_output_path)
+
+    watchlist_output_path = os.path.join(output_path, "watchlist_with_letterboxd.parquet")
+    logger.info("Saving watchlist data to %s", watchlist_output_path)
+    _save(watchlist_df, watchlist_column_order, watchlist_output_path)
 
 
 if __name__ == "__main__":

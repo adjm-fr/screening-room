@@ -27,36 +27,68 @@ def _fetch_movie(slug: str) -> dict | None:
         Returns None if fetching fails.
 
     Note:
-        Directors and genres are extracted from the crew and genres fields,
-        which may have inconsistent structures (sometimes dicts, sometimes strings).
+        - cast, trailer, and popular_reviews are excluded from the output.
+        - genres is split into genres/themes/mini_themes based on the "type" field.
+        - details are expanded into one key per type (e.g. "studio", "country", "language").
+        - crew is filtered to director(s), producer(s), and writer(s) only.
     """
     try:
         movie = Movie(slug)
-        # Extract directors from crew object if available
-        directors = []
-        if movie.crew and "director" in movie.crew:
-            directors = [p["name"] for p in movie.crew["director"]]
 
-        # Normalize genre data (may be dict with "name" key or plain string)
-        genres = []
-        if movie.genres:
-            genres = [g["name"] if isinstance(g, dict) else g for g in movie.genres]
+        # --- Genres / themes / mini-themes ---
+        # movie.genres is a list[dict] with keys: type, name, slug, url
+        # The "type" field comes from the Letterboxd URL path segment (genre, theme, mini-theme)
+        raw_genres = movie.genres or []
+        genres = ", ".join(g["name"] for g in raw_genres if g.get("type") == "genre") or None
+        themes = ", ".join(g["name"] for g in raw_genres if g.get("type") == "theme") or None
+        mini_themes = ", ".join(g["name"] for g in raw_genres if g.get("type") == "mini-theme") or None
+
+        # --- Details (studio, country, language, …) ---
+        # movie.details is a list[dict] with keys: type, name, slug, url
+        # Group by type and comma-join names; each type becomes its own column.
+        details_grouped: dict[str, list[str]] = {}
+        for d in (movie.details or []):
+            t = d.get("type")
+            if t:
+                details_grouped.setdefault(t, []).append(d["name"])
+        details_by_type = {t: ", ".join(names) for t, names in details_grouped.items()}
+
+        # --- Crew (director, producer, writer only) ---
+        crew = movie.crew or {}
+        directors = ", ".join(p["name"] for p in crew.get("director", [])) or None
+        producers = ", ".join(p["name"] for p in crew.get("producer", [])) or None
+        writers = ", ".join(p["name"] for p in crew.get("writer", [])) or None
 
         return {
+            # Identifiers
             "slug": slug,
-            "title": movie.title,
-            "release_year": movie.year,
-            "runtime": getattr(movie, "runtime", None),
-            "genres": ", ".join(genres) if genres else None,
-            "description": getattr(movie, "description", None),
-            "tagline": getattr(movie, "tagline", None),
-            "letterboxd_avg_rating": movie.rating,
-            "directors": ", ".join(directors) if directors else None,
+            "movie_id": movie.id,
+            "letterboxd_url": movie.url,
             "imdb_id": movie.imdb_id,
             "tmdb_id": movie.tmdb_id,
-            "letterboxd_url": movie.url,
-            "imdb_url": getattr(movie, "imdb_link", None),
-            "tmdb_url": getattr(movie, "tmdb_link", None),
+            "imdb_url": movie.imdb_link,
+            "tmdb_url": movie.tmdb_link,
+            # Core info
+            "title": movie.title,
+            "original_title": movie.original_title,
+            "release_year": movie.year,
+            "runtime": movie.runtime,
+            "tagline": movie.tagline,
+            "description": movie.description,
+            "letterboxd_avg_rating": movie.rating,
+            # Media
+            "poster_url": movie.poster,
+            "banner_url": movie.banner,
+            # Genres / themes
+            "genres": genres,
+            "themes": themes,
+            "mini_themes": mini_themes,
+            # Crew
+            "directors": directors,
+            "producers": producers,
+            "writers": writers,
+            # Details — dynamic keys per type (e.g. studio, country, language)
+            **details_by_type,
         }
     except Exception as e:
         logger.error("Failed to fetch Movie data for slug '%s': %s", slug, e)

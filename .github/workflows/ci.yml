@@ -1,0 +1,95 @@
+name: CI
+
+# Runs on every push to main and on every pull request targeting main.
+# Four jobs run in parallel — total time = slowest job, not the sum.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Lint ────────────────────────────────────────────────────────────────────
+  # ruff replaces flake8 + black + isort in a single, fast tool.
+  # `ruff check` enforces code rules; `ruff format --check` verifies formatting
+  # without modifying files (CI should never silently rewrite your code).
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # Cache pip downloads keyed by requirements.txt hash.
+      # First run: downloads from PyPI and saves to GitHub's cache (~30s).
+      # Subsequent runs: restores from cache if requirements.txt unchanged (~2s).
+      # Cache automatically invalidates when you add or update a dependency.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  # ── Type checking ────────────────────────────────────────────────────────────
+  # mypy analyses type annotations statically and catches type errors before
+  # the code ever runs. `ignore_missing_imports` is set in pyproject.toml
+  # because letterboxdpy ships no type stubs.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - run: pip install -r requirements.txt mypy
+      - run: mypy main.py letterboxd_data_management/
+
+  # ── Security scanning ────────────────────────────────────────────────────────
+  # bandit scans Python source for common security issues (hardcoded secrets,
+  # shell injection, unsafe deserialization, etc.).
+  # `-ll` means "report medium and high severity only" — low-severity noise skipped.
+  # `--exclude .venv` avoids scanning third-party packages.
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - run: pip install bandit
+      - run: bandit -r . -ll --exclude .venv
+
+  # ── Tests ────────────────────────────────────────────────────────────────────
+  # No tests exist yet, but the job is wired in now.
+  # pytest will exit 0 when the test suite is empty, so CI stays green.
+  # Adding a test file later requires no changes here — pytest discovers it automatically.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - run: pip install -r requirements.txt pytest
+      - run: pytest tests/

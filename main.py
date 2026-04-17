@@ -161,7 +161,7 @@ def movies_management(get_letterboxd: bool) -> None:
     all_movies_df = all_movies_df.merge(data_letterboxd_df, on="slug", how="left", suffixes=("_user", ""))
 
     if "release_year_user" in all_movies_df.columns:
-        all_movies_df["release_year"] = all_movies_df["release_year"].fillna(all_movies_df["release_year_user"])
+        all_movies_df["release_year"] = all_movies_df["release_year"].fillna(all_movies_df["release_year_user"]).infer_objects()
         all_movies_df.drop(columns=["release_year_user"], inplace=True)
     if "name" in all_movies_df.columns:
         all_movies_df.drop(columns=["name"], inplace=True)

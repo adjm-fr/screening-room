@@ -1,0 +1,20 @@
+# Single config file for all dev tools.
+# ruff, mypy, and pytest all read from here — no more scattered .flake8 / mypy.ini / pytest.ini.
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# E/W = pycodestyle errors and warnings
+# F   = pyflakes (unused imports, undefined names, etc.)
+# I   = isort (import ordering)
+# UP  = pyupgrade (modernise syntax for the target Python version)
+select = ["E", "W", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.13"
+# letterboxdpy ships no type stubs, so mypy would error on every import without this.
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -47,7 +47,7 @@ def _fetch_movie(slug: str) -> dict | None:
         # movie.details is a list[dict] with keys: type, name, slug, url
         # Group by type and comma-join names; each type becomes its own column.
         details_grouped: dict[str, list[str]] = {}
-        for d in (movie.details or []):
+        for d in movie.details or []:
             t = d.get("type")
             if t:
                 details_grouped.setdefault(t, []).append(d["name"])
@@ -156,9 +156,7 @@ def get_letterboxd_data(all_slugs: list[str], output_path: str) -> pd.DataFrame:
     return data_df
 
 
-def refresh_letterboxd_data(
-    data_df: pd.DataFrame, slugs_to_refresh: list[str], output_path: str, config: dict
-) -> pd.DataFrame:
+def refresh_letterboxd_data(data_df: pd.DataFrame, slugs_to_refresh: list[str], output_path: str, config: dict) -> pd.DataFrame:
     """
     Update existing cached movie data for specified slugs.
 

@@ -5,18 +5,16 @@ The network (User, ldm) and file I/O are mocked throughout.
 Only the pure data-transformation logic is exercised here.
 """
 
-from unittest.mock import MagicMock, patch
-
 import pandas as pd
 import pytest
 
 # We test the pure helper logic by importing main and calling the parts
 # that don't touch the network. For the full orchestration flow we use
 # Click's test runner so we can control env vars cleanly.
-import main as m
 
 
 # ── all_movies_df construction ────────────────────────────────────────────────
+
 
 class TestAllMoviesDfConstruction:
     """
@@ -82,29 +80,35 @@ class TestAllMoviesDfConstruction:
 
 # ── duplicate slug guard ──────────────────────────────────────────────────────
 
+
 class TestDuplicateSlugGuard:
     """A slug appearing in both sources must raise ValueError."""
 
     def test_duplicate_raises(self):
-        df = pd.DataFrame([
-            {"slug": "slug-a", "source": "ratings"},
-            {"slug": "slug-a", "source": "watchlist"},
-        ])
+        df = pd.DataFrame(
+            [
+                {"slug": "slug-a", "source": "ratings"},
+                {"slug": "slug-a", "source": "watchlist"},
+            ]
+        )
         dup_slugs = df[df.duplicated("slug")]["slug"].tolist()
         with pytest.raises(ValueError, match="Duplicate slugs"):
             if dup_slugs:
                 raise ValueError(f"Duplicate slugs found across ratings and watchlist: {dup_slugs}")
 
     def test_no_duplicate_does_not_raise(self):
-        df = pd.DataFrame([
-            {"slug": "slug-a", "source": "ratings"},
-            {"slug": "slug-b", "source": "watchlist"},
-        ])
+        df = pd.DataFrame(
+            [
+                {"slug": "slug-a", "source": "ratings"},
+                {"slug": "slug-b", "source": "watchlist"},
+            ]
+        )
         dup_slugs = df[df.duplicated("slug")]["slug"].tolist()
         assert dup_slugs == []
 
 
 # ── enrichment merge ──────────────────────────────────────────────────────────
+
 
 class TestEnrichmentMerge:
     """
@@ -158,6 +162,7 @@ class TestEnrichmentMerge:
 
 # ── split by source ───────────────────────────────────────────────────────────
 
+
 class TestSplitBySource:
     """After enrichment, the DataFrame is split into ratings and watchlist."""
 
@@ -167,25 +172,30 @@ class TestSplitBySource:
         return ratings, watchlist
 
     def test_ratings_split_contains_only_ratings(self):
-        df = pd.DataFrame([
-            {"slug": "slug-a", "source": "ratings", "title": "A"},
-            {"slug": "slug-b", "source": "watchlist", "title": "B"},
-        ])
+        df = pd.DataFrame(
+            [
+                {"slug": "slug-a", "source": "ratings", "title": "A"},
+                {"slug": "slug-b", "source": "watchlist", "title": "B"},
+            ]
+        )
         ratings, _ = self._split(df)
         assert list(ratings["slug"]) == ["slug-a"]
         assert "source" not in ratings.columns
 
     def test_watchlist_split_contains_only_watchlist(self):
-        df = pd.DataFrame([
-            {"slug": "slug-a", "source": "ratings", "title": "A"},
-            {"slug": "slug-b", "source": "watchlist", "title": "B"},
-        ])
+        df = pd.DataFrame(
+            [
+                {"slug": "slug-a", "source": "ratings", "title": "A"},
+                {"slug": "slug-b", "source": "watchlist", "title": "B"},
+            ]
+        )
         _, watchlist = self._split(df)
         assert list(watchlist["slug"]) == ["slug-b"]
         assert "source" not in watchlist.columns
 
 
 # ── column reordering (_save helper) ─────────────────────────────────────────
+
 
 class TestColumnReordering:
     """
@@ -216,6 +226,7 @@ class TestColumnReordering:
 
 # ── stale slug identification ─────────────────────────────────────────────────
 
+
 class TestStaleSlugIdentification:
     """Age calculation and refresh_limit truncation."""
 
@@ -225,10 +236,12 @@ class TestStaleSlugIdentification:
 
     def test_slugs_older_than_threshold_flagged(self):
         now = pd.to_datetime("2025-01-01")
-        df = pd.DataFrame({
-            "slug": ["old", "fresh"],
-            "integration_date": pd.to_datetime(["2023-01-01", "2024-12-01"]),
-        })
+        df = pd.DataFrame(
+            {
+                "slug": ["old", "fresh"],
+                "integration_date": pd.to_datetime(["2023-01-01", "2024-12-01"]),
+            }
+        )
         result = self._old_slugs(df, 365, now)
         assert result == ["old"]
 
@@ -239,9 +252,11 @@ class TestStaleSlugIdentification:
 
     def test_no_stale_entries_returns_empty(self):
         now = pd.to_datetime("2025-01-01")
-        df = pd.DataFrame({
-            "slug": ["fresh"],
-            "integration_date": pd.to_datetime(["2024-12-31"]),
-        })
+        df = pd.DataFrame(
+            {
+                "slug": ["fresh"],
+                "integration_date": pd.to_datetime(["2024-12-31"]),
+            }
+        )
         result = self._old_slugs(df, 365, now)
         assert result == []

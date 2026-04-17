@@ -9,7 +9,6 @@ from datetime import date
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
-import pytest
 
 from letterboxd_data_management.get_letterboxd_data import (
     _fetch_movie,
@@ -17,8 +16,8 @@ from letterboxd_data_management.get_letterboxd_data import (
     refresh_letterboxd_data,
 )
 
-
 # ── _fetch_movie ──────────────────────────────────────────────────────────────
+
 
 class TestFetchMovieGenreFiltering:
     """Genre/theme/mini-theme splitting from the raw genres list."""
@@ -98,15 +97,18 @@ class TestFetchMovieGenreFiltering:
 
 # ── get_letterboxd_data ───────────────────────────────────────────────────────
 
+
 class TestGetLetterboxdData:
     """Cache delta logic and DataFrame construction."""
 
     def _make_cache(self, slugs: list[str]) -> pd.DataFrame:
-        return pd.DataFrame({
-            "slug": slugs,
-            "title": [f"Movie {s}" for s in slugs],
-            "integration_date": pd.to_datetime(date(2024, 1, 1)),
-        })
+        return pd.DataFrame(
+            {
+                "slug": slugs,
+                "title": [f"Movie {s}" for s in slugs],
+                "integration_date": pd.to_datetime(date(2024, 1, 1)),
+            }
+        )
 
     def test_no_new_slugs_returns_cache_unchanged(self, tmp_path):
         cache = self._make_cache(["slug-a", "slug-b"])
@@ -159,6 +161,7 @@ class TestGetLetterboxdData:
 
 # ── refresh_letterboxd_data ───────────────────────────────────────────────────
 
+
 class TestRefreshLetterboxdData:
     """Index-based update logic and integration_date refresh."""
 
@@ -173,10 +176,12 @@ class TestRefreshLetterboxdData:
         pd.testing.assert_frame_equal(result, df)
 
     def test_refreshed_slug_gets_updated_fields(self, tmp_path):
-        df = self._make_df([
-            {"slug": "slug-a", "title": "Old Title"},
-            {"slug": "slug-b", "title": "Untouched"},
-        ])
+        df = self._make_df(
+            [
+                {"slug": "slug-a", "title": "Old Title"},
+                {"slug": "slug-b", "title": "Untouched"},
+            ]
+        )
         cache_path = str(tmp_path / "cache.parquet")
         fresh = {"slug": "slug-a", "title": "New Title"}
 
@@ -186,10 +191,12 @@ class TestRefreshLetterboxdData:
         assert result.loc[result["slug"] == "slug-a", "title"].iloc[0] == "New Title"
 
     def test_non_refreshed_slug_is_preserved(self, tmp_path):
-        df = self._make_df([
-            {"slug": "slug-a", "title": "Old Title"},
-            {"slug": "slug-b", "title": "Untouched"},
-        ])
+        df = self._make_df(
+            [
+                {"slug": "slug-a", "title": "Old Title"},
+                {"slug": "slug-b", "title": "Untouched"},
+            ]
+        )
         cache_path = str(tmp_path / "cache.parquet")
         fresh = {"slug": "slug-a", "title": "New Title"}
 

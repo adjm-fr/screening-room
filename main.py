@@ -127,10 +127,7 @@ def movies_management(get_letterboxd: bool) -> None:
     slugs_to_refresh = set()
 
     # Flag movies that exceed age threshold for refresh
-    if (
-        data_letterboxd_df.shape[0] > 0
-        and "integration_date" in data_letterboxd_df.columns
-    ):
+    if data_letterboxd_df.shape[0] > 0 and "integration_date" in data_letterboxd_df.columns:
         now = pd.to_datetime(datetime.now())
         age_days = (now - data_letterboxd_df["integration_date"]).dt.days
         old_slugs = data_letterboxd_df[age_days > days_to_update]["slug"].tolist()
@@ -169,15 +166,38 @@ def movies_management(get_letterboxd: bool) -> None:
         all_movies_df.drop(columns=["integration_date"], inplace=True)
 
     ratings_column_order = [
-        "slug", "user_rating", "liked", "title", "release_year",
-        "letterboxd_avg_rating", "genres", "description", "tagline",
-        "directors", "runtime", "imdb_id", "tmdb_id",
-        "letterboxd_url", "imdb_url", "tmdb_url",
+        "slug",
+        "user_rating",
+        "liked",
+        "title",
+        "release_year",
+        "letterboxd_avg_rating",
+        "genres",
+        "description",
+        "tagline",
+        "directors",
+        "runtime",
+        "imdb_id",
+        "tmdb_id",
+        "letterboxd_url",
+        "imdb_url",
+        "tmdb_url",
     ]
     watchlist_column_order = [
-        "slug", "title", "release_year", "letterboxd_avg_rating",
-        "genres", "description", "tagline", "directors", "runtime",
-        "imdb_id", "tmdb_id", "letterboxd_url", "imdb_url", "tmdb_url",
+        "slug",
+        "title",
+        "release_year",
+        "letterboxd_avg_rating",
+        "genres",
+        "description",
+        "tagline",
+        "directors",
+        "runtime",
+        "imdb_id",
+        "tmdb_id",
+        "letterboxd_url",
+        "imdb_url",
+        "tmdb_url",
     ]
 
     def _save(df: pd.DataFrame, column_order: list, path: str) -> None:

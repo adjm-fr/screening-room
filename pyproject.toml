@@ -2,7 +2,7 @@
 # ruff, mypy, and pytest all read from here — no more scattered .flake8 / mypy.ini / pytest.ini.
 
 [tool.ruff]
-line-length = 100
+line-length = 130
 
 [tool.ruff.lint]
 # E/W = pycodestyle errors and warnings

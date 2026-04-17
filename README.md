@@ -269,18 +269,6 @@ The application gracefully handles transient API failures by skipping individual
 - Rating data may be sparse for new/obscure films
 - Poster and banner URLs may be unavailable for some movies
 
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Submit a pull request with clear description of changes
-
-## License
-
-[Specify your license here]
-
 ## Acknowledgments
 
 - [letterboxdpy](https://github.com/jarmstrong2/letterboxdpy) - Python Letterboxd API client

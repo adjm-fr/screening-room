@@ -39,11 +39,11 @@ logger = logging.getLogger(__name__)
 
 @click.command()
 @click.option(
-    "--get_letterboxd",
+    "--reset_database",
     is_flag=True,
-    help="Force a full refresh of the Letterboxd movie cache.",
+    help="Delete the Letterboxd movie cache and rebuild it from scratch.",
 )
-def movies_management(get_letterboxd: bool) -> None:
+def movies_management(reset_database: bool) -> None:
     """
     Main orchestration function for movie data management.
 
@@ -51,7 +51,7 @@ def movies_management(get_letterboxd: bool) -> None:
     of movie metadata, and produces enriched output parquet files.
 
     Args:
-        get_letterboxd: If True, forces a full refresh of the movie metadata cache.
+        reset_database: If True, deletes the existing movie metadata cache and rebuilds it from scratch.
 
     Raises:
         ValueError: If required environment variables (LETTERBOXD_USERNAME,
@@ -77,10 +77,35 @@ def movies_management(get_letterboxd: bool) -> None:
     config = {"days_to_update": days_to_update}
 
     logger.info("Fetching Letterboxd data for user: %s", username)
-    user = User(username)
+    try:
+        user = User(username)
+    except Exception as e:
+        logger.error("Failed to initialize Letterboxd user '%s': %s", username, e)
+        raise
 
-    films_dict = user.get_films()
-    watchlist_dict = user.get_watchlist()
+    try:
+        films_dict = user.get_films()
+    except Exception as e:
+        logger.error("Failed to fetch films for user '%s': %s", username, e)
+        raise
+
+    films_returned = len(films_dict.get("movies", {}))
+    films_expected = user.stats.get("films", 0) if isinstance(user.stats, dict) else 0
+    if films_expected > 0 and films_returned == 0:
+        logger.warning(
+            "get_films() returned 0 movies but stats reports %d — likely a scraping issue with the letterboxdpy library.",
+            films_expected,
+        )
+
+    try:
+        watchlist_dict = user.get_watchlist()
+    except Exception as e:
+        logger.error("Failed to fetch watchlist for user '%s': %s", username, e)
+        raise
+
+    if not films_dict.get("movies") or not watchlist_dict.get("data"):
+        logger.error("No films or watchlist data returned for user '%s'. Aborting.", username)
+        return
 
     # Build unified DataFrame from both sources before any API calls
     ratings_rows = [
@@ -116,8 +141,10 @@ def movies_management(get_letterboxd: bool) -> None:
     # Maintain a persistent cache of movie metadata to minimize API calls
     letterboxd_data_output_path = os.path.join(output_path, "data_letterboxd.parquet")
 
-    if get_letterboxd:
-        logger.info("User requested full refresh of Letterboxd movie cache.")
+    if reset_database:
+        if os.path.exists(letterboxd_data_output_path):
+            os.remove(letterboxd_data_output_path)
+            logger.info("Cache file deleted for full rebuild.")
     data_letterboxd_df = ldm.get_letterboxd_data(all_movies_df["slug"].tolist(), letterboxd_data_output_path)
 
     logger.info("Cache size: %s", data_letterboxd_df.shape)

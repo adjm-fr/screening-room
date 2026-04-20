@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables — never commit real .env
+.env
+!.env.example
+
+# Data files — produced by companion projects, not stored here
+*.parquet
+*.csv
+data/
+tmp/
+
+# Streamlit
+.streamlit/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# Ruff / mypy caches
+.ruff_cache/
+.mypy_cache/
+
+# pyenv / mise
+.python-version
+
+# uv
+uv.lock

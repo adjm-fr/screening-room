@@ -1,0 +1,11 @@
+streamlit>=1.36.0
+pandas>=2.3.3
+pyarrow>=15.0.0
+python-dotenv>=1.0.0
+streamlit-calendar>=0.6.0
+
+# dev / CI — not needed at runtime
+bandit==1.8.3
+mypy
+pytest
+ruff==0.15.11

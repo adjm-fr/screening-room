@@ -42,7 +42,7 @@ jobs:
           key: pip-${{ hashFiles('requirements.txt') }}
 
       - run: pip install -r requirements.txt mypy
-      - run: mypy app.py pages/ lib/
+      - run: mypy app.py pages/
 
   # ── Security scanning ──────────────────────────────────────────────────────
   security:

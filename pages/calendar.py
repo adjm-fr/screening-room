@@ -11,7 +11,6 @@ Also offers a Google Calendar CSV download.
 """
 
 import os
-import sys
 from pathlib import Path
 
 import pandas as pd
@@ -19,8 +18,6 @@ import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).parents[1] / ".env")
-sys.path.insert(0, str(Path(__file__).parents[1]))
-import lib.path_setup  # noqa: F401, E402
 
 
 def _paths() -> tuple[Path | None, Path | None]:
@@ -52,6 +49,8 @@ def _build_watchlist_showtimes(
 
     meta_cols = [c for c in ["slug", "title", "runtime", "genres", "letterboxd_avg_rating"] if c in watchlist_df.columns]
     wl_meta = watchlist_df[meta_cols].copy()
+    # Rename before merging to avoid collision with the scraper's own runtime column
+    wl_meta = wl_meta.rename(columns={"runtime": "runtime_minutes", "slug": "letterboxd_slug"})
     wl_meta["_key"] = wl_meta["title"].str.lower()
 
     showtimes_df["_key"] = showtimes_df["movie"].str.lower()
@@ -66,7 +65,7 @@ def _build_watchlist_showtimes(
             fallback = unmatched.merge(wl_meta.drop(columns=["title"]), on="_key", how="inner")
             merged = pd.concat([merged, fallback], ignore_index=True)
 
-    merged = merged.drop(columns=["_key"]).rename(columns={"runtime": "runtime_minutes", "slug": "letterboxd_slug"})
+    merged = merged.drop(columns=["_key"])
     return merged
 
 
@@ -218,11 +217,9 @@ def main() -> None:
                     continue
                 runtime = row.get("runtime_minutes")
                 try:
-                    runtime_min = int(float(runtime)) if runtime and not pd.isna(runtime) else None
+                    runtime_min = int(float(runtime)) if runtime and not pd.isna(runtime) else 120
                 except (ValueError, TypeError):
-                    runtime_min = None
-                if not runtime_min:
-                    continue
+                    runtime_min = 120
                 end_time = showtime + pd.Timedelta(minutes=runtime_min)
                 theater = _sanitize(row.get("theater_name") or row.get("theater_id", ""))
                 events.append(
@@ -247,8 +244,6 @@ def main() -> None:
                     file_name="watchlist_calendar.csv",
                     mime="text/csv",
                 )
-            else:
-                st.info("No events with known runtime to export.")
         except Exception as exc:
             st.error(f"Failed to generate calendar: {exc}")
 

@@ -59,6 +59,13 @@ class TestBuildWatchlistShowtimes:
         assert "runtime_minutes" in result.columns
         assert "runtime" not in result.columns
 
+    def test_runtime_from_watchlist_not_scraper(self):
+        # Both sources have a runtime column; watchlist value (155) must win
+        showtimes = _showtimes([{"movie": "Dune", "showtimes": "2025-01-01 18:00", "runtime": 999}])
+        watchlist = _watchlist([{"title": "Dune", "runtime": 155}])
+        result = _build_watchlist_showtimes(showtimes, watchlist)
+        assert result.iloc[0]["runtime_minutes"] == 155
+
     def test_slug_column_renamed(self):
         showtimes = _showtimes([{"movie": "Dune", "showtimes": "2025-01-01 18:00"}])
         watchlist = _watchlist([{"title": "Dune", "slug": "dune-2021"}])

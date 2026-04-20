@@ -1,0 +1,21 @@
+version: 2
+
+updates:
+  # Watches requirements.txt for outdated packages.
+  # When a new version is available, Dependabot opens a pull request automatically.
+  # CI then runs on that PR — if all jobs pass, you can merge with confidence.
+  #
+  # Weekly is the right cadence for a personal project:
+  # - Daily = too noisy, PRs pile up faster than you review them
+  # - Monthly = too slow for security patches
+  # - Weekly = one grouped PR per week, manageable
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      # Groups all pip updates into a single PR instead of one PR per package.
+      # One PR to review, one CI run, one merge.
+      dependencies:
+        patterns:
+          - "*"

@@ -15,11 +15,6 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parents[1] / ".env")
 
 
-def _showtimes_path() -> Path | None:
-    raw = os.getenv("ALLOCINE_OUTPUT_PATH")
-    return Path(raw) if raw else None
-
-
 @st.cache_data(ttl=300)
 def _load_showtimes(path: str) -> pd.DataFrame:
     return pd.read_parquet(path)
@@ -31,10 +26,11 @@ def main() -> None:
         "Upcoming showtimes scraped from Allocine. Head to **Watchlist Calendar** to see which ones match your watchlist."
     )
 
-    showtimes_path = _showtimes_path()
-    if not showtimes_path:
+    raw = os.getenv("ALLOCINE_OUTPUT_PATH")
+    if not raw:
         st.error("**ALLOCINE_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
         return
+    showtimes_path = Path(raw)
 
     if not showtimes_path.exists():
         st.warning("Showtimes data not found. Run `python main.py` in the `Allocine-Showtimes-Scraping` project first.")

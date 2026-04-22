@@ -54,8 +54,8 @@ jobs:
         with:
           python-version: "3.13"
 
-      - run: pip install bandit==1.8.3
-      - run: bandit -r . -ll --exclude .venv
+      - run: pip install bandit==1.9.4
+      - run: bandit -r . -ll --exclude ./.venv
 
   # ── Tests ──────────────────────────────────────────────────────────────────
   test:

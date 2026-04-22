@@ -34,9 +34,21 @@ Displays statistics from your Letterboxd ratings and watchlist:
 
 ### Watchlist Calendar (📅)
 
-Inner-joins your watchlist with current showtimes to show which watchlist movies are screening near you. Provides an interactive calendar view (requires `streamlit-calendar`) and a Google Calendar CSV export.
+Inner-joins your watchlist with current showtimes to show which watchlist movies are screening at your configured theaters. Provides an interactive calendar view (requires `streamlit-calendar`) and a Google Calendar CSV export.
 
 **Requires**: `MOVIES_OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH`
+
+### Recommendations (🤖)
+
+Chat interface powered by the [Hugging Face Inference API](https://huggingface.co/inference-api) (`Qwen/Qwen2.5-72B-Instruct`). Ask questions like:
+
+- "Which watchlist movies are showing this weekend?"
+- "Based on my taste, what should I prioritise?"
+- "What's showing at Cinéma X that I'd enjoy?"
+
+The page derives a taste profile from your Letterboxd ratings (top genres and directors by average rating) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted.
+
+**Requires**: `MOVIES_OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` + `HF_API_KEY`
 
 ## Architecture
 
@@ -49,8 +61,11 @@ movies_management          Allocine-Showtimes-Scraping
         └─────────────┬───────────────┘
                       │
               cinema_dashboard
-           ┌──────────┼──────────┐
-        Showtimes  Database  Calendar
+       ┌───────┬──────┼─────────┬─────────────┐
+  Showtimes  Database  Calendar  Recommendations
+                                      │
+                              Hugging Face API
+                          (Qwen/Qwen2.5-72B-Instruct)
 ```
 
 ## Setup
@@ -82,6 +97,7 @@ cp .env.example .env
 |----------|-------------|
 | `MOVIES_OUTPUT_PATH` | Directory containing the three `*_letterboxd.parquet` files from `movies_management` |
 | `ALLOCINE_OUTPUT_PATH` | Path to `showtimes.parquet` written by `Allocine-Showtimes-Scraping` |
+| `HF_API_KEY` | Hugging Face API token (free) — required for the Recommendations page. Create one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
 
 ### Running
 
@@ -107,6 +123,7 @@ Cache TTLs (configurable in page files):
 - Showtimes: 5 minutes
 - Movies Database: 5 minutes
 - Watchlist Calendar: 2 minutes
+- Recommendations: 2 minutes (data loading only — conversation history is session-scoped)
 
 ## Troubleshooting
 
@@ -120,12 +137,12 @@ Cache TTLs (configurable in page files):
 
 **`streamlit-calendar` not available** — the calendar page falls back to a table view. Install the package with `pip install streamlit-calendar`.
 
+**"HF_API_KEY is not set"** — add your Hugging Face token to `cinema_dashboard/.env`.
+
+**"No upcoming showtimes for your watchlist"** (Recommendations page) — either no watchlist movies are currently showing, or the showtimes data is stale. Re-run both scrapers to refresh.
+
 ## Known limitations
 
 - Only covers Allocine (French cinemas). Other regions require a different showtimes source.
 - Watchlist-to-showtimes matching is title-based (case-insensitive, with `original_title` fallback); edge cases like remakes may be missed.
 - Data is only as fresh as the last scraper run.
-
-## License
-
-[Specify your license here]

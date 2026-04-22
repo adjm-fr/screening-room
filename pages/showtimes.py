@@ -42,6 +42,8 @@ def main() -> None:
         st.error(f"Failed to load showtimes: {exc}")
         return
 
+    df = df[df["showtimes"] >= pd.Timestamp.now()]
+
     if "theater_name" not in df.columns:
         df["theater_name"] = ""
 

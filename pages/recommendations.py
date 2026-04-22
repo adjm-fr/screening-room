@@ -4,8 +4,13 @@ Recommendations page.
 Uses the Hugging Face Inference API to give personalised cinema recommendations based on:
 - The user's Letterboxd taste profile (derived from ratings_with_letterboxd.parquet)
 - Watchlist movies that are currently showing (inner-join of watchlist + showtimes)
+
+Also supports adding new Paris theaters via tool use: when the user mentions an unknown
+theater, the model calls search_theater(), results are returned as a tool message, and
+the user can confirm to append the theater to the theaters CSV.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -14,10 +19,29 @@ import streamlit as st
 from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
 
+from utils.allocine_search import _get_paris_cinemas, search_theaters
+from utils.theater_manager import append_theater, backfill_addresses, load_theater_ids, load_theaters
+
 load_dotenv(Path(__file__).parents[1] / ".env")
 
 MODEL = "Qwen/Qwen2.5-72B-Instruct"
 MAX_TOKENS = 1024
+
+SEARCH_THEATER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_theater",
+        "description": (
+            "Search Allocine for Paris cinemas matching a name. "
+            "Call this when the user asks about a theater that is not in the current showtimes data."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Theater name to search for"}},
+            "required": ["query"],
+        },
+    },
+}
 
 
 @st.cache_data(ttl=300)
@@ -41,23 +65,13 @@ def _taste_profile(ratings_df: pd.DataFrame) -> str:
         return "No rating history available."
 
     avg = ratings_df["user_rating"].mean()
-
     lines = [f"Average rating given: {avg:.1f}/5"]
 
     if "genres" in ratings_df.columns:
         exploded = (
-            ratings_df[["genres", "user_rating"]]
-            .dropna()
-            .assign(genre=lambda d: d["genres"].str.split(", "))
-            .explode("genre")
+            ratings_df[["genres", "user_rating"]].dropna().assign(genre=lambda d: d["genres"].str.split(", ")).explode("genre")
         )
-        top_genres = (
-            exploded.groupby("genre")["user_rating"]
-            .mean()
-            .sort_values(ascending=False)
-            .head(5)
-            .index.tolist()
-        )
+        top_genres = exploded.groupby("genre")["user_rating"].mean().sort_values(ascending=False).head(5).index.tolist()
         lines.append(f"Favourite genres: {', '.join(top_genres)}")
 
     if "directors" in ratings_df.columns:
@@ -115,24 +129,86 @@ def _showtimes_context(wl_shows: pd.DataFrame) -> str:
     return df.to_markdown(index=False)
 
 
-def _ask_hf(api_key: str, taste: str, showtimes_md: str, history: list[dict]) -> str:
+def _ask_hf(
+    api_key: str,
+    taste: str,
+    showtimes_md: str,
+    known_theaters: list[str],
+    history: list[dict],
+) -> tuple[str, list[dict] | None]:
+    """
+    Call the HF API. Handles one round of tool use if the model calls search_theater.
+    Returns (reply_text, pending_theaters) where pending_theaters is a list of
+    {id, name, address} dicts awaiting user confirmation, or None if no tool was called.
+
+    known_theaters is the explicit list of theater names in the current showtimes data.
+    It is injected into the system prompt so the model can reliably detect when the user
+    mentions a theater that is not yet tracked, and trigger the search_theater tool.
+    """
     client = InferenceClient(api_key=api_key)
+    known_theaters_str = "\n".join(f"- {t}" for t in sorted(known_theaters)) or "None"
     system_msg = {
         "role": "system",
         "content": (
             "You are a cinema recommendation assistant helping a film enthusiast choose what to watch.\n\n"
             f"User taste profile (from their Letterboxd ratings history):\n{taste}\n\n"
             f"These are the watchlist movies currently showing at their theaters:\n{showtimes_md}\n\n"
-            "Answer questions about these showtimes concisely. Refer to movies by title and include "
-            "the theater name and showtime when relevant. Do not invent movies or showtimes not listed above."
+            f"Known theaters (the only ones with showtimes data):\n{known_theaters_str}\n\n"
+            "Rules:\n"
+            "- Answer questions about the showtimes above concisely.\n"
+            "- Refer to movies by title and include theater name and showtime when relevant.\n"
+            "- Do not invent movies or showtimes not listed above.\n"
+            "- If the user mentions a theater that is NOT in the known theaters list above, "
+            "you MUST call search_theater before responding — do not say the theater has no data."
         ),
     }
-    response = client.chat.completions.create(
+    messages = [system_msg] + history
+
+    response = client.chat.completions.create(  # type: ignore[call-overload]
         model=MODEL,
-        messages=[system_msg] + history,
+        messages=messages,
         max_tokens=MAX_TOKENS,
+        tools=[SEARCH_THEATER_TOOL],
+        tool_choice="auto",
     )
-    return response.choices[0].message.content or ""
+
+    choice = response.choices[0]
+
+    # Model requested a tool call
+    if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+        tool_call = choice.message.tool_calls[0]
+        args = json.loads(tool_call.function.arguments)
+        results = search_theaters(args.get("query", ""))
+
+        # Feed tool result back to model
+        tool_result_msg = {
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "content": json.dumps(results),
+        }
+        assistant_msg = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                    },
+                }
+            ],
+        }
+        follow_up = client.chat.completions.create(
+            model=MODEL,
+            messages=messages + [assistant_msg, tool_result_msg],
+            max_tokens=MAX_TOKENS,
+        )
+        reply = follow_up.choices[0].message.content or ""
+        pending = results if results else None
+        return reply, pending
+
+    return choice.message.content or "", None
 
 
 def main() -> None:
@@ -142,6 +218,7 @@ def main() -> None:
     api_key = os.getenv("HF_API_KEY")
     movies_raw = os.getenv("MOVIES_OUTPUT_PATH")
     allocine_raw = os.getenv("ALLOCINE_OUTPUT_PATH")
+    theaters_csv_raw = os.getenv("ALLOCINE_INPUT_PATH")
 
     if not api_key:
         st.error("**HF_API_KEY** is not set in `cinema_dashboard/.env`.")
@@ -155,6 +232,16 @@ def main() -> None:
 
     movies_path = Path(movies_raw)
     showtimes_path = Path(allocine_raw)
+    theaters_csv = Path(theaters_csv_raw) if theaters_csv_raw else None
+
+    # Backfill missing addresses in the theaters CSV from the Allocine cache.
+    # Runs once per session (cheap: the cinema list is already cached in memory).
+    if theaters_csv and "theaters_backfilled" not in st.session_state:
+        try:
+            backfill_addresses(theaters_csv, _get_paris_cinemas())
+            st.session_state.theaters_backfilled = True
+        except Exception:
+            st.session_state.theaters_backfilled = True  # don't retry on error
 
     missing = []
     if not (movies_path / "watchlist_with_letterboxd.parquet").exists():
@@ -189,10 +276,40 @@ def main() -> None:
 
     taste = _taste_profile(ratings_df)
     showtimes_md = _showtimes_context(wl_shows)
+    # Union of theaters with current showtimes AND theaters already in the CSV.
+    # This prevents re-prompting to add a theater that was just added but not yet scraped.
+    showtime_theaters = set(wl_shows["theater_name"].dropna().unique()) if "theater_name" in wl_shows.columns else set()
+    csv_theaters = {t["name"] for t in load_theaters(theaters_csv)} if theaters_csv else set()
+    known_theaters = sorted(showtime_theaters | csv_theaters)
 
     if "rec_messages" not in st.session_state:
         st.session_state.rec_messages = []
+    if "pending_theaters" not in st.session_state:
+        st.session_state.pending_theaters = None
 
+    # ── Pending theater confirmation ──────────────────────────────────────────
+    if st.session_state.pending_theaters and theaters_csv:
+        st.divider()
+        st.markdown("**Found these Paris theaters — add one to your list?**")
+        for theater in st.session_state.pending_theaters:
+            col1, col2 = st.columns([4, 1])
+            col1.markdown(f"**{theater['name']}** — {theater.get('address', '')}")
+            if col2.button("Add", key=f"add_{theater['id']}"):
+                added = append_theater(theaters_csv, theater["id"], theater["name"], theater.get("address", ""))
+                if added:
+                    st.success(
+                        f"Added **{theater['name']}** to your theater list. Re-run the Allocine scraper to fetch its showtimes."
+                    )
+                else:
+                    st.info(f"**{theater['name']}** is already in your theater list.")
+                st.session_state.pending_theaters = None
+                st.rerun()
+        if st.button("Dismiss"):
+            st.session_state.pending_theaters = None
+            st.rerun()
+        st.divider()
+
+    # ── Chat history ──────────────────────────────────────────────────────────
     for msg in st.session_state.rec_messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
@@ -205,16 +322,22 @@ def main() -> None:
         with st.chat_message("assistant"):
             with st.spinner("Thinking…"):
                 try:
-                    reply = _ask_hf(api_key, taste, showtimes_md, st.session_state.rec_messages)
+                    reply, pending = _ask_hf(api_key, taste, showtimes_md, known_theaters, st.session_state.rec_messages)
                 except Exception as exc:
-                    reply = f"API error: {exc}"
+                    reply, pending = f"API error: {exc}", None
             st.markdown(reply)
 
         st.session_state.rec_messages.append({"role": "assistant", "content": reply})
+        if pending and theaters_csv:
+            existing_ids = load_theater_ids(theaters_csv)
+            new_pending = [t for t in pending if t["id"] not in existing_ids]
+            st.session_state.pending_theaters = new_pending if new_pending else None
+        st.rerun()
 
     if st.session_state.rec_messages:
         if st.button("Clear conversation"):
             st.session_state.rec_messages = []
+            st.session_state.pending_theaters = None
             st.rerun()
 
 

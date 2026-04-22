@@ -12,7 +12,7 @@ Cinema Dashboard is the orchestration layer for a three-project pipeline:
 | `Allocine-Showtimes-Scraping` | Scrapes French cinema showtimes to `showtimes.parquet` |
 | `cinema_dashboard` *(this repo)* | Reads both parquets and visualises the combined data |
 
-The dashboard **never produces data** — it only reads parquet files written by the other two projects.
+The dashboard is mostly read-only — it reads parquet files written by the other two projects. The one exception is the Recommendations page, which can append new theaters to the theaters CSV (`ALLOCINE_INPUT_PATH`) when the user confirms adding one via the chat.
 
 ## Pages
 
@@ -48,15 +48,21 @@ Chat interface powered by the [Hugging Face Inference API](https://huggingface.c
 
 The page derives a taste profile from your Letterboxd ratings (top genres and directors by average rating) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted.
 
-**Requires**: `MOVIES_OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` + `HF_API_KEY`
+#### Auto-adding theaters
+
+If you mention a theater that isn't already tracked, the model automatically searches Allocine for matching Paris cinemas (via tool use). You'll see "Add" buttons for each match — clicking one appends the theater to your theaters CSV (`ALLOCINE_INPUT_PATH`) as `theater_id,theater_name,address`. Re-run the Allocine scraper afterwards to fetch its showtimes.
+
+The page also backfills missing addresses for existing CSV entries on first load, using the Allocine API cache.
+
+**Requires**: `MOVIES_OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` + `ALLOCINE_INPUT_PATH` + `HF_API_KEY`
 
 ## Architecture
 
 ```
 movies_management          Allocine-Showtimes-Scraping
-        │                             │
-        │  watchlist_with_letterboxd  │  showtimes.parquet
-        │  ratings_with_letterboxd    │
+        │                             │    ▲
+        │  watchlist_with_letterboxd  │    │ theaters.csv (append)
+        │  ratings_with_letterboxd    │  showtimes.parquet
         │  data_letterboxd            │
         └─────────────┬───────────────┘
                       │
@@ -66,7 +72,28 @@ movies_management          Allocine-Showtimes-Scraping
                                       │
                               Hugging Face API
                           (Qwen/Qwen2.5-72B-Instruct)
+                                      │
+                               utils/allocine_search.py   ← theater lookup
+                               utils/theater_manager.py   ← CSV append
 ```
+
+## Project structure
+
+```
+cinema_dashboard/
+├── app.py                        # Streamlit entry point — registers all pages
+├── pages/
+│   ├── showtimes.py              # Showtimes page
+│   ├── database.py               # Movies Database page
+│   ├── calendar.py               # Watchlist Calendar page
+│   └── recommendations.py        # Recommendations chat page (LLM + tool use)
+├── utils/
+│   ├── allocine_search.py        # Searches Paris theaters via the Allocine API
+│   └── theater_manager.py        # Reads/appends to the theaters CSV
+└── .env                          # Local environment variables (not committed)
+```
+
+All pages are read-only with respect to parquet data. The only file the dashboard ever **writes** is the theaters CSV (`ALLOCINE_INPUT_PATH`), and only when the user explicitly confirms adding a theater via the Recommendations chat.
 
 ## Setup
 
@@ -97,6 +124,7 @@ cp .env.example .env
 |----------|-------------|
 | `MOVIES_OUTPUT_PATH` | Directory containing the three `*_letterboxd.parquet` files from `movies_management` |
 | `ALLOCINE_OUTPUT_PATH` | Path to `showtimes.parquet` written by `Allocine-Showtimes-Scraping` |
+| `ALLOCINE_INPUT_PATH` | Path to the theaters CSV read by `Allocine-Showtimes-Scraping` — also written to when adding a theater via the Recommendations chat |
 | `HF_API_KEY` | Hugging Face API token (free) — required for the Recommendations page. Create one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
 
 ### Running

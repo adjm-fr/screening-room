@@ -82,6 +82,7 @@ movies_management          Allocine-Showtimes-Scraping
 ```
 cinema_dashboard/
 ├── app.py                        # Streamlit entry point — registers all pages
+├── orchestrate.py                # CLI to refresh all data (runs both scrapers in parallel)
 ├── pages/
 │   ├── showtimes.py              # Showtimes page
 │   ├── database.py               # Movies Database page
@@ -137,17 +138,34 @@ make run
 
 ## Data refresh
 
-The dashboard reads cached parquet files. To refresh:
+Use `orchestrate.py` to refresh all data in one command. It runs both scrapers in parallel and only re-runs a scraper if its data is stale:
 
 ```bash
-# Letterboxd data
-cd ../movies_management && python main.py
+python orchestrate.py            # refresh stale data only
+python orchestrate.py --force    # always re-run both scrapers
+python orchestrate.py --days 7   # scrape 7 days of showtimes instead of 14
+python orchestrate.py --reset    # pass --reset to Allocine scraper (clears tmp cache)
+python orchestrate.py --reset-db # pass --reset_database to movies_management
+```
 
-# Showtimes
+**Staleness rules:**
+- `showtimes.parquet` — stale if last written before the most recent Tuesday (French cinemas publish the new week's programme on Tuesdays)
+- `watchlist_with_letterboxd.parquet` — stale if older than 7 days
+
+Output is prefixed per scraper so parallel output stays readable:
+```
+[allocine]   Fetching Le Champo...
+[letterboxd] Fetching watchlist for adjm...
+[allocine]   Done.
+```
+
+You can also run each scraper manually:
+```bash
+cd ../movies_management && python main.py
 cd ../Allocine-Showtimes-Scraping && python main.py
 ```
 
-Cache TTLs (configurable in page files):
+Cache TTLs for the Streamlit pages (configurable in page files):
 - Showtimes: 5 minutes
 - Movies Database: 5 minutes
 - Watchlist Calendar: 2 minutes

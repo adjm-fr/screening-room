@@ -125,6 +125,8 @@ def main() -> None:
         st.error(f"Failed to load data: {exc}")
         return
 
+    showtimes_df = showtimes_df[showtimes_df["showtimes"] >= pd.Timestamp.now()]
+
     wl_shows = _build_watchlist_showtimes(showtimes_df, watchlist_df)
 
     if wl_shows.empty:
@@ -139,21 +141,22 @@ def main() -> None:
         selected_theaters = st.sidebar.multiselect("Theaters", all_theaters, default=all_theaters)
         wl_shows = wl_shows[wl_shows["theater_name"].isin(selected_theaters)]
 
-    min_dt = pd.to_datetime(wl_shows["showtimes"]).min()
-    max_dt = pd.to_datetime(wl_shows["showtimes"]).max()
+    if not wl_shows.empty:
+        min_dt = pd.to_datetime(wl_shows["showtimes"]).min()
+        max_dt = pd.to_datetime(wl_shows["showtimes"]).max()
 
-    date_range = st.sidebar.date_input(
-        "Date range",
-        value=(min_dt.date(), max_dt.date()),
-        min_value=min_dt.date(),
-        max_value=max_dt.date(),
-    )
-    if isinstance(date_range, tuple) and len(date_range) == 2:
-        start_date, end_date = date_range
-        mask = (pd.to_datetime(wl_shows["showtimes"]).dt.date >= start_date) & (
-            pd.to_datetime(wl_shows["showtimes"]).dt.date <= end_date
+        date_range = st.sidebar.date_input(
+            "Date range",
+            value=(min_dt.date(), max_dt.date()),
+            min_value=min_dt.date(),
+            max_value=max_dt.date(),
         )
-        wl_shows = wl_shows[mask]
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date, end_date = date_range
+            mask = (pd.to_datetime(wl_shows["showtimes"]).dt.date >= start_date) & (
+                pd.to_datetime(wl_shows["showtimes"]).dt.date <= end_date
+            )
+            wl_shows = wl_shows[mask]
 
     # ── Summary ───────────────────────────────────────────────────────────────
     m1, m2 = st.columns(2)

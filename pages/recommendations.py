@@ -338,9 +338,7 @@ def main() -> None:
 
         with st.chat_message("assistant"):
             try:
-                stream, pending_ref = _ask_hf(
-                    api_key, taste, showtimes_md, known_theaters, st.session_state.rec_messages
-                )
+                stream, pending_ref = _ask_hf(api_key, taste, showtimes_md, known_theaters, st.session_state.rec_messages)
             except Exception as exc:
                 log.exception("HF API call failed")
                 reply = f"API error: {exc}"

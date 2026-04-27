@@ -6,35 +6,21 @@ statistics on ratings, watchlist, and cache freshness.
 """
 
 import os
-from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parents[1] / ".env")
-
-
-# str instead of Path: @st.cache_data hashes args; explicit str avoids
-# any platform-specific Path equality edge cases in the cache key.
-@st.cache_data(ttl=300)
-def _load_data(output_path: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    p = Path(output_path)
-    cache_df = pd.read_parquet(p / "data_letterboxd.parquet")
-    ratings_df = pd.read_parquet(p / "ratings_with_letterboxd.parquet")
-    watchlist_df = pd.read_parquet(p / "watchlist_with_letterboxd.parquet")
-    return cache_df, ratings_df, watchlist_df
+from utils.data_loader import get_paths, load_letterboxd_cache, load_ratings, load_watchlist
 
 
 def main() -> None:
     st.title("Movies Database")
     st.markdown("Statistics from your Letterboxd ratings and watchlist.")
 
-    raw = os.getenv("MOVIES_OUTPUT_PATH")
-    if not raw:
+    output_path, _, _ = get_paths()
+    if not output_path:
         st.error("**MOVIES_OUTPUT_PATH** is not set. Add it to `cinema_dashboard/.env` and restart.")
         return
-    output_path = Path(raw)
 
     missing = [
         f
@@ -46,7 +32,9 @@ def main() -> None:
         return
 
     try:
-        cache_df, ratings_df, watchlist_df = _load_data(str(output_path))
+        cache_df = load_letterboxd_cache(str(output_path))
+        ratings_df = load_ratings(str(output_path))
+        watchlist_df = load_watchlist(str(output_path))
     except Exception as exc:
         st.error(f"Failed to load data: {exc}")
         return

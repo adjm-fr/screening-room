@@ -13,17 +13,15 @@ the user can confirm to append the theater to the theaters CSV.
 import json
 import logging
 import os
-from pathlib import Path
+from collections.abc import Iterator
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 from huggingface_hub import InferenceClient
 
 from utils.allocine_search import _get_paris_cinemas, search_theaters
+from utils.data_loader import build_watchlist_showtimes, future_showtimes, get_paths, load_ratings, load_showtimes, load_watchlist
 from utils.theater_manager import append_theater, backfill_addresses, load_theater_ids, load_theaters
-
-load_dotenv(Path(__file__).parents[1] / ".env")
 
 log = logging.getLogger(__name__)
 
@@ -45,31 +43,6 @@ SEARCH_THEATER_TOOL = {
         },
     },
 }
-
-
-@st.cache_data(ttl=300)
-def _load_ratings(movies_output: str) -> pd.DataFrame:
-    log.debug("Loading ratings from %s", movies_output)
-    df = pd.read_parquet(Path(movies_output) / "ratings_with_letterboxd.parquet")
-    log.info("Ratings loaded: %d rows", len(df))
-    return df
-
-
-@st.cache_data(ttl=120)
-def _load_watchlist(movies_output: str) -> pd.DataFrame:
-    log.debug("Loading watchlist from %s", movies_output)
-    df = pd.read_parquet(Path(movies_output) / "watchlist_with_letterboxd.parquet")
-    log.info("Watchlist loaded: %d rows", len(df))
-    return df
-
-
-@st.cache_data(ttl=120)
-def _load_showtimes(showtimes_path: str) -> pd.DataFrame:
-    log.debug("Loading showtimes from %s", showtimes_path)
-    df = pd.read_parquet(showtimes_path)
-    n_theaters = df["theater_name"].nunique() if "theater_name" in df.columns else 0
-    log.info("Showtimes loaded: %d rows, %d theaters", len(df), n_theaters)
-    return df
 
 
 def _taste_profile(ratings_df: pd.DataFrame) -> str:
@@ -111,39 +84,6 @@ def _taste_profile(ratings_df: pd.DataFrame) -> str:
     return profile
 
 
-def _build_watchlist_showtimes(
-    showtimes_df: pd.DataFrame,
-    watchlist_df: pd.DataFrame,
-) -> pd.DataFrame:
-    """Same join logic as calendar.py."""
-    showtimes_df = showtimes_df.copy()
-    watchlist_df = watchlist_df.copy()
-
-    log.debug("Building watchlist-showtimes join: %d showtimes × %d watchlist entries", len(showtimes_df), len(watchlist_df))
-
-    meta_cols = [c for c in ["slug", "title", "runtime", "genres", "letterboxd_avg_rating"] if c in watchlist_df.columns]
-    wl_meta = watchlist_df[meta_cols].copy()
-    wl_meta = wl_meta.rename(columns={"runtime": "runtime_minutes", "slug": "letterboxd_slug"})
-    wl_meta["_key"] = wl_meta["title"].str.lower()
-
-    showtimes_df["_key"] = showtimes_df["movie"].str.lower()
-    merged = showtimes_df.merge(wl_meta.drop(columns=["title"]), on="_key", how="inner")
-    log.debug("Primary title match: %d rows (%d unique movies)", len(merged), merged["_key"].nunique())
-
-    if "original_title" in showtimes_df.columns:
-        unmatched = showtimes_df[~showtimes_df["_key"].isin(merged["_key"])]
-        if not unmatched.empty:
-            unmatched = unmatched.copy()
-            unmatched["_key"] = unmatched["original_title"].str.lower()
-            fallback = unmatched.merge(wl_meta.drop(columns=["title"]), on="_key", how="inner")
-            log.debug("Fallback original_title match: %d additional rows", len(fallback))
-            merged = pd.concat([merged, fallback], ignore_index=True)
-
-    n_movies = merged["movie"].nunique() if "movie" in merged.columns else 0
-    log.info("Watchlist-showtimes join result: %d rows, %d unique movies", len(merged), n_movies)
-    return merged.drop(columns=["_key"])
-
-
 def _showtimes_context(wl_shows: pd.DataFrame) -> str:
     wanted = ["movie", "theater_name", "showtimes", "genres", "letterboxd_avg_rating", "runtime_minutes", "director"]
     display_cols = [c for c in wanted if c in wl_shows.columns]
@@ -157,18 +97,26 @@ def _ask_hf(
     showtimes_md: str,
     known_theaters: list[str],
     history: list[dict],
-) -> tuple[str, list[dict] | None]:
+) -> tuple[Iterator[str], list]:
     """
-    Call the HF API. Handles one round of tool use if the model calls search_theater.
-    Returns (reply_text, pending_theaters) where pending_theaters is a list of
-    {id, name, address} dicts awaiting user confirmation, or None if no tool was called.
+    Stream a response from the HF API, handling one round of tool use if the model
+    calls search_theater.
 
-    known_theaters is the explicit list of theater names in the current showtimes data.
-    It is injected into the system prompt so the model can reliably detect when the user
-    mentions a theater that is not yet tracked, and trigger the search_theater tool.
+    Returns (text_stream, pending_ref) where:
+    - text_stream is a generator of string chunks suitable for st.write_stream()
+    - pending_ref is a single-element list; after the generator is exhausted,
+      pending_ref[0] holds either a list of {id, name, address} dicts awaiting user
+      confirmation, or None if no tool was called.
+
+    The two-element return keeps the call site simple: consume the stream first
+    (st.write_stream blocks until done), then read pending_ref[0].
+
+    known_theaters is injected into the system prompt so the model can detect unknown
+    theaters and trigger the search_theater tool reliably.
     """
     log.debug("Calling HF API — model: %s, history length: %d messages", MODEL, len(history))
     log.debug("Known theaters passed to model: %s", known_theaters)
+
     client = InferenceClient(api_key=api_key)
     known_theaters_str = "\n".join(f"- {t}" for t in sorted(known_theaters)) or "None"
     system_msg = {
@@ -188,58 +136,88 @@ def _ask_hf(
     }
     messages = [system_msg] + history
 
-    response = client.chat.completions.create(  # type: ignore[call-overload]
-        model=MODEL,
-        messages=messages,
-        max_tokens=MAX_TOKENS,
-        tools=[SEARCH_THEATER_TOOL],
-        tool_choice="auto",
-    )
+    # pending_ref[0] is populated by the generator after it finishes streaming.
+    # Using a list so the generator closure can write back to the caller.
+    pending_ref: list[list[dict] | None] = [None]
 
-    choice = response.choices[0]
-    log.debug("HF API response — finish_reason: %s", choice.finish_reason)
+    def _generate() -> Iterator[str]:
+        # Stream the first call; accumulate tool-call deltas without yielding them
+        # (tool calls produce no visible content — the text comes in the follow-up).
+        tool_call_id = ""
+        tool_call_name = ""
+        tool_call_args = ""
+        is_tool_call = False
 
-    # Model requested a tool call
-    if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
-        tool_call = choice.message.tool_calls[0]
-        args = json.loads(tool_call.function.arguments)
+        stream = client.chat.completions.create(  # type: ignore[call-overload]
+            model=MODEL,
+            messages=messages,
+            max_tokens=MAX_TOKENS,
+            tools=[SEARCH_THEATER_TOOL],  # type: ignore[arg-type]
+            tool_choice="auto",
+            stream=True,
+        )
+
+        for chunk in stream:
+            delta = chunk.choices[0].delta
+            if delta.content:
+                yield delta.content
+            if delta.tool_calls:
+                is_tool_call = True
+                for tc in delta.tool_calls:
+                    if tc.id:
+                        tool_call_id = tc.id
+                    if tc.function:
+                        tool_call_name += tc.function.name or ""
+                        tool_call_args += tc.function.arguments or ""
+
+        if not is_tool_call:
+            log.debug("Stream complete — no tool call")
+            return
+
+        # Tool was called: execute it, then stream the follow-up response.
+        args = json.loads(tool_call_args)
         query = args.get("query", "")
         log.info("Tool call: search_theater(query=%r)", query)
         results = search_theaters(query)
         log.info("search_theater returned %d result(s): %s", len(results), [r.get("name") for r in results])
 
-        # Feed tool result back to model
-        tool_result_msg = {
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "content": json.dumps(results),
-        }
         assistant_msg = {
             "role": "assistant",
             "tool_calls": [
                 {
-                    "id": tool_call.id,
+                    "id": tool_call_id,
                     "type": "function",
-                    "function": {
-                        "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments,
-                    },
+                    "function": {"name": tool_call_name, "arguments": tool_call_args},
                 }
             ],
         }
+        tool_result_msg = {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": json.dumps(results),
+        }
+
         follow_up = client.chat.completions.create(
             model=MODEL,
             messages=messages + [assistant_msg, tool_result_msg],
             max_tokens=MAX_TOKENS,
+            stream=True,
         )
-        reply = follow_up.choices[0].message.content or ""
-        pending = results if results else None
-        log.debug("Follow-up reply length: %d chars, pending theaters: %s", len(reply), [r.get("name") for r in (pending or [])])
-        return reply, pending
+        total_chars = 0
+        for chunk in follow_up:
+            delta_content = chunk.choices[0].delta.content
+            if delta_content:
+                total_chars += len(delta_content)
+                yield delta_content
 
-    reply = choice.message.content or ""
-    log.debug("Direct reply length: %d chars (no tool call)", len(reply))
-    return reply, None
+        pending_ref[0] = results if results else None
+        log.debug(
+            "Follow-up stream complete — %d chars, pending theaters: %s",
+            total_chars,
+            [r.get("name") for r in (pending_ref[0] or [])],
+        )
+
+    return _generate(), pending_ref
 
 
 def main() -> None:
@@ -247,23 +225,17 @@ def main() -> None:
     st.markdown("Ask about watchlist movies that are currently showing.")
 
     api_key = os.getenv("HF_API_KEY")
-    movies_raw = os.getenv("MOVIES_OUTPUT_PATH")
-    allocine_raw = os.getenv("ALLOCINE_OUTPUT_PATH")
-    theaters_csv_raw = os.getenv("ALLOCINE_INPUT_PATH")
+    movies_path, showtimes_path, theaters_csv = get_paths()
 
     if not api_key:
         st.error("**HF_API_KEY** is not set in `cinema_dashboard/.env`.")
         return
-    if not movies_raw:
+    if not movies_path:
         st.error("**MOVIES_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
         return
-    if not allocine_raw:
+    if not showtimes_path:
         st.error("**ALLOCINE_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
         return
-
-    movies_path = Path(movies_raw)
-    showtimes_path = Path(allocine_raw)
-    theaters_csv = Path(theaters_csv_raw) if theaters_csv_raw else None
 
     # Backfill missing addresses in the theaters CSV from the Allocine cache.
     # Runs once per session (cheap: the cinema list is already cached in memory).
@@ -290,15 +262,15 @@ def main() -> None:
         return
 
     try:
-        ratings_df = _load_ratings(str(movies_path))
-        watchlist_df = _load_watchlist(str(movies_path))
-        showtimes_df = _load_showtimes(str(showtimes_path))
+        ratings_df = load_ratings(str(movies_path))
+        watchlist_df = load_watchlist(str(movies_path))
+        showtimes_df = load_showtimes(str(showtimes_path))
     except Exception as exc:
         st.error(f"Failed to load data: {exc}")
         return
 
-    showtimes_df = showtimes_df[showtimes_df["showtimes"] >= pd.Timestamp.now()]
-    wl_shows = _build_watchlist_showtimes(showtimes_df, watchlist_df)
+    showtimes_df = future_showtimes(showtimes_df)
+    wl_shows = build_watchlist_showtimes(showtimes_df, watchlist_df)
 
     if wl_shows.empty:
         st.info("No upcoming showtimes found for your watchlist movies. Nothing to recommend.")

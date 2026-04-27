@@ -5,19 +5,9 @@ Reads showtimes.parquet produced by Allocine-Showtimes-Scraping and displays
 results by theater. Run the scraper CLI to refresh the data.
 """
 
-import os
-from pathlib import Path
-
-import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parents[1] / ".env")
-
-
-@st.cache_data(ttl=300)
-def _load_showtimes(path: str) -> pd.DataFrame:
-    return pd.read_parquet(path)
+from utils.data_loader import future_showtimes, get_paths, load_showtimes
 
 
 def main() -> None:
@@ -26,23 +16,22 @@ def main() -> None:
         "Upcoming showtimes scraped from Allocine. Head to **Watchlist Calendar** to see which ones match your watchlist."
     )
 
-    raw = os.getenv("ALLOCINE_OUTPUT_PATH")
-    if not raw:
+    _, showtimes_path, _ = get_paths()
+    if not showtimes_path:
         st.error("**ALLOCINE_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
         return
-    showtimes_path = Path(raw)
 
     if not showtimes_path.exists():
         st.warning("Showtimes data not found. Run `python main.py` in the `Allocine-Showtimes-Scraping` project first.")
         return
 
     try:
-        df = _load_showtimes(str(showtimes_path))
+        df = load_showtimes(str(showtimes_path))
     except Exception as exc:
         st.error(f"Failed to load showtimes: {exc}")
         return
 
-    df = df[df["showtimes"] >= pd.Timestamp.now()]
+    df = future_showtimes(df)
 
     if "theater_name" not in df.columns:
         df["theater_name"] = ""

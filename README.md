@@ -73,6 +73,7 @@ movies_management          Allocine-Showtimes-Scraping
                               Hugging Face API
                           (Qwen/Qwen2.5-72B-Instruct)
                                       │
+                               utils/data_loader.py       ← cached parquet readers
                                utils/allocine_search.py   ← theater lookup
                                utils/theater_manager.py   ← CSV append
 ```
@@ -89,10 +90,13 @@ cinema_dashboard/
 │   ├── calendar.py               # Watchlist Calendar page
 │   └── recommendations.py        # Recommendations chat page (LLM + tool use)
 ├── utils/
+│   ├── data_loader.py            # Cached parquet readers + watchlist↔showtimes join
 │   ├── allocine_search.py        # Searches Paris theaters via the Allocine API
 │   └── theater_manager.py        # Reads/appends to the theaters CSV
 └── .env                          # Local environment variables (not committed)
 ```
+
+All pages share `utils/data_loader.py` for parquet I/O and the watchlist↔showtimes join. Centralising the loaders means Streamlit's `@st.cache_data` keys on a single qualified function name, so each parquet is read once across all pages within the cache TTL — navigating between pages is a cache hit.
 
 All pages are read-only with respect to parquet data. The only file the dashboard ever **writes** is the theaters CSV (`ALLOCINE_INPUT_PATH`), and only when the user explicitly confirms adding a theater via the Recommendations chat.
 
@@ -165,11 +169,7 @@ cd ../movies_management && python main.py
 cd ../Allocine-Showtimes-Scraping && python main.py
 ```
 
-Cache TTLs for the Streamlit pages (configurable in page files):
-- Showtimes: 5 minutes
-- Movies Database: 5 minutes
-- Watchlist Calendar: 2 minutes
-- Recommendations: 2 minutes (data loading only — conversation history is session-scoped)
+Streamlit cache TTL is **5 minutes**, shared across all pages (`DATA_TTL_SECONDS` in [`utils/data_loader.py`](utils/data_loader.py)). Conversation history on the Recommendations page is session-scoped and not affected by the cache.
 
 ## Troubleshooting
 

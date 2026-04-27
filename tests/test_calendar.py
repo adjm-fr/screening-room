@@ -1,4 +1,4 @@
-"""Tests for pure logic functions in pages/calendar.py."""
+"""Tests for the watchlist↔showtimes join and the calendar event builder."""
 
 import sys
 from pathlib import Path
@@ -6,7 +6,8 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from pages.calendar import _build_watchlist_showtimes, _to_calendar_events  # noqa: E402
+from pages.calendar import _to_calendar_events  # noqa: E402
+from utils.data_loader import build_watchlist_showtimes  # noqa: E402
 
 
 def _showtimes(rows: list[dict]) -> pd.DataFrame:
@@ -19,27 +20,27 @@ def _watchlist(rows: list[dict]) -> pd.DataFrame:
     return pd.DataFrame([{**defaults, **r} for r in rows])
 
 
-# ── _build_watchlist_showtimes ────────────────────────────────────────────────
+# ── build_watchlist_showtimes ─────────────────────────────────────────────────
 
 
 class TestBuildWatchlistShowtimes:
     def test_exact_match(self):
         showtimes = _showtimes([{"movie": "Dune", "showtimes": "2025-01-01 18:00"}])
         watchlist = _watchlist([{"title": "Dune"}])
-        result = _build_watchlist_showtimes(showtimes, watchlist)
+        result = build_watchlist_showtimes(showtimes, watchlist)
         assert len(result) == 1
         assert result.iloc[0]["movie"] == "Dune"
 
     def test_case_insensitive_match(self):
         showtimes = _showtimes([{"movie": "DUNE", "showtimes": "2025-01-01 18:00"}])
         watchlist = _watchlist([{"title": "dune"}])
-        result = _build_watchlist_showtimes(showtimes, watchlist)
+        result = build_watchlist_showtimes(showtimes, watchlist)
         assert len(result) == 1
 
     def test_no_match_returns_empty(self):
         showtimes = _showtimes([{"movie": "Dune", "showtimes": "2025-01-01 18:00"}])
         watchlist = _watchlist([{"title": "Oppenheimer"}])
-        result = _build_watchlist_showtimes(showtimes, watchlist)
+        result = build_watchlist_showtimes(showtimes, watchlist)
         assert result.empty
 
     def test_original_title_fallback(self):
@@ -49,13 +50,13 @@ class TestBuildWatchlistShowtimes:
             ]
         )
         watchlist = _watchlist([{"title": "Dune: Deuxième Partie"}])
-        result = _build_watchlist_showtimes(showtimes, watchlist)
+        result = build_watchlist_showtimes(showtimes, watchlist)
         assert len(result) == 1
 
     def test_runtime_column_renamed(self):
         showtimes = _showtimes([{"movie": "Dune", "showtimes": "2025-01-01 18:00"}])
         watchlist = _watchlist([{"title": "Dune", "runtime": 155}])
-        result = _build_watchlist_showtimes(showtimes, watchlist)
+        result = build_watchlist_showtimes(showtimes, watchlist)
         assert "runtime_minutes" in result.columns
         assert "runtime" not in result.columns
 
@@ -63,13 +64,13 @@ class TestBuildWatchlistShowtimes:
         # Both sources have a runtime column; watchlist value (155) must win
         showtimes = _showtimes([{"movie": "Dune", "showtimes": "2025-01-01 18:00", "runtime": 999}])
         watchlist = _watchlist([{"title": "Dune", "runtime": 155}])
-        result = _build_watchlist_showtimes(showtimes, watchlist)
+        result = build_watchlist_showtimes(showtimes, watchlist)
         assert result.iloc[0]["runtime_minutes"] == 155
 
     def test_slug_column_renamed(self):
         showtimes = _showtimes([{"movie": "Dune", "showtimes": "2025-01-01 18:00"}])
         watchlist = _watchlist([{"title": "Dune", "slug": "dune-2021"}])
-        result = _build_watchlist_showtimes(showtimes, watchlist)
+        result = build_watchlist_showtimes(showtimes, watchlist)
         assert "letterboxd_slug" in result.columns
         assert "slug" not in result.columns
 
@@ -81,13 +82,13 @@ class TestBuildWatchlistShowtimes:
             ]
         )
         watchlist = _watchlist([{"title": "Dune"}])
-        result = _build_watchlist_showtimes(showtimes, watchlist)
+        result = build_watchlist_showtimes(showtimes, watchlist)
         assert len(result) == 2
 
     def test_key_column_not_in_output(self):
         showtimes = _showtimes([{"movie": "Dune", "showtimes": "2025-01-01 18:00"}])
         watchlist = _watchlist([{"title": "Dune"}])
-        result = _build_watchlist_showtimes(showtimes, watchlist)
+        result = build_watchlist_showtimes(showtimes, watchlist)
         assert "_key" not in result.columns
 
 

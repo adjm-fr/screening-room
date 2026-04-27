@@ -14,6 +14,7 @@ import json
 import logging
 import os
 from collections.abc import Iterator
+from typing import cast
 
 import pandas as pd
 import streamlit as st
@@ -158,6 +159,10 @@ def _ask_hf(
         )
 
         for chunk in stream:
+            # The provider can emit a final chunk carrying only usage stats
+            # (no choices). Skip those so we don't index into an empty list.
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta
             if delta.content:
                 yield delta.content
@@ -205,6 +210,8 @@ def _ask_hf(
         )
         total_chars = 0
         for chunk in follow_up:
+            if not chunk.choices:
+                continue
             delta_content = chunk.choices[0].delta.content
             if delta_content:
                 total_chars += len(delta_content)
@@ -330,13 +337,21 @@ def main() -> None:
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("Thinking…"):
-                try:
-                    reply, pending = _ask_hf(api_key, taste, showtimes_md, known_theaters, st.session_state.rec_messages)
-                except Exception as exc:
-                    log.exception("HF API call failed")
-                    reply, pending = f"API error: {exc}", None
-            st.markdown(reply)
+            try:
+                stream, pending_ref = _ask_hf(
+                    api_key, taste, showtimes_md, known_theaters, st.session_state.rec_messages
+                )
+            except Exception as exc:
+                log.exception("HF API call failed")
+                reply = f"API error: {exc}"
+                pending: list[dict] | None = None
+                st.markdown(reply)
+            else:
+                # st.write_stream blocks until the generator is exhausted, then
+                # returns the concatenated text. Only after it returns is
+                # pending_ref[0] populated by the generator's closure.
+                reply = cast(str, st.write_stream(stream))
+                pending = pending_ref[0]
 
         st.session_state.rec_messages.append({"role": "assistant", "content": reply})
         if pending and theaters_csv:

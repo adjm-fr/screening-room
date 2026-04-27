@@ -44,3 +44,6 @@ tmp/
 
 # uv
 uv.lock
+
+# Notebooks — local experimentation, never committed
+notebooks/

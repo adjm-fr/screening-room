@@ -23,4 +23,5 @@ typing_extensions==4.15.0
 bandit
 mypy
 pytest
+pytest-mock
 ruff

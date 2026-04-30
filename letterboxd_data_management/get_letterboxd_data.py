@@ -5,8 +5,8 @@ This module handles fetching movie metadata from Letterboxd using the letterboxd
 with efficient caching and parallel request processing.
 """
 
+import asyncio
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import pandas as pd
@@ -95,6 +95,13 @@ def _fetch_movie(slug: str) -> dict | None:
         return None
 
 
+async def _fetch_all(slugs: list[str]) -> list[dict | None]:
+    """Run _fetch_movie for every slug concurrently via asyncio's default ThreadPoolExecutor (min(32, cpu_count+4) threads)."""
+    async with asyncio.TaskGroup() as tg:
+        tasks = [tg.create_task(asyncio.to_thread(_fetch_movie, slug)) for slug in slugs]
+    return [t.result() for t in tasks]
+
+
 def get_letterboxd_data(all_slugs: list[str], output_path: str) -> pd.DataFrame:
     """
     Fetch and cache Letterboxd movie data.
@@ -126,21 +133,12 @@ def get_letterboxd_data(all_slugs: list[str], output_path: str) -> pd.DataFrame:
     logger.info("New slugs to fetch: %d", len(new_slugs))
 
     if new_slugs:
+        fetched = asyncio.run(_fetch_all(new_slugs))
         results = []
-        # Parallel fetch with thread pool (API I/O bound)
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(_fetch_movie, slug): slug for slug in new_slugs}
-            logger.info("Submitted %d fetch jobs to executor", len(futures))
-            for future in as_completed(futures):
-                slug = futures[future]
-                try:
-                    result = future.result()
-                except Exception as e:
-                    logger.error("Unhandled exception for slug '%s': %s", slug, e)
-                    result = None
-                if result:
-                    results.append(result)
-                logger.info("Fetched %d/%d (%s)", len(results), len(new_slugs), slug)
+        for slug, result in zip(new_slugs, fetched):
+            if result:
+                results.append(result)
+            logger.info("Fetched %d/%d (%s)", len(results), len(new_slugs), slug)
 
         if results:
             new_df = pd.DataFrame(results)
@@ -178,21 +176,13 @@ def refresh_letterboxd_data(data_df: pd.DataFrame, slugs_to_refresh: list[str], 
         return data_df
 
     logger.info("Refreshing %d movies", len(slugs_to_refresh))
+
+    fetched = asyncio.run(_fetch_all(slugs_to_refresh))
     results = []
-    # Parallel refresh with thread pool
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(_fetch_movie, slug): slug for slug in slugs_to_refresh}
-        logger.info("Submitted %d refresh jobs to executor", len(futures))
-        for future in as_completed(futures):
-            slug = futures[future]
-            try:
-                result = future.result()
-            except Exception as e:
-                logger.error("Unhandled exception for slug '%s': %s", slug, e)
-                result = None
-            if result:
-                results.append(result)
-            logger.info("Refreshed %d/%d (%s)", len(results), len(slugs_to_refresh), slug)
+    for slug, result in zip(slugs_to_refresh, fetched):
+        if result:
+            results.append(result)
+        logger.info("Refreshed %d/%d (%s)", len(results), len(slugs_to_refresh), slug)
 
     if results:
         now = pd.to_datetime(datetime.now().date())

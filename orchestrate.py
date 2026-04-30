@@ -16,10 +16,8 @@ Usage:
 """
 
 import argparse
-import subprocess
+import asyncio
 import sys
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -71,44 +69,40 @@ def is_watchlist_stale(path: Path) -> bool:
 
 # ── Scraper runner ────────────────────────────────────────────────────────────
 
-_print_lock = threading.Lock()
 
-
-def _prefixed_print(label: str, line: str) -> None:
-    """Print a scraper output line with a bracketed label, thread-safe."""
-    with _print_lock:
-        print(f"[{label}] {line}", flush=True)
-
-
-def run_scraper(label: str, cmd: list[str], cwd: Path) -> bool:
+async def run_scraper(label: str, cmd: list[str], cwd: Path) -> bool:
     """Run a scraper subprocess, streaming its output prefixed with [label].
 
     Returns True on success (exit code 0), False otherwise.
     stderr is merged into stdout so all output is captured in order.
     """
-    _prefixed_print(label, f"Starting: {' '.join(cmd)}")
+    print(f"[{label}] Starting: {' '.join(cmd)}", flush=True)
     try:
-        proc = subprocess.Popen(
-            cmd,
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
             cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
         )
         assert proc.stdout is not None
-        for line in proc.stdout:
-            _prefixed_print(label, line.rstrip())
-        proc.wait()
+        async for line in proc.stdout:
+            print(f"[{label}] {line.decode().rstrip()}", flush=True)
+        await proc.wait()
     except Exception as exc:
-        _prefixed_print(label, f"ERROR: {exc}")
+        print(f"[{label}] ERROR: {exc}", flush=True)
         return False
 
     if proc.returncode == 0:
-        _prefixed_print(label, "Done.")
+        print(f"[{label}] Done.", flush=True)
     else:
-        _prefixed_print(label, f"Failed (exit code {proc.returncode}).")
+        print(f"[{label}] Failed (exit code {proc.returncode}).", flush=True)
     return proc.returncode == 0
+
+
+async def _run_all(tasks: list[tuple[str, list[str], Path]]) -> dict[str, bool]:
+    async with asyncio.TaskGroup() as tg:
+        futures = {label: tg.create_task(run_scraper(label, cmd, cwd)) for label, cmd, cwd in tasks}
+    return {label: task.result() for label, task in futures.items()}
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -179,12 +173,7 @@ def main() -> int:
     print(f"\nRunning {len(tasks)} scraper(s) in parallel...\n")
 
     # ── Run in parallel ───────────────────────────────────────────────────────
-    results: dict[str, bool] = {}
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        future_to_label = {executor.submit(run_scraper, label, cmd, cwd): label for label, cmd, cwd in tasks}
-        for future in as_completed(future_to_label):
-            label = future_to_label[future]
-            results[label] = future.result()
+    results = asyncio.run(_run_all(tasks))
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print("\n── Summary ──────────────────────────────────────────")

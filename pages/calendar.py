@@ -34,7 +34,7 @@ def _to_calendar_events(df: pd.DataFrame) -> list[dict]:
 
         events.append(
             {
-                "title": row["movie"],
+                "title": row["french_title"],
                 "start": start_dt.isoformat(),
                 "end": end_dt.isoformat(),
                 "color": "#e63946",
@@ -107,7 +107,7 @@ def main() -> None:
 
     # ── Summary ───────────────────────────────────────────────────────────────
     m1, m2 = st.columns(2)
-    m1.metric("Watchlist movies with showtimes", wl_shows["movie"].nunique())
+    m1.metric("Watchlist movies with showtimes", wl_shows["french_title"].nunique())
     m2.metric("Total upcoming screenings", len(wl_shows))
 
     st.divider()
@@ -133,16 +133,16 @@ def main() -> None:
     except ImportError:
         st.info("Install `streamlit-calendar` for an interactive calendar view. Showing table instead.")
         table_df = (
-            wl_shows[["showtimes", "movie", "theater_name", "theater_id"]]
+            wl_shows[["showtimes", "french_title", "theater_name", "theater_id"]]
             .sort_values("showtimes")
-            .rename(columns={"showtimes": "Date & Time", "movie": "Movie", "theater_name": "Theater"})
+            .rename(columns={"showtimes": "Date & Time", "french_title": "Movie", "theater_name": "Theater"})
             .reset_index(drop=True)
         )
         st.dataframe(table_df, width="stretch")
 
     # ── Table view (always shown below calendar) ──────────────────────────────
     with st.expander("Show as table"):
-        display_cols = [c for c in ["showtimes", "movie", "theater_name", "director", "runtime_minutes"] if c in wl_shows.columns]
+        display_cols = [c for c in ["showtimes", "french_title", "theater_name", "runtime_minutes"] if c in wl_shows.columns]
         st.dataframe(wl_shows[display_cols].sort_values("showtimes").reset_index(drop=True), width="stretch")
 
     # ── Google Calendar CSV download ──────────────────────────────────────────
@@ -174,13 +174,13 @@ def main() -> None:
                 theater = _sanitize(row.get("theater_name") or row.get("theater_id", ""))
                 events.append(
                     {
-                        "Subject": _sanitize(row["movie"]),
+                        "Subject": _sanitize(row.get("letterboxd_title") or row["french_title"]),
                         "Start Date": showtime.strftime("%Y-%m-%d"),
                         "Start Time": showtime.strftime("%H:%M:%S"),
                         "End Date": end_time.strftime("%Y-%m-%d"),
                         "End Time": end_time.strftime("%H:%M:%S"),
                         "All Day Event": "False",
-                        "Description": f"Theater: {theater} | Director: {_sanitize(row.get('director') or 'N/A')}",
+                        "Description": f"Directors: {_sanitize(row.get('directors') or 'N/A')} | French title: {_sanitize(row['french_title'])}",
                         "Location": theater,
                         "Private": "False",
                     }

@@ -83,7 +83,12 @@ def main() -> None:
             ratings_df[["genres", "user_rating"]].dropna().assign(genre=lambda d: d["genres"].str.split(", ")).explode("genre")
         )
         top_genres = (
-            exploded_g.groupby("genre")["user_rating"].mean().sort_values(ascending=False).head(5).rename("avg_rating").reset_index()
+            exploded_g.groupby("genre")["user_rating"]
+            .mean()
+            .sort_values(ascending=False)
+            .head(5)
+            .rename("avg_rating")
+            .reset_index()
         )
         with tcol1:
             st.caption("Top 5 genres by average rating")

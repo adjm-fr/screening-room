@@ -55,7 +55,7 @@ SEARCH_THEATER_TOOL = {
 
 
 def _showtimes_context(wl_shows: pd.DataFrame) -> str:
-    wanted = ["movie", "theater_name", "showtimes", "genres", "letterboxd_avg_rating", "runtime_minutes", "director"]
+    wanted = ["french_title", "letterboxd_title", "theater_name", "showtimes", "genres", "letterboxd_avg_rating", "runtime_minutes", "directors"]
     display_cols = [c for c in wanted if c in wl_shows.columns]
     df = wl_shows[display_cols].sort_values("showtimes").drop_duplicates().reset_index(drop=True)
     return df.to_markdown(index=False)
@@ -252,7 +252,7 @@ def main() -> None:
         st.info("No upcoming showtimes found for your watchlist movies. Nothing to recommend.")
         return
 
-    n_movies = wl_shows["movie"].nunique()
+    n_movies = wl_shows["letterboxd_title"].nunique()
     n_screenings = len(wl_shows)
     st.caption(f"{n_movies} watchlist movies · {n_screenings} upcoming screenings across your theaters")
 

@@ -190,5 +190,5 @@ Streamlit cache TTL is **5 minutes**, shared across all pages (`DATA_TTL_SECONDS
 ## Known limitations
 
 - Only covers Allocine (French cinemas). Other regions require a different showtimes source.
-- Watchlist-to-showtimes matching is title-based (case-insensitive, with `original_title` fallback); edge cases like remakes may be missed.
+- Watchlist-to-showtimes matching uses `original_title` as the join key (falling back to the display title on either side), cross-checked against director names. Films sharing a title with different directors are handled, but films with significant metadata discrepancies between Allocine and Letterboxd may still be missed.
 - Data is only as fresh as the last scraper run.

@@ -21,7 +21,15 @@ import streamlit as st
 from huggingface_hub import InferenceClient
 
 from utils.allocine_search import _get_paris_cinemas, search_theaters
-from utils.data_loader import build_watchlist_showtimes, future_showtimes, get_paths, load_ratings, load_showtimes, load_watchlist
+from utils.data_loader import (
+    build_taste_profile,
+    build_watchlist_showtimes,
+    future_showtimes,
+    get_paths,
+    load_ratings,
+    load_showtimes,
+    load_watchlist,
+)
 from utils.theater_manager import append_theater, backfill_addresses, load_theater_ids, load_theaters
 
 log = logging.getLogger(__name__)
@@ -44,45 +52,6 @@ SEARCH_THEATER_TOOL = {
         },
     },
 }
-
-
-def _taste_profile(ratings_df: pd.DataFrame) -> str:
-    """Return a compact taste summary to embed in the system prompt."""
-    if ratings_df.empty or "user_rating" not in ratings_df.columns:
-        log.warning("Ratings DataFrame empty or missing user_rating — taste profile unavailable")
-        return "No rating history available."
-
-    avg = ratings_df["user_rating"].mean()
-    lines = [f"Average rating given: {avg:.1f}/5"]
-
-    if "genres" in ratings_df.columns:
-        exploded = (
-            ratings_df[["genres", "user_rating"]].dropna().assign(genre=lambda d: d["genres"].str.split(", ")).explode("genre")
-        )
-        top_genres = exploded.groupby("genre")["user_rating"].mean().sort_values(ascending=False).head(5).index.tolist()
-        lines.append(f"Favourite genres: {', '.join(top_genres)}")
-
-    if "directors" in ratings_df.columns:
-        exploded_dir = (
-            ratings_df[["directors", "user_rating"]]
-            .dropna()
-            .assign(director=lambda d: d["directors"].str.split(", "))
-            .explode("director")
-        )
-        top_dirs = (
-            exploded_dir.groupby("director")["user_rating"]
-            .agg(["mean", "count"])
-            .query("count >= 2")
-            .sort_values("mean", ascending=False)
-            .head(5)
-            .index.tolist()
-        )
-        if top_dirs:
-            lines.append(f"Favourite directors (≥2 films rated): {', '.join(top_dirs)}")
-
-    profile = "\n".join(lines)
-    log.debug("Taste profile:\n%s", profile)
-    return profile
 
 
 def _showtimes_context(wl_shows: pd.DataFrame) -> str:
@@ -287,7 +256,7 @@ def main() -> None:
     n_screenings = len(wl_shows)
     st.caption(f"{n_movies} watchlist movies · {n_screenings} upcoming screenings across your theaters")
 
-    taste = _taste_profile(ratings_df)
+    taste = build_taste_profile(ratings_df)
     showtimes_md = _showtimes_context(wl_shows)
     # Union of theaters with current showtimes AND theaters already in the CSV.
     # This prevents re-prompting to add a theater that was just added but not yet scraped.

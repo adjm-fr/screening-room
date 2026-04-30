@@ -54,7 +54,7 @@ def main() -> None:
     col1.metric("Theater", selected_theater_name or selected_theater_id)
     col2.metric("Showtimes", len(filtered_df))
 
-    st.dataframe(filtered_df.reset_index(drop=True), use_container_width=True)
+    st.dataframe(filtered_df.reset_index(drop=True), width="stretch")
 
     if st.checkbox("Show summary metrics", value=False):
         st.subheader("Summary")

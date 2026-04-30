@@ -10,12 +10,12 @@ import os
 import pandas as pd
 import streamlit as st
 
-from utils.data_loader import get_paths, load_letterboxd_cache, load_ratings, load_watchlist
+from utils.data_loader import build_taste_profile, get_paths, load_letterboxd_cache, load_ratings, load_watchlist
 
 
 def main() -> None:
     st.title("Movies Database")
-    st.markdown("Statistics from your Letterboxd ratings and watchlist.")
+    st.markdown("Statistics from your Letterboxd ratings.")
 
     output_path, _, _ = get_paths()
     if not output_path:
@@ -48,19 +48,18 @@ def main() -> None:
 
     # runtime lives in cache_df (full metadata); ratings_df may not have it if
     # enrichment hasn't run yet, so we check cache_df as the authoritative source.
-    runtime_col = "runtime" if "runtime" in cache_df.columns else None
-    avg_runtime = cache_df[runtime_col].median() if runtime_col else None
+    runtime_col = "runtime" if "runtime" in ratings_df.columns else None
+    avg_runtime = ratings_df[runtime_col].median() if runtime_col else None
     col4.metric("Median runtime", f"{int(avg_runtime)} min" if avg_runtime else "—")
 
     st.divider()
 
     st.subheader("Genres distribution (rated films)")
     if "genres" in ratings_df.columns:
-        # genres is stored as a comma-separated string, not a list
         genres_series = ratings_df["genres"].dropna().str.split(", ").explode().str.strip()
         genres_series = genres_series[genres_series != ""]
         genre_counts = genres_series.value_counts().rename_axis("genre").reset_index(name="count")
-        st.bar_chart(genre_counts.set_index("genre")["count"])
+        st.bar_chart(genre_counts, x="genre", y="count", sort="-count")
     else:
         st.info("No genres data available.")
 
@@ -72,6 +71,43 @@ def main() -> None:
         st.bar_chart(rating_counts.set_index("rating")["count"])
     else:
         st.info("No user rating data available.")
+
+    st.divider()
+
+    st.subheader("Taste profile")
+    build_taste_profile(ratings_df)  # warm the cache for the Recommendations page
+    tcol1, tcol2 = st.columns(2)
+
+    if "genres" in ratings_df.columns:
+        exploded_g = (
+            ratings_df[["genres", "user_rating"]].dropna().assign(genre=lambda d: d["genres"].str.split(", ")).explode("genre")
+        )
+        top_genres = (
+            exploded_g.groupby("genre")["user_rating"].mean().sort_values(ascending=False).head(5).rename("avg_rating").reset_index()
+        )
+        with tcol1:
+            st.caption("Top 5 genres by average rating")
+            st.bar_chart(top_genres, x="genre", y="avg_rating", sort="-avg_rating", horizontal=True)
+
+    if "directors" in ratings_df.columns:
+        exploded_d = (
+            ratings_df[["directors", "user_rating"]]
+            .dropna()
+            .assign(director=lambda d: d["directors"].str.split(", "))
+            .explode("director")
+        )
+        top_dirs = (
+            exploded_d.groupby("director")["user_rating"]
+            .agg(["mean", "count"])
+            .query("count >= 2")
+            .sort_values("mean", ascending=False)
+            .head(5)["mean"]
+            .rename("avg_rating")
+            .reset_index()
+        )
+        with tcol2:
+            st.caption("Top 5 directors by average rating (≥2 films rated)")
+            st.bar_chart(top_dirs, x="director", y="avg_rating", sort="-avg_rating", horizontal=True)
 
     st.subheader("Runtime distribution (rated films)")
     if runtime_col and "runtime" in ratings_df.columns:
@@ -89,7 +125,7 @@ def main() -> None:
                 pd.cut(runtime_data, bins=bins).value_counts().sort_index().rename_axis("bucket").reset_index(name="count")
             )
             runtime_hist["bucket"] = runtime_hist["bucket"].astype(str)
-            st.bar_chart(runtime_hist.set_index("bucket")["count"])
+            st.bar_chart(runtime_hist, x="bucket", y="count", sort=False)
     else:
         st.info("No runtime data available.")
 
@@ -107,7 +143,7 @@ def main() -> None:
 
         oldest = cache_df.loc[age_days.idxmax(), "integration_date"] if total > 0 else None
         if oldest is not None:
-            st.caption(f"Oldest entry: {pd.to_datetime(oldest).strftime('%Y-%m-%d')}")
+            st.caption(f"Oldest entry: {pd.Timestamp(str(oldest)).strftime('%Y-%m-%d')}")
     else:
         st.info("No integration_date column found in cache.")
 

@@ -14,6 +14,7 @@ Public API:
     load_ratings(path)         -> Letterboxd ratings DataFrame
     load_letterboxd_cache(p)   -> full Letterboxd metadata cache
     build_watchlist_showtimes  -> inner-join of the two on movie title
+    build_taste_profile(df)    -> compact taste summary string (top genres + directors by avg rating)
     future_showtimes(df)       -> rows with ``showtimes >= now`` (uncached)
 """
 
@@ -100,6 +101,7 @@ def load_letterboxd_cache(movies_output: str) -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=DATA_TTL_SECONDS)
 def build_watchlist_showtimes(
     showtimes_df: pd.DataFrame,
     watchlist_df: pd.DataFrame,
@@ -143,6 +145,50 @@ def build_watchlist_showtimes(
     n_movies = merged["movie"].nunique() if "movie" in merged.columns else 0
     log.info("Watchlist-showtimes join result: %d rows, %d unique movies", len(merged), n_movies)
     return merged.drop(columns=["_key"])
+
+
+@st.cache_data(ttl=DATA_TTL_SECONDS)
+def build_taste_profile(ratings_df: pd.DataFrame) -> str:
+    """Derive a compact taste summary from Letterboxd ratings.
+
+    Computes top genres and directors by average user rating. Cached so the
+    groupby/explode runs once regardless of which page loads it first.
+    """
+    if ratings_df.empty or "user_rating" not in ratings_df.columns:
+        log.warning("Ratings DataFrame empty or missing user_rating — taste profile unavailable")
+        return "No rating history available."
+
+    avg = ratings_df["user_rating"].mean()
+    lines = [f"Average rating given: {avg:.1f}/5"]
+
+    if "genres" in ratings_df.columns:
+        exploded = (
+            ratings_df[["genres", "user_rating"]].dropna().assign(genre=lambda d: d["genres"].str.split(", ")).explode("genre")
+        )
+        top_genres = exploded.groupby("genre")["user_rating"].mean().sort_values(ascending=False).head(5).index.tolist()
+        lines.append(f"Favourite genres: {', '.join(top_genres)}")
+
+    if "directors" in ratings_df.columns:
+        exploded_dir = (
+            ratings_df[["directors", "user_rating"]]
+            .dropna()
+            .assign(director=lambda d: d["directors"].str.split(", "))
+            .explode("director")
+        )
+        top_dirs = (
+            exploded_dir.groupby("director")["user_rating"]
+            .agg(["mean", "count"])
+            .query("count >= 2")
+            .sort_values("mean", ascending=False)
+            .head(5)
+            .index.tolist()
+        )
+        if top_dirs:
+            lines.append(f"Favourite directors (≥2 films rated): {', '.join(top_dirs)}")
+
+    profile = "\n".join(lines)
+    log.debug("Taste profile:\n%s", profile)
+    return profile
 
 
 def future_showtimes(df: pd.DataFrame) -> pd.DataFrame:

@@ -138,12 +138,12 @@ def main() -> None:
             .rename(columns={"showtimes": "Date & Time", "movie": "Movie", "theater_name": "Theater"})
             .reset_index(drop=True)
         )
-        st.dataframe(table_df, use_container_width=True)
+        st.dataframe(table_df, width="stretch")
 
     # ── Table view (always shown below calendar) ──────────────────────────────
     with st.expander("Show as table"):
         display_cols = [c for c in ["showtimes", "movie", "theater_name", "director", "runtime_minutes"] if c in wl_shows.columns]
-        st.dataframe(wl_shows[display_cols].sort_values("showtimes").reset_index(drop=True), use_container_width=True)
+        st.dataframe(wl_shows[display_cols].sort_values("showtimes").reset_index(drop=True), width="stretch")
 
     # ── Google Calendar CSV download ──────────────────────────────────────────
     st.divider()

@@ -1,5 +1,11 @@
 import pandas as pd
 import pytest
+import streamlit as st
+
+# Disable @st.cache_data before any test module imports utils/pages.
+# Without this, the decorator wraps function bodies at import time and
+# coverage.py cannot attribute executed lines back to the original source.
+st.cache_data = lambda f=None, **kw: f if f is not None else lambda fn: fn
 
 
 @pytest.fixture

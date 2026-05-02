@@ -90,7 +90,7 @@ def _old_slugs(df: pd.DataFrame, days_to_update: int, now: pd.Timestamp) -> list
     is_flag=True,
     help="Delete the Letterboxd movie cache and rebuild it from scratch.",
 )
-def movies_management(reset_database: bool) -> None:
+def movies_management(reset_database: bool) -> None:  # pragma: no cover
     """
     Main orchestration function for movie data management.
 

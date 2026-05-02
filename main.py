@@ -37,6 +37,53 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _build_all_movies_df(films_dict: dict, watchlist_dict: dict) -> pd.DataFrame:
+    ratings_rows = [
+        {
+            "slug": slug,
+            "user_rating": info.get("rating"),
+            "liked": info.get("liked"),
+            "name": info.get("name"),
+            "release_year": info.get("year"),
+            "source": "ratings",
+        }
+        for slug, info in films_dict.get("movies", {}).items()
+    ]
+    watchlist_rows = [
+        {
+            "slug": info["slug"],
+            "name": info.get("name"),
+            "release_year": info.get("year"),
+            "source": "watchlist",
+        }
+        for info in watchlist_dict.get("data", {}).values()
+        if "slug" in info
+    ]
+    return pd.DataFrame(ratings_rows + watchlist_rows)
+
+
+def _enrich(all_movies_df: pd.DataFrame, data_letterboxd_df: pd.DataFrame) -> pd.DataFrame:
+    merged = all_movies_df.merge(data_letterboxd_df, on="slug", how="left", suffixes=("_user", ""))
+    if "release_year_user" in merged.columns:
+        merged["release_year"] = merged["release_year"].fillna(merged["release_year_user"]).infer_objects()
+        merged.drop(columns=["release_year_user"], inplace=True)
+    for col in ("name", "integration_date"):
+        if col in merged.columns:
+            merged.drop(columns=[col], inplace=True)
+    return merged
+
+
+def _reorder(df: pd.DataFrame, column_order: list[str]) -> pd.DataFrame:
+    existing = [c for c in column_order if c in df.columns]
+    extra = [c for c in df.columns if c not in column_order]
+    return df[existing + extra]
+
+
+def _old_slugs(df: pd.DataFrame, days_to_update: int, now: pd.Timestamp) -> list[str]:
+    age_days = (now - df["integration_date"]).dt.days
+    return df[age_days > days_to_update]["slug"].tolist()
+
+
 @click.command()
 @click.option(
     "--reset_database",
@@ -67,6 +114,9 @@ def movies_management(reset_database: bool) -> None:
     days_to_update = int(os.getenv("LETTERBOXD_DAYS_TO_UPDATE", 365))
     refresh_limit_raw = os.getenv("LETTERBOXD_REFRESH_LIMIT")
     refresh_limit = int(refresh_limit_raw) if refresh_limit_raw else None
+    tmdb_api_key = os.getenv("TMDB_API_KEY", "")
+    if not tmdb_api_key:
+        logger.warning("TMDB_API_KEY is not set — french_title enrichment will be skipped")
 
     # Validate required config
     if not username:
@@ -108,28 +158,7 @@ def movies_management(reset_database: bool) -> None:
         return
 
     # Build unified DataFrame from both sources before any API calls
-    ratings_rows = [
-        {
-            "slug": slug,
-            "user_rating": info.get("rating"),
-            "liked": info.get("liked"),
-            "name": info.get("name"),
-            "release_year": info.get("year"),
-            "source": "ratings",
-        }
-        for slug, info in films_dict.get("movies", {}).items()
-    ]
-    watchlist_rows = [
-        {
-            "slug": info["slug"],
-            "name": info.get("name"),
-            "release_year": info.get("year"),
-            "source": "watchlist",
-        }
-        for info in watchlist_dict.get("data", {}).values()
-        if "slug" in info
-    ]
-    all_movies_df = pd.DataFrame(ratings_rows + watchlist_rows)
+    all_movies_df = _build_all_movies_df(films_dict, watchlist_dict)
 
     dup_slugs = all_movies_df[all_movies_df.duplicated("slug")]["slug"].tolist()
     if dup_slugs:
@@ -145,7 +174,7 @@ def movies_management(reset_database: bool) -> None:
         if os.path.exists(letterboxd_data_output_path):
             os.remove(letterboxd_data_output_path)
             logger.info("Cache file deleted for full rebuild.")
-    data_letterboxd_df = ldm.get_letterboxd_data(all_movies_df["slug"].tolist(), letterboxd_data_output_path)
+    data_letterboxd_df = ldm.get_letterboxd_data(all_movies_df["slug"].tolist(), letterboxd_data_output_path, tmdb_api_key)
 
     logger.info("Cache size: %s", data_letterboxd_df.shape)
 
@@ -156,8 +185,7 @@ def movies_management(reset_database: bool) -> None:
     # Flag movies that exceed age threshold for refresh
     if data_letterboxd_df.shape[0] > 0 and "integration_date" in data_letterboxd_df.columns:
         now = pd.to_datetime(datetime.now())
-        age_days = (now - data_letterboxd_df["integration_date"]).dt.days
-        old_slugs = data_letterboxd_df[age_days > days_to_update]["slug"].tolist()
+        old_slugs = _old_slugs(data_letterboxd_df, days_to_update, now)
         if old_slugs:
             total_stale = len(old_slugs)
             if refresh_limit is not None:
@@ -179,24 +207,18 @@ def movies_management(reset_database: bool) -> None:
             list(slugs_to_refresh),
             letterboxd_data_output_path,
             config,
+            tmdb_api_key,
         )
 
     # === ENRICH AND EXPORT ===
-    all_movies_df = all_movies_df.merge(data_letterboxd_df, on="slug", how="left", suffixes=("_user", ""))
-
-    if "release_year_user" in all_movies_df.columns:
-        all_movies_df["release_year"] = all_movies_df["release_year"].fillna(all_movies_df["release_year_user"]).infer_objects()
-        all_movies_df.drop(columns=["release_year_user"], inplace=True)
-    if "name" in all_movies_df.columns:
-        all_movies_df.drop(columns=["name"], inplace=True)
-    if "integration_date" in all_movies_df.columns:
-        all_movies_df.drop(columns=["integration_date"], inplace=True)
+    all_movies_df = _enrich(all_movies_df, data_letterboxd_df)
 
     ratings_column_order = [
         "slug",
         "user_rating",
         "liked",
         "title",
+        "french_title",
         "release_year",
         "letterboxd_avg_rating",
         "genres",
@@ -213,6 +235,7 @@ def movies_management(reset_database: bool) -> None:
     watchlist_column_order = [
         "slug",
         "title",
+        "french_title",
         "release_year",
         "letterboxd_avg_rating",
         "genres",
@@ -227,10 +250,8 @@ def movies_management(reset_database: bool) -> None:
         "tmdb_url",
     ]
 
-    def _save(df: pd.DataFrame, column_order: list, path: str) -> None:
-        existing = [c for c in column_order if c in df.columns]
-        extra = [c for c in df.columns if c not in column_order]
-        df[existing + extra].to_parquet(path, index=False)
+    def _save(df: pd.DataFrame, column_order: list[str], path: str) -> None:
+        _reorder(df, column_order).to_parquet(path, index=False)
 
     ratings_df = all_movies_df[all_movies_df["source"] == "ratings"].drop(columns=["source"])
     watchlist_df = all_movies_df[all_movies_df["source"] == "watchlist"].drop(columns=["source"])

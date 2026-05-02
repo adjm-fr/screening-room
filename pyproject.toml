@@ -18,3 +18,9 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:pandas",
+]

@@ -6,47 +6,18 @@ _fetch_movie and parquet I/O are mocked where needed.
 """
 
 from datetime import date
-from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
 
 from letterboxd_data_management.get_letterboxd_data import (
+    _fetch_french_title,
     _fetch_movie,
     get_letterboxd_data,
     refresh_letterboxd_data,
 )
 
 # ── fixtures ─────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def make_movie():
-    """Factory fixture: returns a callable that builds a letterboxdpy Movie mock."""
-
-    def _factory(genres=None, details=None, crew=None):
-        m = MagicMock()
-        m.genres = genres or []
-        m.details = details or []
-        m.crew = crew or {}
-        m.id = "id"
-        m.url = "url"
-        m.imdb_id = None
-        m.tmdb_id = None
-        m.imdb_link = None
-        m.tmdb_link = None
-        m.title = "Title"
-        m.original_title = None
-        m.year = 2020
-        m.runtime = 90
-        m.tagline = None
-        m.description = None
-        m.rating = 7.5
-        m.poster = None
-        m.banner = None
-        return m
-
-    return _factory
 
 
 @pytest.fixture
@@ -237,3 +208,54 @@ def test_failed_refresh_leaves_existing_data_intact(tmp_path, mocker):
     result = refresh_letterboxd_data(df, ["slug-a"], str(tmp_path / "cache.parquet"), {})
 
     assert result.loc[result["slug"] == "slug-a", "title"].iloc[0] == "Old Title"
+
+
+# ── _fetch_french_title ───────────────────────────────────────────────────────
+
+
+def test_fetch_french_title_returns_title_on_success(mocker):
+    mock_resp = mocker.MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"title": "Le Syndicat du Crime"}
+    mocker.patch("letterboxd_data_management.get_letterboxd_data.requests.get", return_value=mock_resp)
+
+    result = _fetch_french_title("12345", "fake-key")
+    assert result == "Le Syndicat du Crime"
+
+
+def test_fetch_french_title_returns_none_on_http_error(mocker):
+    mock_resp = mocker.MagicMock()
+    mock_resp.status_code = 404
+    mocker.patch("letterboxd_data_management.get_letterboxd_data.requests.get", return_value=mock_resp)
+
+    result = _fetch_french_title("12345", "fake-key")
+    assert result is None
+
+
+def test_fetch_french_title_returns_none_when_tmdb_id_falsy(mocker):
+    mock_get = mocker.patch("letterboxd_data_management.get_letterboxd_data.requests.get")
+
+    assert _fetch_french_title(None, "fake-key") is None
+    assert _fetch_french_title("", "fake-key") is None
+    mock_get.assert_not_called()
+
+
+def test_fetch_french_title_returns_none_when_api_key_empty(mocker):
+    mock_get = mocker.patch("letterboxd_data_management.get_letterboxd_data.requests.get")
+
+    assert _fetch_french_title("12345", "") is None
+    mock_get.assert_not_called()
+
+
+def test_fetch_movie_includes_french_title(mocker, make_movie):
+    movie_mock = make_movie()
+    movie_mock.tmdb_id = "42"
+    mocker.patch("letterboxd_data_management.get_letterboxd_data.Movie", return_value=movie_mock)
+    mocker.patch(
+        "letterboxd_data_management.get_letterboxd_data._fetch_french_title",
+        return_value="Titre Français",
+    )
+
+    result = _fetch_movie("some-slug", api_key="fake-key")
+    assert result is not None
+    assert result["french_title"] == "Titre Français"

@@ -8,55 +8,7 @@ Only the pure data-transformation logic is exercised here.
 import pandas as pd
 import pytest
 
-# ── helpers used across multiple tests ───────────────────────────────────────
-
-
-def _build_all_movies_df(films_dict: dict, watchlist_dict: dict) -> pd.DataFrame:
-    ratings_rows = [
-        {
-            "slug": slug,
-            "user_rating": info.get("rating"),
-            "liked": info.get("liked"),
-            "name": info.get("name"),
-            "release_year": info.get("year"),
-            "source": "ratings",
-        }
-        for slug, info in films_dict.get("movies", {}).items()
-    ]
-    watchlist_rows = [
-        {
-            "slug": info["slug"],
-            "name": info.get("name"),
-            "release_year": info.get("year"),
-            "source": "watchlist",
-        }
-        for info in watchlist_dict.get("data", {}).values()
-        if "slug" in info
-    ]
-    return pd.DataFrame(ratings_rows + watchlist_rows)
-
-
-def _enrich(all_movies_df: pd.DataFrame, data_letterboxd_df: pd.DataFrame) -> pd.DataFrame:
-    merged = all_movies_df.merge(data_letterboxd_df, on="slug", how="left", suffixes=("_user", ""))
-    if "release_year_user" in merged.columns:
-        merged["release_year"] = merged["release_year"].fillna(merged["release_year_user"]).infer_objects()
-        merged.drop(columns=["release_year_user"], inplace=True)
-    for col in ("name", "integration_date"):
-        if col in merged.columns:
-            merged.drop(columns=[col], inplace=True)
-    return merged
-
-
-def _reorder(df: pd.DataFrame, column_order: list[str]) -> pd.DataFrame:
-    existing = [c for c in column_order if c in df.columns]
-    extra = [c for c in df.columns if c not in column_order]
-    return df[existing + extra]
-
-
-def _old_slugs(df: pd.DataFrame, days_to_update: int, now: pd.Timestamp) -> list[str]:
-    age_days = (now - df["integration_date"]).dt.days
-    return df[age_days > days_to_update]["slug"].tolist()
-
+from main import _build_all_movies_df, _enrich, _old_slugs, _reorder
 
 # ── all_movies_df construction ────────────────────────────────────────────────
 
@@ -214,11 +166,6 @@ def test_slugs_older_than_threshold_flagged():
         }
     )
     assert _old_slugs(df, 365, now) == ["old"]
-
-
-def test_refresh_limit_truncates_list():
-    old = ["a", "b", "c", "d"]
-    assert old[:2] == ["a", "b"]
 
 
 def test_no_stale_entries_returns_empty():

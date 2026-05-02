@@ -88,5 +88,5 @@ jobs:
           path: ~/.cache/pip
           key: pip-${{ hashFiles('requirements.txt') }}
 
-      - run: pip install -r requirements.txt
-      - run: pytest tests/
+      - run: pip install -r requirements.txt pytest-cov
+      - run: pytest tests/ --cov=main --cov=letterboxd_data_management --cov-report=term-missing --cov-fail-under=80

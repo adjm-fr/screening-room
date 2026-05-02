@@ -78,6 +78,7 @@ LETTERBOXD_DAYS_TO_UPDATE=365
 | `LETTERBOXD_USERNAME` | Yes | — | Your Letterboxd username (public profile) |
 | `OUTPUT_PATH` | Yes | — | Directory path where parquet files will be saved |
 | `LETTERBOXD_DAYS_TO_UPDATE` | No | `365` | Number of days before cached movie metadata is refreshed |
+| `TMDB_API_KEY` | No | — | TMDB API key for French title enrichment (`french_title` column). Pipeline runs without it; French title stays `null` |
 
 ## Usage
 
@@ -122,6 +123,7 @@ The application generates three parquet files in your `OUTPUT_PATH`:
 
 **Core Information:**
 - `title` - Official movie title
+- `french_title` - French title from TMDB (`language=fr-FR`); `null` when `TMDB_API_KEY` is unset or TMDB has no French entry
 - `original_title` - Original title in native language (if different)
 - `release_year` - Year of release
 - `runtime` - Duration in minutes

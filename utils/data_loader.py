@@ -13,7 +13,7 @@ Public API:
     load_showtimes(path)       -> raw showtimes DataFrame (all dates)
     load_ratings(path)         -> Letterboxd ratings DataFrame
     load_letterboxd_cache(p)   -> full Letterboxd metadata cache
-    build_watchlist_showtimes  -> inner-join of watchlist and showtimes on original title
+    build_watchlist_showtimes  -> join of watchlist and showtimes
     build_taste_profile(df)    -> compact taste summary string (top genres + directors by avg rating)
     future_showtimes(df)       -> rows with ``showtimes >= now`` (uncached)
 """
@@ -35,24 +35,33 @@ log = logging.getLogger(__name__)
 DATA_TTL_SECONDS = 300
 
 
-def _normalize_directors(raw: str | None, sep: str) -> set[str]:
-    """Return a set of normalised director name tokens.
+def _normalize_title(raw: object) -> str:
+    """Return a canonical form of a title for join-key matching.
 
-    For each name: strips accents, lowercases, removes non-alpha chars, and
-    sorts the tokens within the name (handles first/last name order swaps).
+    Strips accents, lowercases, replaces non-alphanumeric chars with spaces
+    (digits are preserved — ``2001``, ``Blade Runner 2049``), then collapses
+    whitespace. Returns an empty string for null/empty input so that merge
+    keys stay string-typed.
     """
-    if not raw:
-        return set()
-    names = []
-    for part in raw.split(sep):
-        part = part.strip()
-        part = unicodedata.normalize("NFKD", part)
-        part = "".join(c for c in part if not unicodedata.combining(c))
-        part = "".join(c if c.isalpha() else " " for c in part).lower()
-        tokens = sorted(part.split())
-        if tokens:
-            names.append(" ".join(tokens))
-    return set(names)
+    if raw is None or (isinstance(raw, float) and pd.isna(raw)) or not isinstance(raw, str) or not raw:
+        return ""
+    s = unicodedata.normalize("NFKD", raw)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = "".join(c if c.isalnum() else " " for c in s).lower()
+    return " ".join(s.split())
+
+
+def _director_key(name: str) -> str:
+    """Return a canonical sort key for a single director name.
+
+    NFKD normalises accents; non-alpha chars become spaces; tokens are sorted
+    alphabetically so ``"Bong Joon-ho"`` and ``"Joon Ho Bong"`` both map to
+    ``"bong ho joon"``.
+    """
+    s = unicodedata.normalize("NFKD", name)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = "".join(c if c.isalpha() else " " for c in s).lower()
+    return " ".join(sorted(s.split()))
 
 
 def _directors_overlap(allocine: str | None, letterboxd: str | None) -> bool:
@@ -63,9 +72,9 @@ def _directors_overlap(allocine: str | None, letterboxd: str | None) -> bool:
     """
     if pd.isna(allocine) or pd.isna(letterboxd):
         return True
-    return bool(
-        _normalize_directors(allocine, sep=" | ") & _normalize_directors(letterboxd, sep=", ")
-    )
+    alloc_keys = {_director_key(n.strip()) for n in str(allocine).split(" | ") if n.strip()}
+    lb_keys = {_director_key(n.strip()) for n in str(letterboxd).split(", ") if n.strip()}
+    return bool(alloc_keys & lb_keys)
 
 
 def get_paths() -> tuple[Path | None, Path | None, Path | None]:
@@ -140,51 +149,75 @@ def build_watchlist_showtimes(
     showtimes_df: pd.DataFrame,
     watchlist_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Inner-join showtimes with watchlist on a canonical title key.
+    """Join showtimes with the watchlist on French title, confirmed by director.
 
-    Join key — same rule on both sides:
-        ``original_title`` when present, else the display title
-        (Allocine ``movie`` / Letterboxd ``title``).
-    When Letterboxd omits ``original_title`` it means the display title IS
-    the original, so the fallback is correct in both directions.
-
-    After matching, rows are further filtered by director overlap when both
-    sources carry director data: at least one normalised director name must
-    appear in both sets (handles co-director ordering and minor typographic
-    differences). Rows where either side lacks a director field are kept as-is.
-
-    Output columns: ``french_title`` (Allocine display title), ``letterboxd_title``
-    (Letterboxd display title), ``original_title`` (Letterboxd true original title),
-    ``theater_id``, ``theater_name``, ``showtimes``, ``is_weekend``,
-    ``runtime_minutes``, ``genres``, ``letterboxd_avg_rating``, ``directors``.
-    Allocine-only columns (``director``, ``runtime``) and ``letterboxd_slug``
-    are dropped after the join.
+    Normalises Allocine's ``movie`` (French display title) against the
+    watchlist's TMDB ``french_title`` when present, falling back to the
+    watchlist's display ``title``. Normalisation strips accents, punctuation,
+    and case via :func:`_normalize_title`. Title-matched rows are then filtered
+    by director overlap (:func:`_directors_overlap`): rows where both sides
+    carry director data but share no common name are dropped.
     """
-    showtimes_df = showtimes_df.copy()
+    showtimes_df = showtimes_df.copy().reset_index(drop=True)
+    showtimes_df["_st_idx"] = showtimes_df.index
 
-    log.debug("Building watchlist-showtimes join: %d showtimes × %d watchlist entries", len(showtimes_df), len(watchlist_df))
+    log.debug(
+        "Building watchlist-showtimes join: %d showtimes × %d watchlist entries",
+        len(showtimes_df),
+        len(watchlist_df),
+    )
 
-    meta_cols = [c for c in ["slug", "title", "original_title", "runtime", "genres", "letterboxd_avg_rating", "directors"] if c in watchlist_df.columns]
+    _want_cols = [
+        "slug",
+        "title",
+        "french_title",
+        "runtime",
+        "genres",
+        "letterboxd_avg_rating",
+        "directors",
+        "release_year",
+    ]
+    meta_cols = [c for c in _want_cols if c in watchlist_df.columns]
     wl_meta = watchlist_df[meta_cols].copy()
     wl_meta = wl_meta.rename(columns={"runtime": "runtime_minutes", "slug": "letterboxd_slug", "title": "letterboxd_title"})
 
-    # Key: original_title when present (it IS the canonical title), else the display title.
-    # Allocine's original_title is consumed into _key and dropped so it doesn't clash
-    # with wl_meta's original_title column during the merge.
-    showtimes_df["_key"] = showtimes_df.get("original_title", showtimes_df["movie"]).fillna(showtimes_df["movie"]).str.lower()
-    showtimes_df = showtimes_df.drop(columns=["original_title"], errors="ignore")
+    showtimes_df["_key"] = showtimes_df["movie"].map(_normalize_title)
+    if "french_title" in wl_meta.columns:
+        wl_key = wl_meta["french_title"].fillna(wl_meta["letterboxd_title"]).map(_normalize_title)
+    else:
+        wl_key = wl_meta["letterboxd_title"].map(_normalize_title)
+    wl_meta["_key"] = wl_key
 
-    wl_orig = wl_meta.get("original_title", wl_meta["letterboxd_title"]) if "original_title" in wl_meta.columns else wl_meta["letterboxd_title"]
-    wl_meta["_key"] = wl_orig.fillna(wl_meta["letterboxd_title"]).str.lower()
+    pass1 = showtimes_df.merge(wl_meta, on="_key", how="inner")
+    log.debug("Pass 1 (French title) matched %d rows (before director filter)", len(pass1))
 
-    use_director_filter = "director" in showtimes_df.columns and "directors" in wl_meta.columns
+    if "director" in pass1.columns and "directors" in pass1.columns and not pass1.empty:
+        pass1 = pass1[pass1.apply(lambda r: _directors_overlap(r["director"], r["directors"]), axis=1)]
 
-    merged = showtimes_df.merge(wl_meta, on="_key", how="inner")
-    if use_director_filter and not merged.empty:
-        merged = merged[merged.apply(lambda r: _directors_overlap(r["director"], r["directors"]), axis=1)]
-    log.debug("Title match: %d rows (%d unique movies)", len(merged), merged["_key"].nunique())
+    log.debug("Pass 1 kept %d rows after director filter", len(pass1))
 
-    drop_cols = [c for c in ["_key", "director", "runtime", "letterboxd_slug"] if c in merged.columns]
+    merged = pass1.copy()
+
+    if "_st_idx" in merged.columns and "letterboxd_slug" in merged.columns:
+        merged = merged.drop_duplicates(subset=["_st_idx", "letterboxd_slug"])
+    elif "_st_idx" in merged.columns:
+        merged = merged.drop_duplicates(subset=["_st_idx"])
+
+    drop_cols = [
+        c
+        for c in [
+            "_key",
+            "_st_idx",
+            "director",
+            "original_title",
+            "runtime",
+            "letterboxd_slug",
+            "french_title",
+            "release_year_x",
+            "release_year_y",
+        ]
+        if c in merged.columns
+    ]
     merged = merged.drop(columns=drop_cols).rename(columns={"movie": "french_title"})
     n_movies = merged["french_title"].nunique() if "french_title" in merged.columns else 0
     log.info("Watchlist-showtimes join result: %d rows, %d unique movies", len(merged), n_movies)

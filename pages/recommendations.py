@@ -55,7 +55,16 @@ SEARCH_THEATER_TOOL = {
 
 
 def _showtimes_context(wl_shows: pd.DataFrame) -> str:
-    wanted = ["french_title", "letterboxd_title", "theater_name", "showtimes", "genres", "letterboxd_avg_rating", "runtime_minutes", "directors"]
+    wanted = [
+        "french_title",
+        "letterboxd_title",
+        "theater_name",
+        "showtimes",
+        "genres",
+        "letterboxd_avg_rating",
+        "runtime_minutes",
+        "directors",
+    ]
     display_cols = [c for c in wanted if c in wl_shows.columns]
     df = wl_shows[display_cols].sort_values("showtimes").drop_duplicates().reset_index(drop=True)
     return df.to_markdown(index=False)

@@ -180,7 +180,10 @@ def main() -> None:
                         "End Date": end_time.strftime("%Y-%m-%d"),
                         "End Time": end_time.strftime("%H:%M:%S"),
                         "All Day Event": "False",
-                        "Description": f"Directors: {_sanitize(row.get('directors') or 'N/A')} | French title: {_sanitize(row['french_title'])}",
+                        "Description": (
+                            f"Directors: {_sanitize(row.get('directors') or 'N/A')}"
+                            f" | French title: {_sanitize(row['french_title'])}"
+                        ),
                         "Location": theater,
                         "Private": "False",
                     }

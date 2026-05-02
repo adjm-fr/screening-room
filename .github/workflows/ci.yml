@@ -72,5 +72,5 @@ jobs:
           path: ~/.cache/pip
           key: pip-${{ hashFiles('requirements.txt') }}
 
-      - run: pip install -r requirements.txt
-      - run: pytest tests/ --tb=short
+      - run: pip install -r requirements.txt pytest-cov
+      - run: pytest tests/ --cov=utils.data_loader --cov=pages.calendar --cov-report=term-missing --cov-fail-under=75

@@ -39,6 +39,11 @@ tmp/
 .ruff_cache/
 .mypy_cache/
 
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
 # pyenv / mise
 .python-version
 

@@ -1,3 +1,4 @@
+# runtime
 huggingface-hub>=1.12.0
 tabulate>=0.10.0
 streamlit>=1.56.0
@@ -5,6 +6,11 @@ pandas>=3.0.2
 pyarrow>=24.0.0
 python-dotenv>=1.2.2
 streamlit-calendar>=1.4.0
+click>=8.0
+
+# dagster
+dagster>=1.9
+dagster-webserver>=1.9
 
 # dev / CI — not needed at runtime
 bandit==1.9.4

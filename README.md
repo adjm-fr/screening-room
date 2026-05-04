@@ -83,7 +83,11 @@ movies_management          Allocine-Showtimes-Scraping
 ```
 cinema_dashboard/
 ├── app.py                        # Streamlit entry point — registers all pages
-├── orchestrate.py                # CLI to refresh all data (runs both scrapers in parallel)
+├── orchestrate.py                # Lightweight CLI to refresh all data (runs both scrapers in parallel)
+├── pipeline/                     # Dagster pipeline (alternative to orchestrate.py)
+│   ├── assets.py                 # @asset definitions for showtimes + watchlist
+│   ├── resources.py              # ScraperConfig resource (paths from env)
+│   └── definitions.py            # Dagster Definitions entry point
 ├── pages/
 │   ├── showtimes.py              # Showtimes page
 │   ├── database.py               # Movies Database page
@@ -131,6 +135,8 @@ cp .env.example .env
 | `ALLOCINE_OUTPUT_PATH` | Path to `showtimes.parquet` written by `Allocine-Showtimes-Scraping` |
 | `ALLOCINE_INPUT_PATH` | Path to the theaters CSV read by `Allocine-Showtimes-Scraping` — also written to when adding a theater via the Recommendations chat |
 | `HF_API_KEY` | Hugging Face API token (free) — required for the Recommendations page. Create one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+| `ALLOCINE_DIR` | *(optional)* Absolute path to the `Allocine-Showtimes-Scraping` repo. Defaults to `../Allocine-Showtimes-Scraping` relative to this repo. |
+| `MOVIES_DIR` | *(optional)* Absolute path to the `movies_management` repo. Defaults to `../movies_management` relative to this repo. |
 
 ### Running
 
@@ -141,6 +147,8 @@ make run
 ```
 
 ## Data refresh
+
+### Option 1 — CLI (lightweight)
 
 Use `orchestrate.py` to refresh all data in one command. It runs both scrapers in parallel and only re-runs a scraper if its data is stale:
 
@@ -156,12 +164,28 @@ python orchestrate.py --reset-db # pass --reset_database to movies_management
 - `showtimes.parquet` — stale if last written before the most recent Tuesday (French cinemas publish the new week's programme on Tuesdays)
 - `watchlist_with_letterboxd.parquet` — stale if older than 7 days
 
-Output is prefixed per scraper so parallel output stays readable:
+Output is timestamped and labelled per scraper:
 ```
-[allocine]   Fetching Le Champo...
-[letterboxd] Fetching watchlist for adjm...
-[allocine]   Done.
+2026-05-04 13:00:00 [INFO] [allocine] Fetching Le Champo...
+2026-05-04 13:00:01 [INFO] [letterboxd] Fetching watchlist for adjm...
+2026-05-04 13:01:30 [INFO] [allocine] Done.
 ```
+
+### Option 2 — Dagster UI
+
+The `pipeline/` folder contains a Dagster pipeline with the same two scrapers as software-defined assets, manual jobs, and automatic cron-based materialisation.
+
+```bash
+pip install dagster dagster-webserver   # first time only
+dagster dev -m pipeline.definitions    # opens UI at localhost:3000
+```
+
+Three jobs are available in the UI:
+- `showtimes_job` — runs the Allocine scraper
+- `watchlist_job` — runs the Letterboxd scraper
+- `all_scrapers_job` — runs both
+
+Assets are also configured with `AutomationCondition` for automatic scheduling (showtimes: Tuesday 06:00, watchlist: Monday 06:00) when the Dagster daemon is running.
 
 You can also run each scraper manually:
 ```bash

@@ -53,7 +53,7 @@ All data is stored locally in parquet format for efficient storage and analysis.
 
 - **pandas** - Data manipulation and parquet I/O
 - **click** - Command-line interface
-- **python-dotenv** - Environment variable management
+- **pydantic-settings** - Typed, validated environment variable management (auto-loads `.env`)
 - **letterboxdpy** - Letterboxd API client
 
 See `requirements.txt` for pinned versions.
@@ -64,7 +64,6 @@ Create a `.env` file in the project root with the following variables:
 
 ```env
 # Required
-LETTERBOXD_USERNAME=your_letterboxd_username
 OUTPUT_PATH=/path/to/output/directory
 
 # Optional (default: 365)
@@ -75,9 +74,9 @@ LETTERBOXD_DAYS_TO_UPDATE=365
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `LETTERBOXD_USERNAME` | Yes | — | Your Letterboxd username (public profile) |
 | `OUTPUT_PATH` | Yes | — | Directory path where parquet files will be saved |
 | `LETTERBOXD_DAYS_TO_UPDATE` | No | `365` | Number of days before cached movie metadata is refreshed |
+| `LETTERBOXD_REFRESH_LIMIT` | No | — | Max stale movies to refresh per run (unlimited if unset) |
 | `TMDB_API_KEY` | No | — | TMDB API key for French title enrichment (`french_title` column). Pipeline runs without it; French title stays `null` |
 
 ## Usage
@@ -87,7 +86,7 @@ LETTERBOXD_DAYS_TO_UPDATE=365
 Run the full pipeline:
 
 ```bash
-python main.py
+python main.py --username your_letterboxd_username
 ```
 
 This will:
@@ -99,10 +98,10 @@ This will:
 
 ### Force Cache Refresh
 
-To ignore cache age and refetch all movie metadata:
+To delete the metadata cache and rebuild it from scratch:
 
 ```bash
-python main.py --get_letterboxd
+python main.py --username your_letterboxd_username --reset_database
 ```
 
 ## Output
@@ -183,9 +182,11 @@ Contains all columns from `data_letterboxd.parquet` (see above) for movies on yo
 
 ```
 movies_management/
-├── main.py                           # Orchestration, enrichment, and export
-├── letterboxd_data_management/       # Movie metadata fetching and caching
-│   └── get_letterboxd_data.py        # Letterboxd API interactions
+├── main.py                           # CLI entry point and orchestration
+├── modules/
+│   ├── config.py                     # Centralised settings (pydantic-settings BaseSettings)
+│   ├── utils.py                      # Data transformation helpers
+│   └── get_letterboxd_data.py        # Letterboxd API interactions and caching
 └── .env                              # Configuration file
 ```
 
@@ -249,8 +250,8 @@ Cache is stored as parquet for fast I/O and can handle thousands of movies effic
 
 ## Troubleshooting
 
-### "LETTERBOXD_USERNAME is not set"
-Ensure your `.env` file is in the project root and contains the required variables.
+### "Missing option '--username'"
+Pass your Letterboxd username as a CLI argument: `python main.py --username your_username`.
 
 ### "Duplicate slugs found across ratings and watchlist"
 A movie appears in both your ratings and watchlist, which Letterboxd normally prevents. Check the listed slugs and clean up your Letterboxd profile.

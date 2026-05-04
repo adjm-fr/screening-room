@@ -15,12 +15,13 @@ Usage:
     python orchestrate.py --days 7   # forward --days flag to the Allocine scraper
 """
 
-import argparse
 import asyncio
-import sys
+import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import click
 from dotenv import load_dotenv
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -28,8 +29,11 @@ from dotenv import load_dotenv
 _ROOT = Path(__file__).parent
 load_dotenv(_ROOT / ".env")
 
-ALLOCINE_DIR = _ROOT.parent / "Allocine-Showtimes-Scraping"
-MOVIES_DIR = _ROOT.parent / "movies_management"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 WATCHLIST_MAX_AGE_DAYS = 7
 
@@ -76,7 +80,7 @@ async def run_scraper(label: str, cmd: list[str], cwd: Path) -> bool:
     Returns True on success (exit code 0), False otherwise.
     stderr is merged into stdout so all output is captured in order.
     """
-    print(f"[{label}] Starting: {' '.join(cmd)}", flush=True)
+    logger.info("[%s] Starting: %s", label, " ".join(cmd))
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -86,16 +90,16 @@ async def run_scraper(label: str, cmd: list[str], cwd: Path) -> bool:
         )
         assert proc.stdout is not None
         async for line in proc.stdout:
-            print(f"[{label}] {line.decode().rstrip()}", flush=True)
+            logger.info("[%s] %s", label, line.decode().rstrip())
         await proc.wait()
     except Exception as exc:
-        print(f"[{label}] ERROR: {exc}", flush=True)
+        logger.error("[%s] ERROR: %s", label, exc)
         return False
 
     if proc.returncode == 0:
-        print(f"[{label}] Done.", flush=True)
+        logger.info("[%s] Done.", label)
     else:
-        print(f"[{label}] Failed (exit code {proc.returncode}).", flush=True)
+        logger.error("[%s] Failed (exit code %d).", label, proc.returncode)
     return proc.returncode == 0
 
 
@@ -108,32 +112,23 @@ async def _run_all(tasks: list[tuple[str, list[str], Path]]) -> dict[str, bool]:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Refresh cinema dashboard data.")
-    parser.add_argument("--force", action="store_true", help="Re-run all scrapers regardless of staleness.")
-    parser.add_argument("--days", type=int, default=14, help="Number of days to scrape for Allocine (default: 14).")
-    parser.add_argument("--reset", action="store_true", help="Pass --reset to Allocine scraper (clears tmp cache).")
-    parser.add_argument("--reset-db", action="store_true", help="Pass --reset_database to movies_management.")
-    return parser.parse_args()
-
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-
-
-def main() -> int:
-    import os
-
-    args = _parse_args()
+@click.command()
+@click.option("--force", is_flag=True, help="Re-run all scrapers regardless of staleness.")
+@click.option("--days", default=14, show_default=True, help="Number of days to scrape for Allocine.")
+@click.option("--reset", is_flag=True, help="Pass --reset to Allocine scraper (clears tmp cache).")
+@click.option("--reset-db", is_flag=True, help="Pass --reset_database to movies_management.")
+def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
+    """Refresh cinema dashboard data (showtimes + watchlist)."""
+    allocine_dir = Path(os.getenv("ALLOCINE_DIR", str(_ROOT.parent / "Allocine-Showtimes-Scraping")))
+    movies_dir = Path(os.getenv("MOVIES_DIR", str(_ROOT.parent / "movies_management")))
 
     showtimes_raw = os.getenv("ALLOCINE_OUTPUT_PATH")
     watchlist_raw = os.getenv("MOVIES_OUTPUT_PATH")
 
     if not showtimes_raw:
-        print("ERROR: ALLOCINE_OUTPUT_PATH is not set in cinema_dashboard/.env", file=sys.stderr)
-        return 1
+        raise click.ClickException("ALLOCINE_OUTPUT_PATH is not set in cinema_dashboard/.env")
     if not watchlist_raw:
-        print("ERROR: MOVIES_OUTPUT_PATH is not set in cinema_dashboard/.env", file=sys.stderr)
-        return 1
+        raise click.ClickException("MOVIES_OUTPUT_PATH is not set in cinema_dashboard/.env")
 
     showtimes_path = Path(showtimes_raw)
     watchlist_path = Path(watchlist_raw) / "watchlist_with_letterboxd.parquet"
@@ -144,49 +139,49 @@ def main() -> int:
     allocine_stale = is_showtimes_stale(showtimes_path)
     watchlist_stale = is_watchlist_stale(watchlist_path)
 
-    if args.force or allocine_stale:
-        reason = "forced" if args.force else f"stale (last Tuesday: {_last_tuesday().strftime('%Y-%m-%d')})"
-        print(f"Allocine showtimes: {reason}")
-        allocine_cmd = ["python", "main.py", "--days", str(args.days)]
-        if args.reset:
+    if force or allocine_stale:
+        reason = "forced" if force else f"stale (last Tuesday: {_last_tuesday().strftime('%Y-%m-%d')})"
+        logger.info("Allocine showtimes: %s", reason)
+        allocine_cmd = ["python", "main.py", "--days", str(days)]
+        if reset:
             allocine_cmd.append("--reset")
-        tasks.append(("allocine", allocine_cmd, ALLOCINE_DIR))
+        tasks.append(("allocine", allocine_cmd, allocine_dir))
     else:
         mtime = _mtime(showtimes_path)
-        print(f"Allocine showtimes: fresh (last updated {mtime.strftime('%Y-%m-%d %H:%M') if mtime else 'never'})")
+        logger.info("Allocine showtimes: fresh (last updated %s)", mtime.strftime("%Y-%m-%d %H:%M") if mtime else "never")
 
-    if args.force or watchlist_stale:
-        reason = "forced" if args.force else f"stale (>{WATCHLIST_MAX_AGE_DAYS} days old)"
-        print(f"Letterboxd data:    {reason}")
+    if force or watchlist_stale:
+        reason = "forced" if force else f"stale (>{WATCHLIST_MAX_AGE_DAYS} days old)"
+        logger.info("Letterboxd data:    %s", reason)
         letterboxd_cmd = ["python", "main.py"]
-        if args.reset_db:
+        if reset_db:
             letterboxd_cmd.append("--reset_database")
-        tasks.append(("letterboxd", letterboxd_cmd, MOVIES_DIR))
+        tasks.append(("letterboxd", letterboxd_cmd, movies_dir))
     else:
         mtime = _mtime(watchlist_path)
-        print(f"Letterboxd data:    fresh (last updated {mtime.strftime('%Y-%m-%d %H:%M') if mtime else 'never'})")
+        logger.info("Letterboxd data:    fresh (last updated %s)", mtime.strftime("%Y-%m-%d %H:%M") if mtime else "never")
 
     if not tasks:
-        print("\nAll data is fresh. Use --force to re-run anyway.")
-        return 0
+        logger.info("All data is fresh. Use --force to re-run anyway.")
+        return
 
-    print(f"\nRunning {len(tasks)} scraper(s) in parallel...\n")
+    logger.info("Running %d scraper(s) in parallel...", len(tasks))
 
     # ── Run in parallel ───────────────────────────────────────────────────────
     results = asyncio.run(_run_all(tasks))
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    print("\n── Summary ──────────────────────────────────────────")
     all_ok = True
     for label, ok in results.items():
-        status = "✓ ok" if ok else "✗ failed"
-        print(f"  {label:12} {status}")
-        if not ok:
+        if ok:
+            logger.info("  %-12s ✓ ok", label)
+        else:
+            logger.error("  %-12s ✗ failed", label)
             all_ok = False
-    print()
 
-    return 0 if all_ok else 1
+    if not all_ok:
+        raise click.ClickException("One or more scrapers failed.")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

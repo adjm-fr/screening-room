@@ -16,14 +16,15 @@ from letterboxdpy.movie import Movie
 
 logger = logging.getLogger(__name__)
 
+TMDB_API_URL = "https://api.themoviedb.org/3"
 
-def _fetch_french_title(tmdb_id: str | None, api_key: str) -> str | None:
+
+def _fetch_french_title(tmdb_id: str | None, api_key: str | None) -> str | None:
     if not tmdb_id or not api_key:
         return None
-    base_url = os.getenv("TMDB_API_URL", "https://api.themoviedb.org/3")
     try:
         resp = requests.get(
-            f"{base_url}/movie/{tmdb_id}",
+            f"{TMDB_API_URL}/movie/{tmdb_id}",
             params={"language": "fr-FR", "api_key": api_key},
             timeout=10,
         )
@@ -35,7 +36,7 @@ def _fetch_french_title(tmdb_id: str | None, api_key: str) -> str | None:
     return None
 
 
-def _fetch_movie(slug: str, api_key: str = "") -> dict | None:
+def _fetch_movie(slug: str, api_key: str | None = None) -> dict | None:
     """
     Fetch movie metadata from Letterboxd for a single movie slug.
 
@@ -118,12 +119,9 @@ def _fetch_movie(slug: str, api_key: str = "") -> dict | None:
         return None
 
 
-_CONCURRENCY = 20  # max parallel HTTP requests
-
-
-async def _fetch_all(slugs: list[str], api_key: str = "") -> list[dict | None]:
+async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20) -> list[dict | None]:
     """Run _fetch_movie for every slug concurrently, capped at _CONCURRENCY threads."""
-    sem = asyncio.Semaphore(_CONCURRENCY)
+    sem = asyncio.Semaphore(concurrency)
     total = len(slugs)
     done = 0
     results: list[dict | None] = [None] * total
@@ -143,7 +141,7 @@ async def _fetch_all(slugs: list[str], api_key: str = "") -> list[dict | None]:
     return results
 
 
-def get_letterboxd_data(all_slugs: list[str], output_path: str, api_key: str = "") -> pd.DataFrame:
+def get_letterboxd_data(all_slugs: list[str], output_path: str | os.PathLike, api_key: str = "") -> pd.DataFrame:
     """
     Fetch and cache Letterboxd movie data.
 
@@ -168,17 +166,14 @@ def get_letterboxd_data(all_slugs: list[str], output_path: str, api_key: str = "
         data_df = pd.DataFrame()
 
     # Identify slugs that need fetching
-    cached_slugs = set(data_df["slug"].unique()) if data_df.shape[0] > 0 else set()
+    cached_slugs = set(data_df["slug"].unique()) if not data_df.empty else set()
     new_slugs = [s for s in all_slugs if s not in cached_slugs]
 
     logger.info("New slugs to fetch: %d", len(new_slugs))
 
     if new_slugs:
         fetched = asyncio.run(_fetch_all(new_slugs, api_key))
-        results = []
-        for result in fetched:
-            if result:
-                results.append(result)
+        results = [r for r in fetched if r]  # Filter out None results from failed fetches
 
         if results:
             new_df = pd.DataFrame(results)
@@ -195,7 +190,7 @@ def get_letterboxd_data(all_slugs: list[str], output_path: str, api_key: str = "
 
 
 def refresh_letterboxd_data(
-    data_df: pd.DataFrame, slugs_to_refresh: list[str], output_path: str, config: dict, api_key: str = ""
+    data_df: pd.DataFrame, slugs_to_refresh: list[str], output_path: str | os.PathLike, api_key: str = ""
 ) -> pd.DataFrame:
     """
     Update existing cached movie data for specified slugs.
@@ -207,8 +202,7 @@ def refresh_letterboxd_data(
         data_df: Existing DataFrame with cached movie data.
         slugs_to_refresh: List of movie slugs to update.
         output_path: Path to cache file (parquet format).
-        config: Configuration dict containing 'days_to_update' key (currently unused but
-                passed for future extensibility).
+        api_key: TMDB API key for authenticated requests.
 
     Returns:
         Updated DataFrame with refreshed movie data and new integration_date.

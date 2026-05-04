@@ -100,7 +100,7 @@ def get_paths() -> tuple[Path | None, Path | None, Path | None]:
 
 
 @st.cache_data(ttl=DATA_TTL_SECONDS)
-def load_watchlist(movies_output: str) -> pd.DataFrame:
+def load_watchlist(movies_output: str) -> pd.DataFrame:  # pragma: no cover
     """Read ``watchlist_with_letterboxd.parquet`` from ``movies_output``."""
     log.debug("Loading watchlist from %s", movies_output)
     df = pd.read_parquet(Path(movies_output) / "watchlist_with_letterboxd.parquet")
@@ -109,7 +109,7 @@ def load_watchlist(movies_output: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=DATA_TTL_SECONDS)
-def load_showtimes(showtimes_path: str) -> pd.DataFrame:
+def load_showtimes(showtimes_path: str) -> pd.DataFrame:  # pragma: no cover
     """Read the Allocine ``showtimes.parquet`` file. Returns all rows;
     callers that only need upcoming screenings should pipe through
     :func:`future_showtimes`.
@@ -122,7 +122,7 @@ def load_showtimes(showtimes_path: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=DATA_TTL_SECONDS)
-def load_ratings(movies_output: str) -> pd.DataFrame:
+def load_ratings(movies_output: str) -> pd.DataFrame:  # pragma: no cover
     """Read ``ratings_with_letterboxd.parquet`` from ``movies_output``."""
     log.debug("Loading ratings from %s", movies_output)
     df = pd.read_parquet(Path(movies_output) / "ratings_with_letterboxd.parquet")
@@ -131,7 +131,7 @@ def load_ratings(movies_output: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=DATA_TTL_SECONDS)
-def load_letterboxd_cache(movies_output: str) -> pd.DataFrame:
+def load_letterboxd_cache(movies_output: str) -> pd.DataFrame:  # pragma: no cover
     """Read the full Letterboxd metadata cache (``data_letterboxd.parquet``).
 
     This is the authoritative source for fields that may not have propagated

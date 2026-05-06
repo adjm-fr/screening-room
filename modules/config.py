@@ -14,3 +14,6 @@ class Settings(BaseSettings):
     letterboxd_days_to_update: int = 365
     letterboxd_refresh_limit: int | None = None
     tmdb_api_key: str = ""
+
+
+settings = Settings()  # type: ignore[call-arg]

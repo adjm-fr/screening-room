@@ -26,7 +26,7 @@ import pandas as pd
 from letterboxdpy.user import User
 
 import modules.get_letterboxd_data as ldm
-from modules.config import settings
+from modules.config import Settings
 from modules.utils import build_movies_df, find_stale_slugs, merge_letterboxd_metadata, save_parquet
 
 # Configure structured logging with timestamps and level indicators
@@ -36,6 +36,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+settings = Settings()  # type: ignore[call-arg]
+
 
 @click.command()
 @click.option(

@@ -27,7 +27,7 @@ from letterboxdpy.user import User
 
 import modules.get_letterboxd_data as ldm
 from modules.config import Settings
-from modules.utils import build_movies_df, find_stale_slugs, merge_letterboxd_metadata, save_parquet
+from modules.utils import build_movies_df, fetch_user_data, find_stale_slugs, merge_letterboxd_metadata, save_parquet
 
 # Configure structured logging with timestamps and level indicators
 logging.basicConfig(
@@ -80,9 +80,9 @@ def movies_management(username: str, reset_database: bool) -> None:  # pragma: n
         raise
 
     try:
-        films_dict = user.get_films()
+        films_dict, watchlist_dict = fetch_user_data(user)
     except Exception as e:
-        logger.error("Failed to fetch films for user '%s': %s", username, e)
+        logger.error("Failed to fetch Letterboxd data for user '%s': %s", username, e)
         raise
 
     films_returned = len(films_dict.get("movies", {}))
@@ -92,12 +92,6 @@ def movies_management(username: str, reset_database: bool) -> None:  # pragma: n
             "get_films() returned 0 movies but stats reports %d — likely a scraping issue with the letterboxdpy library.",
             films_expected,
         )
-
-    try:
-        watchlist_dict = user.get_watchlist()
-    except Exception as e:
-        logger.error("Failed to fetch watchlist for user '%s': %s", username, e)
-        raise
 
     if not films_dict.get("movies") or not watchlist_dict.get("data"):
         logger.error("No films or watchlist data returned for user '%s'. Aborting.", username)

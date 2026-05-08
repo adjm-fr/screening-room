@@ -3,8 +3,16 @@
 import os
 
 import pandas as pd
+import pytest
 
-from modules.utils import build_movies_df, find_stale_slugs, merge_letterboxd_metadata, reorder_columns, save_parquet
+from modules.utils import (
+    build_movies_df,
+    fetch_user_data,
+    find_stale_slugs,
+    merge_letterboxd_metadata,
+    reorder_columns,
+    save_parquet,
+)
 
 # ── build_movies_df ───────────────────────────────────────────────────────────
 
@@ -162,3 +170,35 @@ def test_save_parquet_accepts_string_path(tmp_path):
     out = str(tmp_path / "out.parquet")
     save_parquet(df, ["slug"], out)
     assert os.path.exists(out)
+
+
+# ── fetch_user_data ───────────────────────────────────────────────────────────
+
+
+def test_fetch_user_data_returns_both_dicts(mocker):
+    user = mocker.MagicMock()
+    user.get_films.return_value = {"movies": {"slug-a": {}}}
+    user.get_watchlist.return_value = {"data": {"1": {"slug": "slug-b"}}}
+
+    films, watchlist = fetch_user_data(user)
+
+    assert films == {"movies": {"slug-a": {}}}
+    assert watchlist == {"data": {"1": {"slug": "slug-b"}}}
+
+
+def test_fetch_user_data_raises_when_get_films_fails(mocker):
+    user = mocker.MagicMock()
+    user.get_films.side_effect = RuntimeError("films error")
+    user.get_watchlist.return_value = {"data": {}}
+
+    with pytest.raises(RuntimeError, match="films error"):
+        fetch_user_data(user)
+
+
+def test_fetch_user_data_raises_when_get_watchlist_fails(mocker):
+    user = mocker.MagicMock()
+    user.get_films.return_value = {"movies": {}}
+    user.get_watchlist.side_effect = RuntimeError("watchlist error")
+
+    with pytest.raises(RuntimeError, match="watchlist error"):
+        fetch_user_data(user)

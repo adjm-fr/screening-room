@@ -1,19 +1,19 @@
 # runtime
-huggingface-hub>=1.12.0
-requests>=2.32
-beautifulsoup4>=4.12
+huggingface-hub>=1.14.0
+requests>=2.33.1
+beautifulsoup4>=4.14.3
 tabulate>=0.10.0
-streamlit>=1.56.0
+streamlit>=1.57.0
 pandas>=3.0.2
 pyarrow>=24.0.0
 python-dotenv>=1.2.2
-pydantic-settings>=2.0
+pydantic-settings>=2.14.0
 streamlit-calendar>=1.4.0
-click>=8.0
+click>=8.3.3
 
 # dagster
-dagster>=1.9
-dagster-webserver>=1.9
+dagster>=1.13.4
+dagster-webserver>=1.13.4
 
 # dev / CI — not needed at runtime
 bandit==1.9.4

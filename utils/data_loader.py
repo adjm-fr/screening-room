@@ -19,16 +19,13 @@ Public API:
 """
 
 import logging
-import os
 import unicodedata
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
-# Loaded once at import time — pages no longer call load_dotenv themselves.
-load_dotenv(Path(__file__).parents[1] / ".env")
+from config import settings
 
 log = logging.getLogger(__name__)
 
@@ -84,13 +81,10 @@ def get_paths() -> tuple[Path | None, Path | None, Path | None]:
     element is ``None`` when the corresponding env var is unset, so callers
     can tailor an error message instead of failing on a generic ``KeyError``.
     """
-    movies_raw = os.getenv("MOVIES_OUTPUT_PATH")
-    allocine_raw = os.getenv("ALLOCINE_OUTPUT_PATH")
-    theaters_raw = os.getenv("ALLOCINE_INPUT_PATH")
     return (
-        Path(movies_raw) if movies_raw else None,
-        Path(allocine_raw) if allocine_raw else None,
-        Path(theaters_raw) if theaters_raw else None,
+        settings.movies_output_path,
+        settings.allocine_output_path,
+        settings.allocine_input_path,
     )
 
 

@@ -17,17 +17,14 @@ Usage:
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import click
-from dotenv import load_dotenv
+
+from config import settings
 
 # ── Config ────────────────────────────────────────────────────────────────────
-
-_ROOT = Path(__file__).parent
-load_dotenv(_ROOT / ".env")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -119,19 +116,16 @@ async def _run_all(tasks: list[tuple[str, list[str], Path]]) -> dict[str, bool]:
 @click.option("--reset-db", is_flag=True, help="Pass --reset_database to movies_management.")
 def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
     """Refresh cinema dashboard data (showtimes + watchlist)."""
-    allocine_dir = Path(os.getenv("ALLOCINE_DIR", str(_ROOT.parent / "Allocine-Showtimes-Scraping")))
-    movies_dir = Path(os.getenv("MOVIES_DIR", str(_ROOT.parent / "movies_management")))
+    allocine_dir = settings.allocine_dir
+    movies_dir = settings.movies_dir
 
-    showtimes_raw = os.getenv("ALLOCINE_OUTPUT_PATH")
-    watchlist_raw = os.getenv("MOVIES_OUTPUT_PATH")
-
-    if not showtimes_raw:
+    if not settings.allocine_output_path:
         raise click.ClickException("ALLOCINE_OUTPUT_PATH is not set in cinema_dashboard/.env")
-    if not watchlist_raw:
+    if not settings.movies_output_path:
         raise click.ClickException("MOVIES_OUTPUT_PATH is not set in cinema_dashboard/.env")
 
-    showtimes_path = Path(showtimes_raw)
-    watchlist_path = Path(watchlist_raw) / "watchlist_with_letterboxd.parquet"
+    showtimes_path = settings.allocine_output_path
+    watchlist_path = settings.movies_output_path / "watchlist_with_letterboxd.parquet"
 
     # ── Decide which scrapers to run ──────────────────────────────────────────
     tasks: list[tuple[str, list[str], Path]] = []

@@ -12,7 +12,6 @@ the user can confirm to append the theater to the theaters CSV.
 
 import json
 import logging
-import os
 from collections.abc import Iterator
 from typing import cast
 
@@ -20,6 +19,7 @@ import pandas as pd
 import streamlit as st
 from huggingface_hub import InferenceClient
 
+from config import settings
 from utils.allocine_search import _get_paris_cinemas, search_theaters
 from utils.data_loader import (
     build_taste_profile,
@@ -33,9 +33,6 @@ from utils.data_loader import (
 from utils.theater_manager import append_theater, backfill_addresses, load_theater_ids, load_theaters
 
 log = logging.getLogger(__name__)
-
-MODEL = "Qwen/Qwen2.5-72B-Instruct"
-MAX_TOKENS = 1024
 
 SEARCH_THEATER_TOOL = {
     "type": "function",
@@ -93,7 +90,7 @@ def _ask_hf(
     known_theaters is injected into the system prompt so the model can detect unknown
     theaters and trigger the search_theater tool reliably.
     """
-    log.debug("Calling HF API — model: %s, history length: %d messages", MODEL, len(history))
+    log.debug("Calling HF API — model: %s, history length: %d messages", settings.hf_model, len(history))
     log.debug("Known theaters passed to model: %s", known_theaters)
 
     client = InferenceClient(api_key=api_key)
@@ -128,9 +125,9 @@ def _ask_hf(
         is_tool_call = False
 
         stream = client.chat.completions.create(  # type: ignore[call-overload]
-            model=MODEL,
+            model=settings.hf_model,
             messages=messages,
-            max_tokens=MAX_TOKENS,
+            max_tokens=settings.hf_max_tokens,
             tools=[SEARCH_THEATER_TOOL],  # type: ignore[arg-type]
             tool_choice="auto",
             stream=True,
@@ -181,9 +178,9 @@ def _ask_hf(
         }
 
         follow_up = client.chat.completions.create(
-            model=MODEL,
+            model=settings.hf_model,
             messages=messages + [assistant_msg, tool_result_msg],
-            max_tokens=MAX_TOKENS,
+            max_tokens=settings.hf_max_tokens,
             stream=True,
         )
         total_chars = 0
@@ -209,7 +206,7 @@ def main() -> None:
     st.title("Recommendations")
     st.markdown("Ask about watchlist movies that are currently showing.")
 
-    api_key = os.getenv("HF_API_KEY")
+    api_key = settings.hf_api_key
     movies_path, showtimes_path, theaters_csv = get_paths()
 
     if not api_key:

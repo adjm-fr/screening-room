@@ -40,7 +40,7 @@ Inner-joins your watchlist with current showtimes to show which watchlist movies
 
 ### Recommendations (🤖)
 
-Chat interface powered by the [Hugging Face Inference API](https://huggingface.co/inference-api) (`Qwen/Qwen2.5-72B-Instruct`). Ask questions like:
+Chat interface powered by the [Hugging Face Inference API](https://huggingface.co/inference-api) (model configurable via `HF_MODEL`, defaults to `Qwen/Qwen2.5-72B-Instruct`). Ask questions like:
 
 - "Which watchlist movies are showing this weekend?"
 - "Based on my taste, what should I prioritise?"
@@ -83,6 +83,7 @@ movies_management          Allocine-Showtimes-Scraping
 ```
 cinema_dashboard/
 ├── app.py                        # Streamlit entry point — registers all pages
+├── config.py                     # Centralised settings via pydantic-settings (BaseSettings)
 ├── orchestrate.py                # Lightweight CLI to refresh all data (runs both scrapers in parallel)
 ├── pipeline/                     # Dagster pipeline (alternative to orchestrate.py)
 │   ├── assets.py                 # @asset definitions for showtimes + watchlist
@@ -135,6 +136,10 @@ cp .env.example .env
 | `ALLOCINE_OUTPUT_PATH` | Path to `showtimes.parquet` written by `Allocine-Showtimes-Scraping` |
 | `ALLOCINE_INPUT_PATH` | Path to the theaters CSV read by `Allocine-Showtimes-Scraping` — also written to when adding a theater via the Recommendations chat |
 | `HF_API_KEY` | Hugging Face API token (free) — required for the Recommendations page. Create one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+| `LETTERBOXD_USERNAME` | Your Letterboxd username — required for the orchestrator and Dagster pipeline |
+| `LETTERBOXD_DAYS_TO_UPDATE` | Days before cached movie metadata is considered stale and refreshed (default: 365) |
+| `HF_MODEL` | Hugging Face model ID for the Recommendations page (default: `Qwen/Qwen2.5-72B-Instruct`) |
+| `HF_MAX_TOKENS` | Max tokens for model responses (default: 1024) |
 | `ALLOCINE_DIR` | *(optional)* Absolute path to the `Allocine-Showtimes-Scraping` repo. Defaults to `../Allocine-Showtimes-Scraping` relative to this repo. |
 | `MOVIES_DIR` | *(optional)* Absolute path to the `movies_management` repo. Defaults to `../movies_management` relative to this repo. |
 

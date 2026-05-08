@@ -22,7 +22,7 @@ from pathlib import Path
 
 import click
 
-from config import settings
+from modules.config import settings
 
 # ── Config ────────────────────────────────────────────────────────────────────
 

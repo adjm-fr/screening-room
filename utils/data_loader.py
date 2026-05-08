@@ -25,7 +25,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from config import settings
+from modules.config import settings
 
 log = logging.getLogger(__name__)
 

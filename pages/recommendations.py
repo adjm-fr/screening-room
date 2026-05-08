@@ -19,7 +19,7 @@ import pandas as pd
 import streamlit as st
 from huggingface_hub import InferenceClient
 
-from config import settings
+from modules.config import settings
 from utils.allocine_search import _get_paris_cinemas, search_theaters
 from utils.data_loader import (
     build_taste_profile,

@@ -1,8 +1,33 @@
 """Utility functions for movie data transformation and I/O."""
 
+import asyncio
+import logging
 import os
 
 import pandas as pd
+from letterboxdpy.user import User
+
+logger = logging.getLogger(__name__)
+
+
+async def _fetch_user_data(user: User) -> tuple[dict, dict]:
+    films, watchlist = await asyncio.gather(
+        asyncio.to_thread(user.get_films),
+        asyncio.to_thread(user.get_watchlist),
+        return_exceptions=True,
+    )
+    if isinstance(films, BaseException):
+        logger.error("Failed to fetch films: %s", films)
+        raise films
+    if isinstance(watchlist, BaseException):
+        logger.error("Failed to fetch watchlist: %s", watchlist)
+        raise watchlist
+    return films, watchlist
+
+
+def fetch_user_data(user: User) -> tuple[dict, dict]:
+    """Fetch films and watchlist concurrently for a Letterboxd user."""
+    return asyncio.run(_fetch_user_data(user))
 
 
 def build_movies_df(films_dict: dict, watchlist_dict: dict) -> pd.DataFrame:

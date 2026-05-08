@@ -216,6 +216,12 @@ def refresh_letterboxd_data(
     fetched = asyncio.run(_fetch_all(slugs_to_refresh, api_key))
     results = [r for r in fetched if r]
 
+    fetched_slugs = {r["slug"] for r in results}
+    dead_slugs = [s for s in slugs_to_refresh if s not in fetched_slugs]
+    if dead_slugs:
+        logger.info("Removing %d stale slug(s) no longer on Letterboxd: %s", len(dead_slugs), dead_slugs)
+        data_df = data_df[~data_df["slug"].isin(dead_slugs)]
+
     if results:
         now = pd.to_datetime(datetime.now().date())
         refresh_df = pd.DataFrame(results)
@@ -225,7 +231,9 @@ def refresh_letterboxd_data(
         data_df = data_df.set_index("slug")
         data_df.update(refresh_df.set_index("slug"))
         data_df = data_df.reset_index()
-        data_df.to_parquet(output_path, index=False)
         logger.info("Refreshed %d movies in cache", len(results))
+
+    if results or dead_slugs:
+        data_df.to_parquet(output_path, index=False)
 
     return data_df

@@ -1,0 +1,13 @@
+# Streamlit theme — system-driven light + dark.
+# Streamlit 1.46+ honours `prefers-color-scheme` when both [theme] and
+# [theme.light] are defined. Inter (UI) and Playfair Display (headlines)
+# are loaded by assets/styles.css via Google Fonts; the `font` key here
+# only affects Streamlit's native widgets that don't pick up our CSS.
+
+[theme]
+base = "dark"
+primaryColor = "#E63946"
+backgroundColor = "#0E1117"
+secondaryBackgroundColor = "#1A1D24"
+textColor = "#F5F5F5"
+font = "sans serif"

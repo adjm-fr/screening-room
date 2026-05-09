@@ -1,0 +1,441 @@
+"""
+Reusable chat renderer for the cinema recommendations assistant.
+
+The chat is mounted in two places:
+
+- ``pages/recommendations.py`` — the dedicated full-page surface (with prompt
+  chips, pinned recommendations column, conversation export)
+- ``utils/cmdk.py`` — the global ``Cmd+K`` dialog (compact variant, no pinned
+  column, shares the same conversation state via Streamlit ``session_state``)
+
+Both surfaces share ``session_state['rec_messages']`` and
+``session_state['pending_theaters']`` so the conversation persists across them.
+
+This module owns:
+    build_chat_context()  -> ChatContext | None  (config + data validation)
+    render_chat(ctx, ...) -> None                (the UI)
+    PROMPT_SUGGESTIONS    : list[str]            (chip-row examples)
+
+The Hugging Face API call lives in :func:`_ask_hf` which streams the assistant
+reply and handles a single round of ``search_theater`` tool use.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import logging
+from collections.abc import Iterator
+from pathlib import Path
+from typing import cast
+
+import pandas as pd
+import streamlit as st
+from huggingface_hub import InferenceClient
+
+from modules.config import settings
+from utils.allocine_search import _get_paris_cinemas, search_theaters
+from utils.data_loader import (
+    _normalize_title,
+    build_taste_profile,
+    build_watchlist_showtimes,
+    future_showtimes,
+    get_paths,
+    load_ratings,
+    load_showtimes,
+    load_watchlist,
+)
+from utils.theater_manager import append_theater, backfill_addresses, load_theater_ids, load_theaters
+
+log = logging.getLogger(__name__)
+
+PROMPT_SUGGESTIONS = [
+    "What's playing tonight?",
+    "Pick a short film for after work",
+    "Surprise me with a Bong Joon-ho-style movie",
+    "What can I watch this weekend?",
+]
+
+SEARCH_THEATER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_theater",
+        "description": (
+            "Search Allocine for Paris cinemas matching a name. "
+            "Call this when the user asks about a theater that is not in the current showtimes data."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Theater name to search for"}},
+            "required": ["query"],
+        },
+    },
+}
+
+
+@dataclasses.dataclass
+class ChatContext:
+    """All data the chat needs once configuration is validated."""
+
+    api_key: str
+    taste: str
+    showtimes_md: str
+    known_theaters: list[str]
+    theaters_csv: Path | None
+    wl_shows: pd.DataFrame
+    n_movies: int
+    n_screenings: int
+
+
+def _showtimes_context(wl_shows: pd.DataFrame) -> str:
+    wanted = [
+        "french_title",
+        "letterboxd_title",
+        "theater_name",
+        "showtimes",
+        "genres",
+        "letterboxd_avg_rating",
+        "runtime_minutes",
+        "directors",
+    ]
+    display_cols = [c for c in wanted if c in wl_shows.columns]
+    df = wl_shows[display_cols].sort_values("showtimes").drop_duplicates().reset_index(drop=True)
+    return df.to_markdown(index=False)
+
+
+def build_chat_context() -> ChatContext | None:
+    """Load config + data and return a :class:`ChatContext`, or ``None`` if unusable.
+
+    Renders user-friendly Streamlit error messages for missing config or data
+    so callers don't have to repeat the boilerplate. Called from both the
+    dedicated page and the ``Cmd+K`` dialog.
+    """
+    api_key = settings.hf_api_key
+    movies_path, showtimes_path, theaters_csv = get_paths()
+
+    if not api_key:
+        st.error("**HF_API_KEY** is not set in `cinema_dashboard/.env`.")
+        return None
+    if not movies_path:
+        st.error("**MOVIES_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
+        return None
+    if not showtimes_path:
+        st.error("**ALLOCINE_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
+        return None
+
+    if theaters_csv and "theaters_backfilled" not in st.session_state:
+        try:
+            log.debug("Backfilling theater addresses from Allocine cache")
+            updated = backfill_addresses(theaters_csv, _get_paris_cinemas())
+            log.info("Address backfill complete: %d row(s) updated", updated)
+        except Exception as exc:
+            log.warning("Address backfill failed: %s", exc)
+        finally:
+            st.session_state.theaters_backfilled = True
+
+    missing: list[str] = []
+    if not (movies_path / "watchlist_with_letterboxd.parquet").exists():
+        missing.append("watchlist_with_letterboxd.parquet — run `python main.py` in `movies_management`")
+    if not (movies_path / "ratings_with_letterboxd.parquet").exists():
+        missing.append("ratings_with_letterboxd.parquet — run `python main.py` in `movies_management`")
+    if not showtimes_path.exists():
+        missing.append("showtimes.parquet — run `python main.py` in `Allocine-Showtimes-Scraping`")
+    if missing:
+        for m in missing:
+            st.warning(f"Missing: {m}")
+        return None
+
+    try:
+        ratings_df = load_ratings(str(movies_path))
+        watchlist_df = load_watchlist(str(movies_path))
+        showtimes_df = load_showtimes(str(showtimes_path))
+    except Exception as exc:
+        st.error(f"Failed to load data: {exc}")
+        return None
+
+    showtimes_df = future_showtimes(showtimes_df)
+    wl_shows = build_watchlist_showtimes(showtimes_df, watchlist_df)
+
+    if wl_shows.empty:
+        st.info("No upcoming showtimes found for your watchlist movies. Nothing to recommend.")
+        return None
+
+    showtime_theaters = set(wl_shows["theater_name"].dropna().unique()) if "theater_name" in wl_shows.columns else set()
+    csv_theaters = {t["name"] for t in load_theaters(theaters_csv)} if theaters_csv else set()
+    known_theaters = sorted(showtime_theaters | csv_theaters)
+
+    return ChatContext(
+        api_key=api_key,
+        taste=build_taste_profile(ratings_df),
+        showtimes_md=_showtimes_context(wl_shows),
+        known_theaters=known_theaters,
+        theaters_csv=theaters_csv,
+        wl_shows=wl_shows,
+        n_movies=int(wl_shows["letterboxd_title"].nunique()),
+        n_screenings=int(len(wl_shows)),
+    )
+
+
+def _ask_hf(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], list]:
+    """Stream a HF chat response, handling one round of ``search_theater`` tool use.
+
+    Returns ``(text_stream, pending_ref)`` where ``pending_ref`` is a
+    single-element list populated *after* the generator is exhausted with the
+    list of theater suggestions awaiting user confirmation (or ``None``).
+    """
+    log.debug("Calling HF API — model: %s, history length: %d messages", settings.hf_model, len(history))
+    client = InferenceClient(api_key=ctx.api_key)
+    known_theaters_str = "\n".join(f"- {t}" for t in sorted(ctx.known_theaters)) or "None"
+    system_msg = {
+        "role": "system",
+        "content": (
+            "You are a cinema recommendation assistant helping a film enthusiast choose what to watch.\n\n"
+            f"User taste profile (from their Letterboxd ratings history):\n{ctx.taste}\n\n"
+            f"These are the watchlist movies currently showing at their theaters:\n{ctx.showtimes_md}\n\n"
+            f"Known theaters (the only ones with showtimes data):\n{known_theaters_str}\n\n"
+            "Rules:\n"
+            "- Answer questions about the showtimes above concisely.\n"
+            "- Refer to movies by title and include theater name and showtime when relevant.\n"
+            "- Do not invent movies or showtimes not listed above.\n"
+            "- If the user mentions a theater that is NOT in the known theaters list above, "
+            "you MUST call search_theater before responding — do not say the theater has no data."
+        ),
+    }
+    messages = [system_msg] + history
+    pending_ref: list[list[dict] | None] = [None]
+
+    def _generate() -> Iterator[str]:
+        tool_call_id = ""
+        tool_call_name = ""
+        tool_call_args = ""
+        is_tool_call = False
+
+        stream = client.chat.completions.create(  # type: ignore[call-overload]
+            model=settings.hf_model,
+            messages=messages,
+            max_tokens=settings.hf_max_tokens,
+            tools=[SEARCH_THEATER_TOOL],
+            tool_choice="auto",
+            stream=True,
+        )
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                yield delta.content
+            if delta.tool_calls:
+                is_tool_call = True
+                for tc in delta.tool_calls:
+                    if tc.id:
+                        tool_call_id = tc.id
+                    if tc.function:
+                        tool_call_name += tc.function.name or ""
+                        tool_call_args += tc.function.arguments or ""
+
+        if not is_tool_call:
+            return
+
+        args = json.loads(tool_call_args)
+        query = args.get("query", "")
+        log.info("Tool call: search_theater(query=%r)", query)
+        results = search_theaters(query)
+        log.info("search_theater returned %d result(s)", len(results))
+
+        assistant_msg = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {"name": tool_call_name, "arguments": tool_call_args},
+                }
+            ],
+        }
+        tool_result_msg = {"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(results)}
+
+        # Surface the tool call to the UI as a transparent expander.
+        with st.expander(f"🛠 Searched theaters: {query}", expanded=False):
+            if results:
+                st.dataframe(pd.DataFrame(results), width="stretch", hide_index=True)
+            else:
+                st.caption("No matches.")
+
+        follow_up = client.chat.completions.create(
+            model=settings.hf_model,
+            messages=messages + [assistant_msg, tool_result_msg],
+            max_tokens=settings.hf_max_tokens,
+            stream=True,
+        )
+        for chunk in follow_up:
+            if not chunk.choices:
+                continue
+            delta_content = chunk.choices[0].delta.content
+            if delta_content:
+                yield delta_content
+
+        pending_ref[0] = results if results else None
+
+    return _generate(), pending_ref
+
+
+def _find_pinnable_titles(reply_text: str, wl_shows: pd.DataFrame) -> list[str]:
+    """Return watchlist titles that appear (case/accent-insensitive) in ``reply_text``."""
+    if wl_shows.empty or "letterboxd_title" not in wl_shows.columns:
+        return []
+    norm_reply = _normalize_title(reply_text)
+    titles = wl_shows["letterboxd_title"].dropna().unique().tolist()
+    matches = [t for t in titles if _normalize_title(t) and _normalize_title(t) in norm_reply]
+    return sorted(set(matches))
+
+
+def _render_pending_theaters(ctx: ChatContext) -> None:
+    pending = st.session_state.get("pending_theaters")
+    if not pending or not ctx.theaters_csv:
+        return
+    st.divider()
+    st.markdown("**Found these Paris theaters — add one to your list?**")
+    for theater in pending:
+        col1, col2 = st.columns([4, 1])
+        col1.markdown(f"**{theater['name']}** — {theater.get('address', '')}")
+        if col2.button("Add", key=f"add_{theater['id']}"):
+            added = append_theater(ctx.theaters_csv, theater["id"], theater["name"], theater.get("address", ""))
+            if added:
+                st.success(f"Added **{theater['name']}**. Re-run the Allocine scraper to fetch its showtimes.")
+            else:
+                st.info(f"**{theater['name']}** is already in your theater list.")
+            st.session_state.pending_theaters = None
+            st.rerun()
+    if st.button("Dismiss", key="dismiss_pending"):
+        st.session_state.pending_theaters = None
+        st.rerun()
+    st.divider()
+
+
+def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned_column: bool = True) -> None:
+    """Render the chat UI: prompt chips, history, streaming response, pending theaters.
+
+    When ``show_pinned_column`` is True (page surface), the chat occupies a
+    2/3 column with pinned recommendations on the right. When False (dialog
+    surface), the chat fills the available width.
+    """
+    if "rec_messages" not in st.session_state:
+        st.session_state.rec_messages = []
+    if "pending_theaters" not in st.session_state:
+        st.session_state.pending_theaters = None
+    if "pinned_recs" not in st.session_state:
+        st.session_state.pinned_recs = []
+
+    if show_pinned_column:
+        chat_col, pinned_col = st.columns([2, 1])
+    else:
+        chat_col = st.container()
+        pinned_col = None
+
+    with chat_col:
+        st.caption(f"Model: `{settings.hf_model}` · {ctx.n_movies} watchlist movies · {ctx.n_screenings} upcoming screenings")
+
+        if show_prompt_chips and not st.session_state.rec_messages:
+            chosen = st.pills(
+                "Try a prompt",
+                options=PROMPT_SUGGESTIONS,
+                selection_mode="single",
+                key="prompt_chips",
+            )
+            if chosen and st.session_state.get("_last_chip") != chosen:
+                st.session_state["_last_chip"] = chosen
+                st.session_state["pending_prompt"] = chosen
+                st.rerun()
+
+        _render_pending_theaters(ctx)
+
+        for msg in st.session_state.rec_messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        prompt = st.session_state.pop("pending_prompt", None) or st.chat_input("Ask about what's showing…")
+        if prompt:
+            st.session_state.rec_messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                with st.status("Thinking…", expanded=False) as status:
+                    try:
+                        stream, pending_ref = _ask_hf(ctx, st.session_state.rec_messages)
+                    except Exception as exc:
+                        log.exception("HF API call failed")
+                        reply: str = f"API error: {exc}"
+                        pending: list[dict] | None = None
+                        st.markdown(reply)
+                        status.update(label="Failed", state="error")
+                    else:
+                        reply = cast(str, st.write_stream(stream))
+                        pending = pending_ref[0]
+                        status.update(label="Done", state="complete")
+
+            st.session_state.rec_messages.append({"role": "assistant", "content": reply})
+
+            pinnable = _find_pinnable_titles(reply, ctx.wl_shows)
+            if pinnable:
+                st.session_state["_pinnable_from_last_reply"] = pinnable
+
+            if pending and ctx.theaters_csv:
+                existing_ids = load_theater_ids(ctx.theaters_csv)
+                new_pending = [t for t in pending if t["id"] not in existing_ids]
+                st.session_state.pending_theaters = new_pending if new_pending else None
+            st.rerun()
+
+        if st.session_state.rec_messages:
+            c1, c2 = st.columns(2)
+            with c1:
+                conv_md = "\n\n".join(f"### {m['role'].title()}\n\n{m['content']}" for m in st.session_state.rec_messages)
+                st.download_button(
+                    "💾 Save conversation",
+                    data=conv_md.encode("utf-8"),
+                    file_name="recommendations_conversation.md",
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
+            with c2:
+                if st.button("🗑 Clear conversation", use_container_width=True):
+                    st.session_state.rec_messages = []
+                    st.session_state.pending_theaters = None
+                    st.session_state.pinned_recs = []
+                    st.session_state.pop("_last_chip", None)
+                    st.session_state.pop("_pinnable_from_last_reply", None)
+                    st.rerun()
+
+    if pinned_col is not None:
+        with pinned_col:
+            st.markdown("##### 📌 Pinned")
+            pinnable = st.session_state.get("_pinnable_from_last_reply") or []
+            if pinnable:
+                to_pin = st.multiselect(
+                    "Pin from this reply",
+                    options=pinnable,
+                    key="pin_picker",
+                    label_visibility="collapsed",
+                )
+                if to_pin:
+                    existing = {p["letterboxd_title"] for p in st.session_state.pinned_recs}
+                    for title in to_pin:
+                        if title in existing:
+                            continue
+                        match = ctx.wl_shows[ctx.wl_shows["letterboxd_title"] == title].head(1)
+                        if not match.empty:
+                            st.session_state.pinned_recs.append(match.iloc[0].to_dict())
+
+            if not st.session_state.pinned_recs:
+                st.caption("Pinned recommendations will appear here.")
+            else:
+                for pinned in st.session_state.pinned_recs:
+                    poster_url = pinned.get("poster_url")
+                    title = pinned.get("letterboxd_title") or pinned.get("french_title") or pinned.get("title") or "Untitled"
+                    if poster_url and isinstance(poster_url, str):
+                        st.image(poster_url, use_container_width=True, caption=str(title))
+                    else:
+                        st.caption(str(title))
+                if st.button("Clear pins", key="clear_pins", use_container_width=True):
+                    st.session_state.pinned_recs = []
+                    st.rerun()

@@ -170,6 +170,8 @@ def build_watchlist_showtimes(
         "letterboxd_avg_rating",
         "directors",
         "release_year",
+        "poster_url",
+        "banner_url",
     ]
     meta_cols = [c for c in _want_cols if c in watchlist_df.columns]
     wl_meta = watchlist_df[meta_cols].copy()

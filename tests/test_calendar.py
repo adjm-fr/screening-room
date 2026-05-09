@@ -319,9 +319,28 @@ def test_basic_event_shape(make_events_df):
     assert len(events) == 1
     e = events[0]
     assert e["title"] == "Dune"
-    assert e["color"] == "#e63946"
+    # No rating present → neutral gray (heatmap fallback)
+    assert e["color"] == "#7f7f7f"
     assert "start" in e and "end" in e
     assert e["extendedProps"]["theater"] == "UGC"
+
+
+def test_event_color_uses_rating_heatmap(make_events_df):
+    df = make_events_df(
+        [
+            {
+                "french_title": "Parasite",
+                "showtimes": "2025-06-01 18:00",
+                "runtime_minutes": 132,
+                "theater_name": "Le Champo",
+                "letterboxd_avg_rating": 9.1,
+            }
+        ]
+    )
+    events = _to_calendar_events(df)
+    # rating 9.1 → lightness 80 - 9.1*4 = ~44
+    assert events[0]["color"].startswith("hsl(36 80% 4")
+    assert "★ 9.1" in events[0]["title"]
 
 
 def test_end_time_computed_from_runtime(make_events_df):

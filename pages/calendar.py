@@ -1,68 +1,108 @@
 """
 Watchlist Calendar page.
 
-Cross-joins:
-- watchlist_with_letterboxd.parquet (from movies_management) — what you want to see
-- showtimes.parquet (from Allocine-Showtimes-Scraping) — what is showing
+Joins ``watchlist_with_letterboxd.parquet`` with ``showtimes.parquet`` and
+displays upcoming screenings across three surfaces:
 
-Displays upcoming showtimes for watchlist movies as an interactive calendar
-(streamlit-calendar) with a fallback table when the package is unavailable.
-Also offers a Google Calendar CSV download.
+- **Calendar** — ``streamlit-calendar`` widget with events colored along an
+  amber heatmap by Letterboxd rating (gold = high score, faded = low),
+  always paired with a numeric rating in the title for accessibility.
+- **Map** — pydeck map of theaters carrying screenings in the current
+  filter; marker size ∝ # of watchlist screenings.
+- **List** — poster rail grouped by date for at-a-glance browsing.
+
+Top chip-filter bar holds theaters, genres, and a min-rating slider; the
+sidebar carries only the heavy date-range picker. ICS export is the primary
+download (universally accepted by Google Calendar / Apple Calendar / Outlook);
+CSV is kept behind an expander for legacy use.
 """
+
+from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
 
 from utils.data_loader import build_watchlist_showtimes, future_showtimes, get_paths, load_showtimes, load_watchlist
+from utils.geo import load_geocoded_theaters, render_theater_map
+from utils.ui import (
+    rating_to_hsl,
+    render_chip_filter,
+    render_empty_state,
+    render_poster_rail,
+    to_ics,
+)
 
 
 def _to_calendar_events(df: pd.DataFrame) -> list[dict]:
-    events = []
+    """Build streamlit-calendar event dicts with rating-heatmap colors."""
+    events: list[dict] = []
     for _, row in df.iterrows():
         start_dt = pd.to_datetime(row["showtimes"])
         if pd.isna(start_dt):
             continue
-
         runtime = row.get("runtime_minutes")
         try:
             duration = int(float(runtime)) if runtime and not pd.isna(runtime) else 120
         except (ValueError, TypeError):
             duration = 120
-
         end_dt = start_dt + pd.Timedelta(minutes=duration)
         theater = row.get("theater_name") or row.get("theater_id", "")
-
+        rating = row.get("letterboxd_avg_rating")
+        rating_label = f" · ★ {float(rating):.1f}" if isinstance(rating, (int, float)) and not pd.isna(rating) else ""
         events.append(
             {
-                "title": row["french_title"],
+                "title": f"{row['french_title']}{rating_label}",
                 "start": start_dt.isoformat(),
                 "end": end_dt.isoformat(),
-                "color": "#e63946",
-                "extendedProps": {"theater": theater},
+                "color": rating_to_hsl(rating if isinstance(rating, (int, float)) else None) if rating_label else "#7f7f7f",
+                "extendedProps": {"theater": str(theater), "rating": rating_label.strip(" ·")},
+            }
+        )
+    return events
+
+
+def _build_ics_events(df: pd.DataFrame) -> list[dict]:
+    events: list[dict] = []
+    for idx, row in df.iterrows():
+        showtime = pd.to_datetime(row["showtimes"])
+        if pd.isna(showtime):
+            continue
+        runtime = row.get("runtime_minutes")
+        try:
+            runtime_min = int(float(runtime)) if runtime and not pd.isna(runtime) else 120
+        except (ValueError, TypeError):
+            runtime_min = 120
+        end = showtime + pd.Timedelta(minutes=runtime_min)
+        events.append(
+            {
+                "summary": str(row.get("letterboxd_title") or row["french_title"]),
+                "start": showtime,
+                "end": end,
+                "location": str(row.get("theater_name") or row.get("theater_id", "")),
+                "description": f"Directors: {row.get('directors') or 'N/A'} | French title: {row['french_title']}",
+                "uid": f"{idx}-{int(showtime.timestamp())}@cinema_dashboard",
             }
         )
     return events
 
 
 def main() -> None:
-    st.title("Watchlist Calendar")
-    st.markdown("Shows upcoming screenings of your Letterboxd watchlist movies across your configured theaters.")
+    st.markdown('<h1 class="h-display" style="font-size:2rem;">Watchlist Calendar</h1>', unsafe_allow_html=True)
+    st.caption("Upcoming screenings of your Letterboxd watchlist movies across your configured theaters.")
 
-    movies_path, showtimes_path, _ = get_paths()
-
+    movies_path, showtimes_path, theaters_csv = get_paths()
     if not movies_path:
         st.error("**MOVIES_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
         return
     if not showtimes_path:
         st.error("**ALLOCINE_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
         return
-
-    watchlist_file = movies_path / "watchlist_with_letterboxd.parquet"
-    if not watchlist_file.exists():
-        st.warning("Watchlist data not found. Run `python main.py` in `movies_management` first.")
-        return
-    if not showtimes_path.exists():
-        st.warning("Showtimes data not found. Run `python main.py` in the `Allocine-Showtimes-Scraping` project first.")
+    if not (movies_path / "watchlist_with_letterboxd.parquet").exists() or not showtimes_path.exists():
+        render_empty_state(
+            "📥",
+            "Data missing",
+            "Run the orchestrate.py CLI to scrape watchlist + showtimes.",
+        )
         return
 
     try:
@@ -73,132 +113,155 @@ def main() -> None:
         return
 
     showtimes_df = future_showtimes(showtimes_df)
-
     wl_shows = build_watchlist_showtimes(showtimes_df, watchlist_df)
-
     if wl_shows.empty:
-        st.info("No upcoming showtimes found for your watchlist movies.")
+        render_empty_state(
+            "🍿",
+            "No upcoming watchlist screenings",
+            "Showtimes refresh Tuesday morning — check back, or browse all upcoming films.",
+        )
         return
 
-    # ── Sidebar filters ───────────────────────────────────────────────────────
-    st.sidebar.header("Calendar filters")
+    # ── Top chip filter bar ──────────────────────────────────────────────────
+    fc1, fc2, fc3 = st.columns([2, 2, 2])
+    with fc1:
+        theaters = sorted(wl_shows["theater_name"].dropna().unique().tolist()) if "theater_name" in wl_shows.columns else []
+        sel_theaters = render_chip_filter("Theaters", theaters, key="cal_theaters", default=theaters)
+    with fc2:
+        genres_set: set[str] = set()
+        if "genres" in wl_shows.columns:
+            for g in wl_shows["genres"].dropna():
+                genres_set.update(p.strip() for p in str(g).split(",") if p.strip())
+        sel_genres = render_chip_filter("Genres", sorted(genres_set), key="cal_genres")
+    with fc3:
+        min_rating = st.slider("Min Letterboxd rating", 0.0, 10.0, 0.0, 0.5, key="cal_minrating")
 
-    if "theater_name" in wl_shows.columns:
-        all_theaters = sorted(wl_shows["theater_name"].dropna().unique())
-        selected_theaters = st.sidebar.multiselect("Theaters", all_theaters, default=all_theaters)
-        wl_shows = wl_shows[wl_shows["theater_name"].isin(selected_theaters)]
+    # ── Sidebar: date range only (the heavy widget) ─────────────────────────
+    st.sidebar.header("Date range")
+    min_dt = pd.to_datetime(wl_shows["showtimes"]).min()
+    max_dt = pd.to_datetime(wl_shows["showtimes"]).max()
+    date_range = st.sidebar.date_input(
+        "Show screenings between",
+        value=(min_dt.date(), max_dt.date()),
+        min_value=min_dt.date(),
+        max_value=max_dt.date(),
+    )
 
-    if not wl_shows.empty:
-        min_dt = pd.to_datetime(wl_shows["showtimes"]).min()
-        max_dt = pd.to_datetime(wl_shows["showtimes"]).max()
-
-        date_range = st.sidebar.date_input(
-            "Date range",
-            value=(min_dt.date(), max_dt.date()),
-            min_value=min_dt.date(),
-            max_value=max_dt.date(),
+    filtered = wl_shows.copy()
+    if sel_theaters:
+        filtered = filtered[filtered["theater_name"].isin(sel_theaters)]
+    if sel_genres and "genres" in filtered.columns:
+        pattern = "|".join(g.replace("|", r"\|") for g in sel_genres)
+        filtered = filtered[filtered["genres"].fillna("").str.contains(pattern, case=False, regex=True)]
+    if min_rating > 0 and "letterboxd_avg_rating" in filtered.columns:
+        filtered = filtered[filtered["letterboxd_avg_rating"].fillna(0) >= min_rating]
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        start_date, end_date = date_range
+        mask = (pd.to_datetime(filtered["showtimes"]).dt.date >= start_date) & (
+            pd.to_datetime(filtered["showtimes"]).dt.date <= end_date
         )
-        if isinstance(date_range, tuple) and len(date_range) == 2:
-            start_date, end_date = date_range
-            mask = (pd.to_datetime(wl_shows["showtimes"]).dt.date >= start_date) & (
-                pd.to_datetime(wl_shows["showtimes"]).dt.date <= end_date
-            )
-            wl_shows = wl_shows[mask]
+        filtered = filtered[mask]
 
-    # ── Summary ───────────────────────────────────────────────────────────────
     m1, m2 = st.columns(2)
-    m1.metric("Watchlist movies with showtimes", wl_shows["french_title"].nunique())
-    m2.metric("Total upcoming screenings", len(wl_shows))
+    m1.metric("Watchlist movies", filtered["french_title"].nunique() if not filtered.empty else 0)
+    m2.metric("Total screenings", len(filtered))
 
-    st.divider()
+    if filtered.empty:
+        render_empty_state("🔍", "No matches", "Loosen the filters to see more screenings.")
+        return
 
-    # ── Calendar view ─────────────────────────────────────────────────────────
-    events = _to_calendar_events(wl_shows)
+    tab_cal, tab_map, tab_list = st.tabs(["📅 Calendar", "🗺️ Map", "📋 List"])
 
-    try:
-        from streamlit_calendar import calendar  # type: ignore
-
-        calendar_options = {
-            "initialView": "timeGridWeek",
-            "timeZone": "Europe/Paris",
-            "headerToolbar": {
-                "left": "prev,next today",
-                "center": "title",
-                "right": "dayGridMonth,timeGridWeek,timeGridDay,listWeek",
-            },
-            "height": 650,
-        }
-        calendar(events=events, options=calendar_options)
-
-    except ImportError:
-        st.info("Install `streamlit-calendar` for an interactive calendar view. Showing table instead.")
-        table_df = (
-            wl_shows[["showtimes", "french_title", "theater_name", "theater_id"]]
-            .sort_values("showtimes")
-            .rename(columns={"showtimes": "Date & Time", "french_title": "Movie", "theater_name": "Theater"})
-            .reset_index(drop=True)
-        )
-        st.dataframe(table_df, width="stretch")
-
-    # ── Table view (always shown below calendar) ──────────────────────────────
-    with st.expander("Show as table"):
-        display_cols = [c for c in ["showtimes", "french_title", "theater_name", "runtime_minutes"] if c in wl_shows.columns]
-        st.dataframe(wl_shows[display_cols].sort_values("showtimes").reset_index(drop=True), width="stretch")
-
-    # ── Google Calendar CSV download ──────────────────────────────────────────
-    st.divider()
-    st.subheader("Export to Google Calendar")
-
-    if wl_shows.empty:
-        st.info("No watchlist showtimes to export.")
-    else:
+    with tab_cal:
         try:
+            from streamlit_calendar import calendar  # type: ignore[import-untyped]
+        except ImportError:
+            st.info("Install `streamlit-calendar` for the calendar view.")
+        else:
+            events = _to_calendar_events(filtered)
+            calendar(
+                events=events,
+                options={
+                    "initialView": "timeGridWeek",
+                    "timeZone": "Europe/Paris",
+                    "headerToolbar": {
+                        "left": "prev,next today",
+                        "center": "title",
+                        "right": "dayGridMonth,timeGridWeek,timeGridDay,listWeek",
+                    },
+                    "height": 650,
+                },
+            )
 
-            def _sanitize(value: str) -> str:
-                value = str(value).replace("\r", " ").replace("\n", " ")
-                if value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
-                    value = "'" + value
-                return value
-
-            events = []
-            for _, row in wl_shows.iterrows():
-                showtime = pd.to_datetime(row["showtimes"])
-                if pd.isna(showtime):
-                    continue
-                runtime = row.get("runtime_minutes")
-                try:
-                    runtime_min = int(float(runtime)) if runtime and not pd.isna(runtime) else 120
-                except (ValueError, TypeError):
-                    runtime_min = 120
-                end_time = showtime + pd.Timedelta(minutes=runtime_min)
-                theater = _sanitize(row.get("theater_name") or row.get("theater_id", ""))
-                events.append(
-                    {
-                        "Subject": _sanitize(row.get("letterboxd_title") or row["french_title"]),
-                        "Start Date": showtime.strftime("%Y-%m-%d"),
-                        "Start Time": showtime.strftime("%H:%M:%S"),
-                        "End Date": end_time.strftime("%Y-%m-%d"),
-                        "End Time": end_time.strftime("%H:%M:%S"),
-                        "All Day Event": "False",
-                        "Description": (
-                            f"Directors: {_sanitize(row.get('directors') or 'N/A')}"
-                            f" | French title: {_sanitize(row['french_title'])}"
-                        ),
-                        "Location": theater,
-                        "Private": "False",
-                    }
+    with tab_map:
+        if not theaters_csv:
+            st.info("Set `ALLOCINE_INPUT_PATH` in `.env` to render the theater map.")
+        else:
+            try:
+                geo = load_geocoded_theaters(str(theaters_csv))
+            except Exception as exc:
+                st.warning(f"Geocoding unavailable: {exc}")
+            else:
+                counts = (
+                    filtered.groupby("theater_id").size().rename("count").reset_index()
+                    if "theater_id" in filtered.columns
+                    else pd.DataFrame(columns=["theater_id", "count"])
                 )
+                merged = geo.merge(counts, left_on="id", right_on="theater_id", how="left").fillna({"count": 0})
+                merged = merged[merged["count"] > 0]
+                render_theater_map(merged, count_col="count", popup_col="name")
 
-            if events:
-                csv_bytes = pd.DataFrame(events).to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    label="Download Calendar CSV",
-                    data=csv_bytes,
-                    file_name="watchlist_calendar.csv",
-                    mime="text/csv",
-                )
-        except Exception as exc:
-            st.error(f"Failed to generate calendar: {exc}")
+    with tab_list:
+        filtered_sorted = filtered.sort_values("showtimes")
+        days = filtered_sorted.assign(_day=pd.to_datetime(filtered_sorted["showtimes"]).dt.date).groupby("_day", sort=True)
+        for day, group in days:
+            day_label = pd.Timestamp(day).strftime("%A %d %B")
+            deduped = group.drop_duplicates(subset=["letterboxd_title", "theater_name"]).head(20)
+            render_poster_rail(deduped, title=day_label)
+
+    # ── Export ────────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Export")
+    ics_bytes = to_ics(_build_ics_events(filtered))
+    st.download_button(
+        "📅 Download .ics (Google / Apple / Outlook)",
+        data=ics_bytes,
+        file_name="watchlist_calendar.ics",
+        mime="text/calendar",
+    )
+    with st.expander("CSV (legacy Google Calendar import)"):
+        csv_rows: list[dict] = []
+        for _, row in filtered.iterrows():
+            showtime = pd.to_datetime(row["showtimes"])
+            if pd.isna(showtime):
+                continue
+            runtime = row.get("runtime_minutes")
+            try:
+                runtime_min = int(float(runtime)) if runtime and not pd.isna(runtime) else 120
+            except (ValueError, TypeError):
+                runtime_min = 120
+            end_time = showtime + pd.Timedelta(minutes=runtime_min)
+            csv_rows.append(
+                {
+                    "Subject": str(row.get("letterboxd_title") or row["french_title"]),
+                    "Start Date": showtime.strftime("%Y-%m-%d"),
+                    "Start Time": showtime.strftime("%H:%M:%S"),
+                    "End Date": end_time.strftime("%Y-%m-%d"),
+                    "End Time": end_time.strftime("%H:%M:%S"),
+                    "All Day Event": "False",
+                    "Description": f"Directors: {row.get('directors') or 'N/A'} | French title: {row['french_title']}",
+                    "Location": str(row.get("theater_name") or row.get("theater_id", "")),
+                    "Private": "False",
+                }
+            )
+        if csv_rows:
+            csv_bytes = pd.DataFrame(csv_rows).to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Download CSV",
+                data=csv_bytes,
+                file_name="watchlist_calendar.csv",
+                mime="text/csv",
+            )
 
 
 main()

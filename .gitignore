@@ -25,8 +25,11 @@ env/
 data/
 tmp/
 
-# Streamlit
-.streamlit/
+# Streamlit — track config.toml (theme), ignore secrets only
+.streamlit/secrets.toml
+
+# Claude Code
+CLAUDE.md
 
 # IDE
 .vscode/

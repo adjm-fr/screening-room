@@ -1,34 +1,151 @@
 """
 Movies Database page.
 
-Reads the three parquet files produced by movies_management and displays
-statistics on ratings, watchlist, and cache freshness.
+Reorganises the Letterboxd cache + ratings + watchlist into three calmer tabs:
+
+- **Overview** — one hero Plotly bubble (genre × avg rating × count) plus
+  three micro-card insights (runtime distribution, top directors chip cloud,
+  top themes chip cloud). Designed to be scanned, not parsed.
+- **Discover** — chip filters (genre, director, min-rating slider) over a
+  poster rail of matching films. The taste profile becomes interactive,
+  not a static chart wall.
+- **Tables** — the three raw dataframes with poster + IMDB/TMDB/Letterboxd
+  link columns for power users.
 """
 
-import os
+from __future__ import annotations
+
+import html
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
+from modules.config import settings
 from utils.data_loader import build_taste_profile, get_paths, load_letterboxd_cache, load_ratings, load_watchlist
+from utils.ui import (
+    format_runtime,
+    rating_to_hsl,
+    render_empty_state,
+    render_freshness_banner,
+    render_kpi_strip,
+    render_poster_rail,
+)
+
+
+def _explode_tags(series: pd.Series, separator: str = ", ") -> pd.Series:
+    return series.dropna().astype(str).str.split(separator).explode().str.strip().pipe(lambda s: s[s != ""])
+
+
+def _genre_bubble_chart(ratings_df: pd.DataFrame) -> None:
+    if "genres" not in ratings_df.columns or "user_rating" not in ratings_df.columns:
+        st.info("No genres or ratings to plot.")
+        return
+    exploded = ratings_df[["genres", "user_rating"]].dropna().assign(genre=lambda d: d["genres"].str.split(", ")).explode("genre")
+    exploded["genre"] = exploded["genre"].str.strip()
+    exploded = exploded[exploded["genre"] != ""]
+    summary = exploded.groupby("genre")["user_rating"].agg(["mean", "count"]).reset_index()
+    summary = summary[summary["count"] >= 2].sort_values("mean", ascending=False).head(15)
+    if summary.empty:
+        st.info("Not enough rated films to summarise by genre yet.")
+        return
+    fig = px.scatter(
+        summary,
+        x="count",
+        y="mean",
+        size="count",
+        color="mean",
+        color_continuous_scale="oranges",
+        hover_name="genre",
+        labels={"count": "Films rated", "mean": "Avg user rating"},
+        title=None,
+    )
+    fig.update_layout(margin=dict(l=8, r=8, t=8, b=8), height=380, coloraxis_showscale=False)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _runtime_sparkline(ratings_df: pd.DataFrame) -> None:
+    if "runtime" not in ratings_df.columns:
+        st.caption("No runtime data.")
+        return
+    runtimes = ratings_df["runtime"].dropna()
+    if runtimes.empty:
+        st.caption("No runtime data.")
+        return
+    p25, p50, p75 = (int(runtimes.quantile(q)) for q in (0.25, 0.5, 0.75))
+    st.markdown(
+        f"<div class='kpi-label'>Runtime · P25/P50/P75</div>"
+        f"<div class='kpi-value'>{format_runtime(p25)} · {format_runtime(p50)} · {format_runtime(p75)}</div>",
+        unsafe_allow_html=True,
+    )
+    bins = list(range(0, int(runtimes.max()) + 30, 30))
+    hist = pd.cut(runtimes, bins=bins).value_counts().sort_index()
+    spark = px.bar(x=[str(b) for b in hist.index], y=hist.values, labels={"x": "", "y": ""})
+    spark.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=80, showlegend=False, xaxis_visible=False, yaxis_visible=False)
+    spark.update_traces(marker_color="#E63946", hovertemplate="%{x}: %{y} films<extra></extra>")
+    st.plotly_chart(spark, use_container_width=True)
+
+
+def _chip_cloud(items: list[tuple[str, float]], *, kind: str = "genre", max_items: int = 8) -> None:
+    """Render a static chip cloud where chip color saturation reflects the score."""
+    if not items:
+        st.caption("Not enough data.")
+        return
+    chips_html = ""
+    for name, score in items[:max_items]:
+        bg = rating_to_hsl(score)
+        cls = f"chip chip--{kind} chip--rating"
+        chips_html += f'<span class="{cls}" style="background:{bg}">{html.escape(name)} · {score:.1f}</span>'
+    st.markdown(chips_html, unsafe_allow_html=True)
+
+
+def _top_directors(ratings_df: pd.DataFrame, *, min_films: int = 2) -> list[tuple[str, float]]:
+    if "directors" not in ratings_df.columns or "user_rating" not in ratings_df.columns:
+        return []
+    exploded = (
+        ratings_df[["directors", "user_rating"]]
+        .dropna()
+        .assign(director=lambda d: d["directors"].str.split(", "))
+        .explode("director")
+    )
+    exploded["director"] = exploded["director"].str.strip()
+    summary = (
+        exploded.groupby("director")["user_rating"]
+        .agg(["mean", "count"])
+        .query(f"count >= {min_films}")
+        .sort_values("mean", ascending=False)
+        .head(8)
+    )
+    return [(idx, float(row["mean"])) for idx, row in summary.iterrows()]
+
+
+def _top_themes(cache_df: pd.DataFrame) -> list[tuple[str, float]]:
+    if "themes" not in cache_df.columns:
+        return []
+    counts = _explode_tags(cache_df["themes"]).value_counts().head(8)
+    if counts.empty:
+        return []
+    max_count = float(counts.iloc[0])
+    return [(name, (count / max_count) * 10.0) for name, count in counts.items()]
 
 
 def main() -> None:
-    st.title("Movies Database")
-    st.markdown("Statistics from your Letterboxd ratings.")
+    st.markdown('<h1 class="h-display" style="font-size:2rem;">Movies Database</h1>', unsafe_allow_html=True)
+    st.caption("Statistics from your Letterboxd ratings and watchlist.")
 
     output_path, _, _ = get_paths()
     if not output_path:
         st.error("**MOVIES_OUTPUT_PATH** is not set. Add it to `cinema_dashboard/.env` and restart.")
         return
 
-    missing = [
-        f
-        for f in ("data_letterboxd.parquet", "ratings_with_letterboxd.parquet", "watchlist_with_letterboxd.parquet")
-        if not (output_path / f).exists()
-    ]
+    required = ("data_letterboxd.parquet", "ratings_with_letterboxd.parquet", "watchlist_with_letterboxd.parquet")
+    missing = [f for f in required if not (output_path / f).exists()]
     if missing:
-        st.warning(f"Missing files: {', '.join(missing)}. Run `python main.py` in the `movies_management` project first.")
+        render_empty_state(
+            "📥",
+            "Letterboxd data missing",
+            f"Run `python main.py` in `movies_management` to produce: {', '.join(missing)}.",
+        )
         return
 
     try:
@@ -39,127 +156,93 @@ def main() -> None:
         st.error(f"Failed to load data: {exc}")
         return
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Films rated", len(ratings_df))
-    col2.metric("Watchlist size", len(watchlist_df))
-
     avg_rating = ratings_df["user_rating"].mean() if "user_rating" in ratings_df.columns else None
-    col3.metric("Avg user rating", f"{avg_rating:.1f} / 5" if avg_rating else "—")
+    median_runtime_val = ratings_df["runtime"].median() if "runtime" in ratings_df.columns else None
+    render_kpi_strip(
+        [
+            ("Films rated", len(ratings_df)),
+            ("Watchlist size", len(watchlist_df)),
+            ("Avg rating", f"{avg_rating:.1f} / 5" if avg_rating else "—"),
+            ("Median runtime", format_runtime(median_runtime_val) if median_runtime_val else "—"),
+        ]
+    )
+    cache_file = output_path / "data_letterboxd.parquet"
+    render_freshness_banner(cache_file)
 
-    # runtime lives in cache_df (full metadata); ratings_df may not have it if
-    # enrichment hasn't run yet, so we check cache_df as the authoritative source.
-    runtime_col = "runtime" if "runtime" in ratings_df.columns else None
-    avg_runtime = ratings_df[runtime_col].median() if runtime_col else None
-    col4.metric("Median runtime", f"{int(avg_runtime)} min" if avg_runtime else "—")
+    # Warm the taste-profile cache so the Recommendations page is instant.
+    build_taste_profile(ratings_df)
 
-    st.divider()
+    tab_overview, tab_discover, tab_tables = st.tabs(["📈 Overview", "🔎 Discover", "📋 Tables"])
 
-    st.subheader("Genres distribution (rated films)")
-    if "genres" in ratings_df.columns:
-        genres_series = ratings_df["genres"].dropna().str.split(", ").explode().str.strip()
-        genres_series = genres_series[genres_series != ""]
-        genre_counts = genres_series.value_counts().rename_axis("genre").reset_index(name="count")
-        st.bar_chart(genre_counts, x="genre", y="count", sort="-count")
-    else:
-        st.info("No genres data available.")
+    with tab_overview:
+        st.markdown("##### Genre × rating")
+        _genre_bubble_chart(ratings_df)
 
-    st.subheader("Your ratings distribution")
-    if "user_rating" in ratings_df.columns:
-        rating_counts = (
-            ratings_df["user_rating"].dropna().value_counts().sort_index().rename_axis("rating").reset_index(name="count")
-        )
-        st.bar_chart(rating_counts.set_index("rating")["count"])
-    else:
-        st.info("No user rating data available.")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            _runtime_sparkline(ratings_df)
+        with c2:
+            st.markdown("<div class='kpi-label'>Top directors</div>", unsafe_allow_html=True)
+            _chip_cloud(_top_directors(ratings_df), kind="genre")
+        with c3:
+            st.markdown("<div class='kpi-label'>Top themes</div>", unsafe_allow_html=True)
+            _chip_cloud(_top_themes(cache_df), kind="theme")
 
-    st.divider()
-
-    st.subheader("Taste profile")
-    build_taste_profile(ratings_df)  # warm the cache for the Recommendations page
-    tcol1, tcol2 = st.columns(2)
-
-    if "genres" in ratings_df.columns:
-        exploded_g = (
-            ratings_df[["genres", "user_rating"]].dropna().assign(genre=lambda d: d["genres"].str.split(", ")).explode("genre")
-        )
-        top_genres = (
-            exploded_g.groupby("genre")["user_rating"]
-            .mean()
-            .sort_values(ascending=False)
-            .head(5)
-            .rename("avg_rating")
-            .reset_index()
-        )
-        with tcol1:
-            st.caption("Top 5 genres by average rating")
-            st.bar_chart(top_genres, x="genre", y="avg_rating", sort="-avg_rating", horizontal=True)
-
-    if "directors" in ratings_df.columns:
-        exploded_d = (
-            ratings_df[["directors", "user_rating"]]
-            .dropna()
-            .assign(director=lambda d: d["directors"].str.split(", "))
-            .explode("director")
-        )
-        top_dirs = (
-            exploded_d.groupby("director")["user_rating"]
-            .agg(["mean", "count"])
-            .query("count >= 2")
-            .sort_values("mean", ascending=False)
-            .head(5)["mean"]
-            .rename("avg_rating")
-            .reset_index()
-        )
-        with tcol2:
-            st.caption("Top 5 directors by average rating (≥2 films rated)")
-            st.bar_chart(top_dirs, x="director", y="avg_rating", sort="-avg_rating", horizontal=True)
-
-    st.subheader("Runtime distribution (rated films)")
-    if runtime_col and "runtime" in ratings_df.columns:
-        runtime_data = ratings_df["runtime"].dropna()
-        if not runtime_data.empty:
-            p25 = int(runtime_data.quantile(0.25))
-            p75 = int(runtime_data.quantile(0.75))
-            rcol1, rcol2, rcol3 = st.columns(3)
-            rcol1.metric("P25 runtime", f"{p25} min")
-            rcol2.metric("Median runtime", f"{int(runtime_data.median())} min")
-            rcol3.metric("P75 runtime", f"{p75} min")
-
-            bins = list(range(0, int(runtime_data.max()) + 30, 30))
-            runtime_hist = (
-                pd.cut(runtime_data, bins=bins).value_counts().sort_index().rename_axis("bucket").reset_index(name="count")
+        # Cache-freshness: surface stale-count for the user without burying it in a tab.
+        if "integration_date" in cache_df.columns:
+            now = pd.Timestamp.now()
+            days_to_update = settings.letterboxd_days_to_update
+            age_days = (now - pd.to_datetime(cache_df["integration_date"])).dt.days
+            stale_count = int((age_days > days_to_update).sum())
+            st.caption(
+                f"Cache: {len(cache_df)} movies · {stale_count} stale (> {days_to_update} days). "
+                f"Run the orchestrate.py CLI to refresh."
             )
-            runtime_hist["bucket"] = runtime_hist["bucket"].astype(str)
-            st.bar_chart(runtime_hist, x="bucket", y="count", sort=False)
-    else:
-        st.info("No runtime data available.")
 
-    st.subheader("Cache freshness")
-    if "integration_date" in cache_df.columns:
-        now = pd.Timestamp.now()
-        days_to_update = int(os.getenv("LETTERBOXD_DAYS_TO_UPDATE", 365))
-        age_days = (now - pd.to_datetime(cache_df["integration_date"])).dt.days
-        stale_count = int((age_days > days_to_update).sum())
-        total = len(cache_df)
+    with tab_discover:
+        st.markdown("##### Filter your watchlist + ratings")
+        all_genres = sorted(_explode_tags(cache_df.get("genres", pd.Series(dtype=str))).unique().tolist())
+        all_directors = sorted(_explode_tags(cache_df.get("directors", pd.Series(dtype=str))).unique().tolist())[:60]
+        f1, f2, f3 = st.columns([2, 2, 2])
+        with f1:
+            sel_genres = st.pills("Genre", options=all_genres, selection_mode="multi", key="db_genre")
+        with f2:
+            sel_directors = st.pills("Director", options=all_directors, selection_mode="multi", key="db_director")
+        with f3:
+            min_rating = st.slider("Min Letterboxd rating", 0.0, 10.0, 0.0, 0.5, key="db_minrating")
 
-        fc1, fc2 = st.columns(2)
-        fc1.metric("Total cached movies", total)
-        fc2.metric(f"Stale (> {days_to_update} days)", stale_count)
+        pool = pd.concat([watchlist_df, ratings_df], ignore_index=True).drop_duplicates(subset=["slug"])
+        if sel_genres and "genres" in pool.columns:
+            pattern = "|".join(g.replace("|", r"\|") for g in sel_genres)
+            pool = pool[pool["genres"].fillna("").str.contains(pattern, case=False, regex=True)]
+        if sel_directors and "directors" in pool.columns:
+            pattern = "|".join(d.replace("|", r"\|") for d in sel_directors)
+            pool = pool[pool["directors"].fillna("").str.contains(pattern, case=False, regex=True)]
+        if min_rating > 0 and "letterboxd_avg_rating" in pool.columns:
+            pool = pool[pool["letterboxd_avg_rating"].fillna(0) >= min_rating]
 
-        oldest = cache_df.loc[age_days.idxmax(), "integration_date"] if total > 0 else None
-        if oldest is not None:
-            st.caption(f"Oldest entry: {pd.Timestamp(str(oldest)).strftime('%Y-%m-%d')}")
-    else:
-        st.info("No integration_date column found in cache.")
+        if pool.empty:
+            render_empty_state("🔍", "No matches", "Loosen the filters to see more films.")
+        else:
+            sample = pool.head(18).copy()
+            if "title" in sample.columns and "letterboxd_title" not in sample.columns:
+                sample["letterboxd_title"] = sample["title"]
+            render_poster_rail(sample, title=f"{len(pool)} films match")
 
-    with st.expander("Raw data explorer"):
-        tab1, tab2, tab3 = st.tabs(["Cache", "Ratings", "Watchlist"])
-        with tab1:
-            st.dataframe(cache_df)
-        with tab2:
-            st.dataframe(ratings_df)
-        with tab3:
-            st.dataframe(watchlist_df)
+    with tab_tables:
+        sub_cache, sub_ratings, sub_watch = st.tabs(["Cache", "Ratings", "Watchlist"])
+        link_cfg = {
+            "letterboxd_url": st.column_config.LinkColumn("Letterboxd", display_text="Open ↗"),
+            "imdb_url": st.column_config.LinkColumn("IMDB", display_text="Open ↗"),
+            "tmdb_url": st.column_config.LinkColumn("TMDB", display_text="Open ↗"),
+            "poster_url": st.column_config.ImageColumn("Poster", width="small"),
+        }
+        with sub_cache:
+            st.dataframe(cache_df, width="stretch", hide_index=True, column_config=link_cfg)
+        with sub_ratings:
+            st.dataframe(ratings_df, width="stretch", hide_index=True, column_config=link_cfg)
+        with sub_watch:
+            st.dataframe(watchlist_df, width="stretch", hide_index=True, column_config=link_cfg)
 
 
 main()

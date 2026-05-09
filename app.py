@@ -7,7 +7,11 @@ Run with:
 
 import logging
 
+import plotly.io as pio
 import streamlit as st
+
+from utils.cmdk import mount_cmdk
+from utils.ui import inject_css
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -26,8 +30,17 @@ st.set_page_config(
     page_icon="🎬",
 )
 
+# Cinema theme is set in .streamlit/config.toml; CSS layer adds editorial
+# typography, movie cards, poster rails, chips, KPI cards, and motion. Plotly
+# follows the dark base so its charts blend with the rest of the page.
+inject_css()
+pio.templates.default = "plotly_dark"
+
+mount_cmdk()
+
 pg = st.navigation(
     [
+        st.Page("pages/0_home.py", title="Home", icon="🏠", default=True),
         st.Page("pages/showtimes.py", title="Showtimes", icon="🎟️"),
         st.Page("pages/database.py", title="Movies Database", icon="📊"),
         st.Page("pages/calendar.py", title="Watchlist Calendar", icon="📅"),

@@ -147,7 +147,9 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
     if force or watchlist_stale:
         reason = "forced" if force else f"stale (>{WATCHLIST_MAX_AGE_DAYS} days old)"
         logger.info("Letterboxd data:    %s", reason)
-        letterboxd_cmd = ["python", "main.py"]
+        if not settings.letterboxd_username:
+            raise click.ClickException("LETTERBOXD_USERNAME is not set in cinema_dashboard/.env")
+        letterboxd_cmd = ["python", "main.py", "--username", settings.letterboxd_username]
         if reset_db:
             letterboxd_cmd.append("--reset_database")
         tasks.append(("letterboxd", letterboxd_cmd, movies_dir))

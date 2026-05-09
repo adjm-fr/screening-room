@@ -126,9 +126,9 @@ def _movie_card_html(row: pd.Series, *, size: Literal["sm", "md", "lg"] = "md") 
     and ``genres`` from the row when present; missing fields are silently
     skipped. ``size`` controls the CSS modifier class on the card element.
     """
-    title = row.get("letterboxd_title") or row.get("french_title") or row.get("title") or row.get("movie") or "Untitled"
-    title = str(title)
-    directors = str(row.get("directors") or row.get("director") or "")
+    _title_candidates = [row.get("letterboxd_title"), row.get("french_title"), row.get("title"), row.get("movie")]
+    title = next((str(v) for v in _title_candidates if isinstance(v, str) and v), "Untitled")
+    directors = next((str(v) for v in [row.get("directors"), row.get("director")] if isinstance(v, str) and v), "")
     runtime = row.get("runtime_minutes")
     if runtime is None or (isinstance(runtime, float) and pd.isna(runtime)):
         runtime = row.get("runtime")
@@ -195,8 +195,12 @@ def render_hero_card(row: pd.Series, *, eyebrow: str | None = None) -> None:
     sub-line built from theater + directors. Includes a poster_url alt text
     label for screen readers when no banner is present.
     """
-    banner = row.get("banner_url") or row.get("poster_url") or ""
-    title = str(row.get("letterboxd_title") or row.get("french_title") or row.get("title") or "Tonight's pick")
+
+    banner = next((v for v in [row.get("banner_url"), row.get("poster_url")] if isinstance(v, str) and v), "")
+    title = next(
+        (str(v) for v in [row.get("letterboxd_title"), row.get("french_title"), row.get("title")] if isinstance(v, str) and v),
+        "Tonight's pick",
+    )
     when = row.get("showtimes")
     when_str = ""
     if when is not None and not (isinstance(when, float) and pd.isna(when)):
@@ -204,15 +208,12 @@ def render_hero_card(row: pd.Series, *, eyebrow: str | None = None) -> None:
             when_str = pd.to_datetime(when).strftime("%A %d %b · %H:%M")
         except (ValueError, TypeError):
             when_str = ""
-    theater = str(row.get("theater_name") or row.get("theater_id") or "")
-    directors = str(row.get("directors") or "")
+    theater = next((str(v) for v in [row.get("theater_name"), row.get("theater_id")] if isinstance(v, str) and v), "")
+    directors = next((str(v) for v in [row.get("directors")] if isinstance(v, str) and v), "")
     rating = row.get("letterboxd_avg_rating")
 
-    if banner:
-        gradient = "linear-gradient(180deg, rgba(0,0,0,0.0) 0%, rgba(0,0,0,0.85) 100%)"
-        bg = f'background-image: {gradient}, url("{html.escape(str(banner))}");'
-    else:
-        bg = "background-color: #1a1d24;"
+    # Use <img> for the background — CSS background-image is blocked by Streamlit's CSP
+    banner_html = f'<img class="hero-bg" src="{html.escape(banner)}" alt="" aria-hidden="true" />' if banner else ""
     eyebrow_str = eyebrow or (when_str or "Up next")
     meta_parts = [p for p in (theater, directors) if p]
     meta_html = " · ".join(html.escape(p) for p in meta_parts)
@@ -220,7 +221,9 @@ def render_hero_card(row: pd.Series, *, eyebrow: str | None = None) -> None:
 
     st.markdown(
         f"""
-        <div class="hero-card" style="{bg}" role="img" aria-label="{html.escape(title)}">
+        <div class="hero-card" role="img" aria-label="{html.escape(title)}">
+            {banner_html}
+            <div class="hero-overlay"></div>
             <div class="hero-body">
                 <div class="hero-eyebrow">{html.escape(eyebrow_str)}</div>
                 <div class="hero-title h-display">{html.escape(title)}</div>

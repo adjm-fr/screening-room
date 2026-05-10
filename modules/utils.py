@@ -11,20 +11,16 @@ logger = logging.getLogger(__name__)
 
 
 async def _fetch_user_data(user: User) -> tuple[dict, dict]:
-    results = await asyncio.gather(
-        asyncio.to_thread(user.get_films),
-        asyncio.to_thread(user.get_watchlist),
-        return_exceptions=True,
-    )
-    films: dict | BaseException = results[0]
-    watchlist: dict | BaseException = results[1]
-    if isinstance(films, BaseException):
-        logger.error("Failed to fetch films: %s", films)
-        raise films
-    if isinstance(watchlist, BaseException):
-        logger.error("Failed to fetch watchlist: %s", watchlist)
-        raise watchlist
-    return films, watchlist
+    try:
+        async with asyncio.TaskGroup() as tg:
+            task_films = tg.create_task(asyncio.to_thread(user.get_films))
+            task_watchlist = tg.create_task(asyncio.to_thread(user.get_watchlist))
+    except ExceptionGroup as eg:
+        for exc in eg.exceptions:
+            logger.error("Failed to fetch user data: %s", exc)
+        raise
+
+    return task_films.result(), task_watchlist.result()
 
 
 def fetch_user_data(user: User) -> tuple[dict, dict]:

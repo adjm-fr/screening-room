@@ -22,18 +22,19 @@ jobs:
         with:
           python-version: "3.13"
 
-      # Cache pip downloads keyed by requirements.txt hash.
+      - uses: astral-sh/setup-uv@v2
+
+      # Cache uv downloads keyed by pyproject.toml and uv.lock hash.
       # First run: downloads from PyPI and saves to GitHub's cache (~30s).
-      # Subsequent runs: restores from cache if requirements.txt unchanged (~2s).
+      # Subsequent runs: restores from cache if dependencies unchanged (~2s).
       # Cache automatically invalidates when you add or update a dependency.
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: pip-${{ hashFiles('requirements.txt') }}
+          path: ~/.cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
 
-      - run: pip install ruff
-      - run: ruff check .
-      - run: ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
 
   # ── Type checking ────────────────────────────────────────────────────────────
   # mypy analyses type annotations statically and catches type errors before
@@ -48,13 +49,15 @@ jobs:
         with:
           python-version: "3.13"
 
+      - uses: astral-sh/setup-uv@v2
+
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: pip-${{ hashFiles('requirements.txt') }}
+          path: ~/.cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
 
-      - run: pip install -r requirements.txt mypy
-      - run: mypy main.py modules/
+      - run: uv sync
+      - run: uv run mypy main.py modules/
 
   # ── Security scanning ────────────────────────────────────────────────────────
   # bandit scans Python source for common security issues (hardcoded secrets,
@@ -70,8 +73,9 @@ jobs:
         with:
           python-version: "3.13"
 
-      - run: pip install bandit
-      - run: bandit -r . -ll --exclude .venv
+      - uses: astral-sh/setup-uv@v2
+
+      - run: uv run bandit -r main.py modules/ -ll
 
   # ── Tests ────────────────────────────────────────────────────────────────────
   test:
@@ -83,10 +87,12 @@ jobs:
         with:
           python-version: "3.13"
 
+      - uses: astral-sh/setup-uv@v2
+
       - uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: pip-${{ hashFiles('requirements.txt') }}
+          path: ~/.cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
 
-      - run: pip install -r requirements.txt pytest-cov
-      - run: pytest tests/ --cov=main --cov=modules --cov-report=term-missing --cov-fail-under=80
+      - run: uv sync
+      - run: uv run pytest tests/ --cov=main --cov=modules --cov-report=term-missing --cov-fail-under=80

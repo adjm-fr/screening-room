@@ -164,7 +164,7 @@ def main() -> None:
         filtered = filtered.sort_values("showtimes")
         days = filtered.assign(_day=pd.to_datetime(filtered["showtimes"]).dt.date).groupby("_day", sort=True)
         for day, group in days:
-            day_label = pd.Timestamp(day).strftime("%A %d %B")
+            day_label = pd.Timestamp(str(day)).strftime("%A %d %B")
             deduped = group.drop_duplicates(subset=["movie", "theater_name"]).head(20)
             render_poster_rail(deduped, title=day_label)
 

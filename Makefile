@@ -10,8 +10,8 @@ update:
 run:
 	streamlit run app.py
 
-# Install all dependencies into the current venv
+# Install all dependencies using uv
 install:
-	pip install -r requirements.txt
-	pip install -r ../movies_management/requirements.txt
-	pip install -r ../Allocine-Showtimes-Scraping/requirements.txt
+	uv sync
+	cd ../movies_management && uv sync && cd ../cinema_dashboard
+	cd ../Allocine-Showtimes-Scraping && uv sync && cd ../cinema_dashboard

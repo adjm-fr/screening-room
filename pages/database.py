@@ -61,7 +61,7 @@ def _genre_bubble_chart(ratings_df: pd.DataFrame) -> None:
         title=None,
     )
     fig.update_layout(margin=dict(l=8, r=8, t=8, b=8), height=380, coloraxis_showscale=False)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def _runtime_sparkline(ratings_df: pd.DataFrame) -> None:
@@ -83,7 +83,7 @@ def _runtime_sparkline(ratings_df: pd.DataFrame) -> None:
     spark = px.bar(x=[str(b) for b in hist.index], y=hist.values, labels={"x": "", "y": ""})
     spark.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=80, showlegend=False, xaxis_visible=False, yaxis_visible=False)
     spark.update_traces(marker_color="#E63946", hovertemplate="%{x}: %{y} films<extra></extra>")
-    st.plotly_chart(spark, use_container_width=True)
+    st.plotly_chart(spark, width="stretch")
 
 
 def _chip_cloud(items: list[tuple[str, float]], *, kind: str = "genre", max_items: int = 8) -> None:
@@ -116,7 +116,7 @@ def _top_directors(ratings_df: pd.DataFrame, *, min_films: int = 2) -> list[tupl
         .sort_values("mean", ascending=False)
         .head(8)
     )
-    return [(idx, float(row["mean"])) for idx, row in summary.iterrows()]
+    return [(str(idx), float(row["mean"])) for idx, row in summary.iterrows()]
 
 
 def _top_themes(cache_df: pd.DataFrame) -> list[tuple[str, float]]:
@@ -126,7 +126,7 @@ def _top_themes(cache_df: pd.DataFrame) -> list[tuple[str, float]]:
     if counts.empty:
         return []
     max_count = float(counts.iloc[0])
-    return [(name, (count / max_count) * 10.0) for name, count in counts.items()]
+    return [(str(name), (count / max_count) * 10.0) for name, count in counts.items()]
 
 
 def main() -> None:

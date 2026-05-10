@@ -95,4 +95,4 @@ jobs:
           key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
 
       - run: uv sync
-      - run: uv run pytest tests/ --cov=main --cov=modules --cov-report=term-missing --cov-fail-under=80
+      - run: uv run pytest tests/

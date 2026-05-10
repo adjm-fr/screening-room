@@ -141,13 +141,25 @@ All pages are read-only with respect to parquet data. The only file the dashboar
 
 ### Installation
 
+Using [uv](https://docs.astral.sh/uv/) (recommended):
+
 ```bash
-python -m venv .venv
+uv venv
 source .venv/bin/activate
 make install
 ```
 
-`make install` installs `requirements.txt` plus the dependencies of both companion projects.
+Alternatively with pip:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+pip install -e ../movies_management
+pip install -e ../Allocine-Showtimes-Scraping
+```
+
+`make install` installs dependencies from `pyproject.toml` for this project and both companion projects.
 
 ### Configuration
 

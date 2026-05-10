@@ -1,7 +1,7 @@
 version: 2
 
 updates:
-  # Watches requirements.txt for outdated packages.
+  # Watches pyproject.toml for outdated packages.
   # When a new version is available, Dependabot opens a pull request automatically.
   # CI then runs on that PR — if all jobs pass, you can merge with confidence.
   #
@@ -9,12 +9,12 @@ updates:
   # - Daily = too noisy, PRs pile up faster than you review them
   # - Monthly = too slow for security patches
   # - Weekly = one grouped PR per week, manageable
-  - package-ecosystem: pip
+  - package-ecosystem: uv
     directory: "/"
     schedule:
       interval: weekly
     groups:
-      # Groups all pip updates into a single PR instead of one PR per package.
+      # Groups all uv updates into a single PR instead of one PR per package.
       # One PR to review, one CI run, one merge.
       dependencies:
         patterns:

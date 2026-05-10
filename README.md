@@ -39,14 +39,29 @@ All data is stored locally in parquet format for efficient storage and analysis.
    ```
 
 2. **Create a virtual environment**
+
+   Using [uv](https://docs.astral.sh/uv/) (recommended):
+   ```bash
+   uv venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
+   
+   Or with pip:
    ```bash
    python -m venv .venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    ```
 
 3. **Install dependencies**
+
+   Using uv:
    ```bash
-   pip install -r requirements.txt
+   uv sync
+   ```
+   
+   Or with pip:
+   ```bash
+   pip install -e .
    ```
 
 ### Dependencies

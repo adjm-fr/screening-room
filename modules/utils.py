@@ -18,7 +18,8 @@ async def _fetch_user_data(user: User) -> tuple[dict, dict]:
     except ExceptionGroup as eg:
         for exc in eg.exceptions:
             logger.error("Failed to fetch user data: %s", exc)
-        raise
+        # Raise the first exception from the group
+        raise eg.exceptions[0] from eg
 
     return task_films.result(), task_watchlist.result()
 

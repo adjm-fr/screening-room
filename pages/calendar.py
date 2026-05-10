@@ -1,20 +1,21 @@
 """
-Watchlist Calendar page.
+Watchlist Screenings page.
 
 Joins ``watchlist_with_letterboxd.parquet`` with ``showtimes.parquet`` and
 displays upcoming screenings across three surfaces:
 
+- **By day** — horizontal poster rails grouped by date, all cards fully
+  populated (inner-join means every card has a poster and Letterboxd data).
 - **Calendar** — ``streamlit-calendar`` widget with events colored along an
   amber heatmap by Letterboxd rating (gold = high score, faded = low),
   always paired with a numeric rating in the title for accessibility.
 - **Map** — pydeck map of theaters carrying screenings in the current
   filter; marker size ∝ # of watchlist screenings.
-- **List** — poster rail grouped by date for at-a-glance browsing.
 
-Top chip-filter bar holds theaters, genres, and a min-rating slider; the
-sidebar carries only the heavy date-range picker. ICS export is the primary
-download (universally accepted by Google Calendar / Apple Calendar / Outlook);
-CSV is kept behind an expander for legacy use.
+Top chip-filter bar holds theaters, genres, runtime buckets, weekend toggle,
+and a text search; the sidebar carries only the heavy date-range picker.
+ICS export is the primary download (universally accepted by Google Calendar /
+Apple Calendar / Outlook); CSV is kept behind an expander for legacy use.
 """
 
 from __future__ import annotations
@@ -31,6 +32,29 @@ from utils.ui import (
     render_poster_rail,
     to_ics,
 )
+
+
+def _runtime_bucket(minutes: float | str | None) -> str:
+    if minutes is None or (isinstance(minutes, float) and pd.isna(minutes)):
+        return "Unknown"
+    if isinstance(minutes, str):
+        minutes = minutes.strip()
+        if not minutes:
+            return "Unknown"
+        try:
+            m = int(float("".join(c for c in minutes if c.isdigit() or c == ".")))
+        except (ValueError, TypeError):
+            return "Unknown"
+    else:
+        try:
+            m = int(minutes)
+        except (ValueError, TypeError):
+            return "Unknown"
+    if m < 90:
+        return "<90"
+    if m <= 120:
+        return "90–120"
+    return ">120"
 
 
 def _to_calendar_events(df: pd.DataFrame) -> list[dict]:
@@ -87,7 +111,7 @@ def _build_ics_events(df: pd.DataFrame) -> list[dict]:
 
 
 def main() -> None:
-    st.markdown('<h1 class="h-display" style="font-size:2rem;">Watchlist Calendar</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="h-display" style="font-size:2rem;">Watchlist Screenings</h1>', unsafe_allow_html=True)
     st.caption("Upcoming screenings of your Letterboxd watchlist movies across your configured theaters.")
 
     movies_path, showtimes_path, theaters_csv = get_paths()
@@ -118,11 +142,15 @@ def main() -> None:
         render_empty_state(
             "🍿",
             "No upcoming watchlist screenings",
-            "Showtimes refresh Tuesday morning — check back, or browse all upcoming films.",
+            "None of your watchlist films are currently showing. Showtimes refresh Tuesday morning.",
         )
         return
 
-    # ── Top chip filter bar ──────────────────────────────────────────────────
+    runtime_col = next((c for c in ("runtime_minutes", "runtime") if c in wl_shows.columns), None)
+    wl_shows = wl_shows.copy()
+    wl_shows["_runtime_bucket"] = wl_shows[runtime_col].apply(_runtime_bucket) if runtime_col else "Unknown"
+
+    # ── Filter bar row 1: chips ──────────────────────────────────────────────
     fc1, fc2, fc3 = st.columns([2, 2, 2])
     with fc1:
         theaters = sorted(wl_shows["theater_name"].dropna().unique().tolist()) if "theater_name" in wl_shows.columns else []
@@ -134,10 +162,17 @@ def main() -> None:
                 genres_set.update(p.strip() for p in str(g).split(",") if p.strip())
         sel_genres = render_chip_filter("Genres", sorted(genres_set), key="cal_genres")
     with fc3:
-        min_rating = st.slider("Min Letterboxd rating", 0.0, 10.0, 0.0, 0.5, key="cal_minrating")
+        sel_runtime = render_chip_filter("Runtime", ["<90", "90–120", ">120"], key="cal_runtime")
 
-    # ── Sidebar: date range only (the heavy widget) ─────────────────────────
-    st.sidebar.header("Date range")
+    # ── Filter bar row 2: toggle + search ───────────────────────────────────
+    fr1, fr2 = st.columns([1, 3])
+    with fr1:
+        weekend_only = st.toggle("Weekends only", value=False, key="cal_weekend")
+    with fr2:
+        search = st.text_input("Search title or director", key="cal_search", placeholder="e.g. Bong Joon-ho")
+
+    # ── Sidebar: date range + min rating ────────────────────────────────────
+    st.sidebar.header("Filters")
     min_dt = pd.to_datetime(wl_shows["showtimes"]).min()
     max_dt = pd.to_datetime(wl_shows["showtimes"]).max()
     date_range = st.sidebar.date_input(
@@ -146,6 +181,7 @@ def main() -> None:
         min_value=min_dt.date(),
         max_value=max_dt.date(),
     )
+    min_rating = st.sidebar.slider("Min Letterboxd rating", 0.0, 10.0, 0.0, 0.5, key="cal_minrating")
 
     filtered = wl_shows.copy()
     if sel_theaters:
@@ -153,6 +189,17 @@ def main() -> None:
     if sel_genres and "genres" in filtered.columns:
         pattern = "|".join(g.replace("|", r"\|") for g in sel_genres)
         filtered = filtered[filtered["genres"].fillna("").str.contains(pattern, case=False, regex=True)]
+    if sel_runtime:
+        filtered = filtered[filtered["_runtime_bucket"].isin(sel_runtime)]
+    if weekend_only:
+        filtered = filtered[pd.to_datetime(filtered["showtimes"]).dt.dayofweek >= 5]
+    if search:
+        s_norm = search.lower().strip()
+        title_col = "french_title" if "french_title" in filtered.columns else "movie"
+        mask = filtered[title_col].fillna("").str.lower().str.contains(s_norm, regex=False)
+        if "directors" in filtered.columns:
+            mask = mask | filtered["directors"].fillna("").str.lower().str.contains(s_norm, regex=False)
+        filtered = filtered[mask]
     if min_rating > 0 and "letterboxd_avg_rating" in filtered.columns:
         filtered = filtered[filtered["letterboxd_avg_rating"].fillna(0) >= min_rating]
     if isinstance(date_range, tuple) and len(date_range) == 2:
@@ -170,7 +217,15 @@ def main() -> None:
         render_empty_state("🔍", "No matches", "Loosen the filters to see more screenings.")
         return
 
-    tab_cal, tab_map, tab_list = st.tabs(["📅 Calendar", "🗺️ Map", "📋 List"])
+    tab_days, tab_cal, tab_map = st.tabs(["🎬 By day", "📅 Calendar", "🗺️ Map"])
+
+    with tab_days:
+        filtered_sorted = filtered.sort_values("showtimes")
+        days = filtered_sorted.assign(_day=pd.to_datetime(filtered_sorted["showtimes"]).dt.date).groupby("_day", sort=True)
+        for day, group in days:
+            day_label = pd.Timestamp(str(day)).strftime("%A %d %B")
+            deduped = group.drop_duplicates(subset=["letterboxd_title", "theater_name"]).head(20)
+            render_poster_rail(deduped, title=day_label)
 
     with tab_cal:
         try:
@@ -210,14 +265,6 @@ def main() -> None:
                 merged = geo.merge(counts, left_on="id", right_on="theater_id", how="left").fillna({"count": 0})
                 merged = merged[merged["count"] > 0]
                 render_theater_map(merged, count_col="count", popup_col="name")
-
-    with tab_list:
-        filtered_sorted = filtered.sort_values("showtimes")
-        days = filtered_sorted.assign(_day=pd.to_datetime(filtered_sorted["showtimes"]).dt.date).groupby("_day", sort=True)
-        for day, group in days:
-            day_label = pd.Timestamp(day).strftime("%A %d %B")
-            deduped = group.drop_duplicates(subset=["letterboxd_title", "theater_name"]).head(20)
-            render_poster_rail(deduped, title=day_label)
 
     # ── Export ────────────────────────────────────────────────────────────────
     st.divider()

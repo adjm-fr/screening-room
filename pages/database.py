@@ -49,17 +49,18 @@ def _genre_bubble_chart(ratings_df: pd.DataFrame) -> None:
     if summary.empty:
         st.info("Not enough rated films to summarise by genre yet.")
         return
-    fig = px.scatter(
-        summary,
-        x="count",
-        y="mean",
-        size="count",
+    summary_sorted = summary.sort_values("mean")
+    fig = px.bar(
+        summary_sorted,
+        x="mean",
+        y="genre",
+        orientation="h",
         color="mean",
         color_continuous_scale="oranges",
-        hover_name="genre",
-        labels={"count": "Films rated", "mean": "Avg user rating"},
-        title=None,
+        text=summary_sorted["count"].astype(str) + " films",
+        labels={"mean": "Avg rating", "genre": ""},
     )
+    fig.update_traces(textposition="outside")
     fig.update_layout(margin=dict(l=8, r=8, t=8, b=8), height=380, coloraxis_showscale=False)
     st.plotly_chart(fig, width="stretch")
 
@@ -202,12 +203,11 @@ def main() -> None:
     with tab_discover:
         st.markdown("##### Filter your watchlist + ratings")
         all_genres = sorted(_explode_tags(cache_df.get("genres", pd.Series(dtype=str))).unique().tolist())
-        all_directors = sorted(_explode_tags(cache_df.get("directors", pd.Series(dtype=str))).unique().tolist())[:60]
         f1, f2, f3 = st.columns([2, 2, 2])
         with f1:
             sel_genres = st.pills("Genre", options=all_genres, selection_mode="multi", key="db_genre")
         with f2:
-            sel_directors = st.pills("Director", options=all_directors, selection_mode="multi", key="db_director")
+            director_search = st.text_input("Director", placeholder="e.g. Wes Anderson", key="db_director")
         with f3:
             min_rating = st.slider("Min Letterboxd rating", 0.0, 10.0, 0.0, 0.5, key="db_minrating")
 
@@ -215,9 +215,8 @@ def main() -> None:
         if sel_genres and "genres" in pool.columns:
             pattern = "|".join(g.replace("|", r"\|") for g in sel_genres)
             pool = pool[pool["genres"].fillna("").str.contains(pattern, case=False, regex=True)]
-        if sel_directors and "directors" in pool.columns:
-            pattern = "|".join(d.replace("|", r"\|") for d in sel_directors)
-            pool = pool[pool["directors"].fillna("").str.contains(pattern, case=False, regex=True)]
+        if director_search and "directors" in pool.columns:
+            pool = pool[pool["directors"].fillna("").str.contains(director_search.strip(), case=False, regex=False)]
         if min_rating > 0 and "letterboxd_avg_rating" in pool.columns:
             pool = pool[pool["letterboxd_avg_rating"].fillna(0) >= min_rating]
 

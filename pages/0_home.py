@@ -108,7 +108,7 @@ def main() -> None:
             "🍿",
             "No watchlist screenings coming up",
             "Showtimes refresh Tuesday morning — check back, or browse all upcoming films.",
-            cta=("Browse all showtimes →", "pages/showtimes.py"),
+            cta=("Browse watchlist screenings →", "pages/calendar.py"),
         )
         return
 
@@ -119,7 +119,7 @@ def main() -> None:
     st.write("")
 
     # ── Up next rail ─────────────────────────────────────────────────────────
-    up_next = wl_shows.head(8)
+    up_next = wl_shows.iloc[1:9]
     render_poster_rail(up_next, title="Up next on your watchlist")
 
     # ── Because you liked X ──────────────────────────────────────────────────
@@ -164,7 +164,8 @@ def main() -> None:
     n_rated = len(ratings_df) if not ratings_df.empty else 0
     n_watchlist = len(watchlist_df)
     n_screenings = len(wl_shows)
-    n_theaters = wl_shows["theater_name"].nunique() if "theater_name" in wl_shows.columns else 0
+    has_theater_col = not showtimes_df.empty and "theater_name" in showtimes_df.columns
+    n_theaters = showtimes_df["theater_name"].nunique() if has_theater_col else 0
     render_kpi_strip(
         [
             ("Films rated", n_rated),

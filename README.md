@@ -34,20 +34,18 @@ Top chip-filter bar (theaters, genres, runtime buckets `<90` / `90–120` / `>12
 ### Movies Database (📊)
 
 Three calmer tabs in place of the old chart wall:
-- **Overview** — Plotly genre × avg-rating bubble + micro-card insights (runtime distribution sparkline, top directors chip cloud, top themes chip cloud)
-- **Discover** — chip filters (genre, director, min-rating slider) over a poster rail of matching films
+- **Overview** — Genre × avg rating chart (rated films only) + micro-card insights (runtime distribution sparkline, top directors chip cloud, top themes chip cloud). A caption below the title clarifies the stats are based on your rated films count.
+- **Discover** — chip filters (genre, director multiselect with live search, min-rating slider) over a poster rail of matching films
 - **Tables** — raw dataframes with poster, IMDB, TMDB, and Letterboxd link columns
 
 **Requires**: `MOVIES_OUTPUT_PATH`
 
 ### Watchlist Calendar (📅)
 
-Inner-joins your watchlist with current showtimes. Top chip-filter bar (theaters, genres, min-rating slider) + sidebar date range over three tabs:
-- **Calendar** — `streamlit-calendar` events colored on an amber heatmap by Letterboxd rating, always paired with a numeric rating in the title for a11y
+Inner-joins your watchlist with current showtimes. Top chip-filter bar (theaters, genres, runtime buckets, weekend toggle, free-text search) + sidebar date range over three tabs:
+- **By day** — horizontal poster rails grouped by date; one card per movie with all showtimes for that day listed below (time + theater), sorted by earliest showtime
+- **Calendar** — ICS and CSV export for your filtered screenings (Google / Apple / Outlook compatible)
 - **Map** — pydeck map of theaters with screenings in the current filter; marker size ∝ # screenings
-- **List** — poster rail grouped by date
-
-Export is **.ics** (universally accepted by Google / Apple / Outlook); the legacy CSV format is kept behind an expander.
 
 **Requires**: `MOVIES_OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` (+ `ALLOCINE_INPUT_PATH` for the map)
 

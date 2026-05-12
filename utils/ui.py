@@ -118,7 +118,7 @@ def _rating_chip_html(rating: float | None) -> str:
     return f'<span class="chip chip--rating" style="background:{color}">★ {float(rating):.1f}</span>'
 
 
-def _movie_card_html(row: pd.Series, *, size: Literal["sm", "md", "lg"] = "md") -> str:
+def _movie_card_html(row: pd.Series, *, size: Literal["sm", "md", "lg"] = "md", extra_html: str = "") -> str:
     """Return the HTML string for a single movie card (poster + meta).
 
     Pulls ``poster_url``, ``letterboxd_title``/``title``/``french_title``,
@@ -154,6 +154,7 @@ def _movie_card_html(row: pd.Series, *, size: Literal["sm", "md", "lg"] = "md") 
         f"{f'<div class="sub">{sub}</div>' if sub else ''}"
         f"<div>{rating_chip}{runtime_chip}</div>"
         f"<div>{genre_chips}</div>"
+        f"{extra_html}"
         f"</div>"
         f"</div>"
     )

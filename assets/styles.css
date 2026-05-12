@@ -77,6 +77,12 @@ html, body, .stMarkdown, .stText {
   font-size: 0.8rem;
   opacity: 0.7;
 }
+.showtime-badge {
+  font-size: 0.72rem;
+  color: var(--text-secondary, #aaa);
+  margin-top: 0.25rem;
+  font-variant-numeric: tabular-nums;
+}
 
 /* Movie card sizes ------------------------------------------------------ */
 .movie-card--sm .title { font-size: 0.8rem; }

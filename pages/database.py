@@ -16,12 +16,12 @@ Reorganises the Letterboxd cache + ratings + watchlist into three calmer tabs:
 from __future__ import annotations
 
 import html
+import re
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from modules.config import settings
 from utils.data_loader import build_taste_profile, get_paths, load_letterboxd_cache, load_ratings, load_watchlist
 from utils.ui import (
     format_runtime,
@@ -132,7 +132,6 @@ def _top_themes(cache_df: pd.DataFrame) -> list[tuple[str, float]]:
 
 def main() -> None:
     st.markdown('<h1 class="h-display" style="font-size:2rem;">Movies Database</h1>', unsafe_allow_html=True)
-    st.caption("Statistics from your Letterboxd ratings and watchlist.")
 
     output_path, _, _ = get_paths()
     if not output_path:
@@ -176,7 +175,12 @@ def main() -> None:
     tab_overview, tab_discover, tab_tables = st.tabs(["📈 Overview", "🔎 Discover", "📋 Tables"])
 
     with tab_overview:
-        st.markdown("##### Genre × rating")
+        st.caption(
+            f"Stats based on your **{len(ratings_df)} rated films**. "
+            f"The Discover tab also includes your watchlist ({len(watchlist_df)} films)."
+        )
+
+        st.markdown("##### Genre × avg rating (rated films only)")
         _genre_bubble_chart(ratings_df)
 
         c1, c2, c3 = st.columns(3)
@@ -187,27 +191,18 @@ def main() -> None:
             _chip_cloud(_top_directors(ratings_df), kind="genre")
         with c3:
             st.markdown("<div class='kpi-label'>Top themes</div>", unsafe_allow_html=True)
-            _chip_cloud(_top_themes(cache_df), kind="theme")
-
-        # Cache-freshness: surface stale-count for the user without burying it in a tab.
-        if "integration_date" in cache_df.columns:
-            now = pd.Timestamp.now()
-            days_to_update = settings.letterboxd_days_to_update
-            age_days = (now - pd.to_datetime(cache_df["integration_date"])).dt.days
-            stale_count = int((age_days > days_to_update).sum())
-            st.caption(
-                f"Cache: {len(cache_df)} movies · {stale_count} stale (> {days_to_update} days). "
-                f"Run the orchestrate.py CLI to refresh."
-            )
+            themes_source = ratings_df if "themes" in ratings_df.columns else cache_df
+            _chip_cloud(_top_themes(themes_source), kind="theme")
 
     with tab_discover:
         st.markdown("##### Filter your watchlist + ratings")
         all_genres = sorted(_explode_tags(cache_df.get("genres", pd.Series(dtype=str))).unique().tolist())
+        all_directors = sorted(_explode_tags(cache_df.get("directors", pd.Series(dtype=str))).unique().tolist())
         f1, f2, f3 = st.columns([2, 2, 2])
         with f1:
             sel_genres = st.pills("Genre", options=all_genres, selection_mode="multi", key="db_genre")
         with f2:
-            director_search = st.text_input("Director", placeholder="e.g. Wes Anderson", key="db_director")
+            sel_directors = st.multiselect("Director", options=all_directors, placeholder="Search directors…", key="db_director")
         with f3:
             min_rating = st.slider("Min Letterboxd rating", 0.0, 10.0, 0.0, 0.5, key="db_minrating")
 
@@ -215,8 +210,9 @@ def main() -> None:
         if sel_genres and "genres" in pool.columns:
             pattern = "|".join(g.replace("|", r"\|") for g in sel_genres)
             pool = pool[pool["genres"].fillna("").str.contains(pattern, case=False, regex=True)]
-        if director_search and "directors" in pool.columns:
-            pool = pool[pool["directors"].fillna("").str.contains(director_search.strip(), case=False, regex=False)]
+        if sel_directors and "directors" in pool.columns:
+            pattern = "|".join(re.escape(d) for d in sel_directors)
+            pool = pool[pool["directors"].fillna("").str.contains(pattern, case=False, regex=True)]
         if min_rating > 0 and "letterboxd_avg_rating" in pool.columns:
             pool = pool[pool["letterboxd_avg_rating"].fillna(0) >= min_rating]
 

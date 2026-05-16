@@ -143,19 +143,22 @@ async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20)
 
 def get_letterboxd_data(all_slugs: list[str], output_path: str | os.PathLike, api_key: str = "") -> pd.DataFrame:
     """
-    Fetch and cache Letterboxd movie data.
+    Fetch Letterboxd movie data, reusing an on-disk cache to skip already-known slugs.
 
-    Loads existing cache from parquet file and fetches only new/missing movies
-    using parallel requests. Caches results to avoid redundant API calls.
+    Loads the existing cache from ``output_path`` (read-only) and fetches only
+    new/missing movies using parallel requests. **Does not persist** — the caller
+    owns the single cache write so it can assign provenance (``source``) first.
 
     Args:
         all_slugs: List of Letterboxd movie slugs to fetch data for.
-        output_path: Path to cache file (parquet format).
+        output_path: Path to the existing cache file, read to skip cached slugs.
+        api_key: TMDB API key for authenticated requests.
 
     Returns:
-        DataFrame containing all movie metadata with columns: slug, title, release_year,
-        runtime, genres, description, tagline, letterboxd_avg_rating, directors,
-        imdb_id, tmdb_id, letterboxd_url, imdb_url, tmdb_url, integration_date.
+        DataFrame combining the loaded cache and any newly fetched rows, with columns:
+        slug, title, release_year, runtime, genres, description, tagline,
+        letterboxd_avg_rating, directors, imdb_id, tmdb_id, letterboxd_url, imdb_url,
+        tmdb_url, integration_date. The caller persists it (and assigns ``source``).
     """
     # Load existing cache to avoid refetching
     try:
@@ -181,31 +184,29 @@ def get_letterboxd_data(all_slugs: list[str], output_path: str | os.PathLike, ap
             now = pd.to_datetime(datetime.now().date())
             new_df["integration_date"] = now
             data_df = pd.concat([data_df, new_df], ignore_index=True)
-            data_df.to_parquet(output_path, index=False)
-            logger.info("Added %d new movies to cache", len(results))
+            logger.info("Fetched %d new movies (caller persists)", len(results))
     else:
         logger.info("No new slugs to fetch")
 
     return data_df
 
 
-def refresh_letterboxd_data(
-    data_df: pd.DataFrame, slugs_to_refresh: list[str], output_path: str | os.PathLike, api_key: str = ""
-) -> pd.DataFrame:
+def refresh_letterboxd_data(data_df: pd.DataFrame, slugs_to_refresh: list[str], api_key: str = "") -> pd.DataFrame:
     """
-    Update existing cached movie data for specified slugs.
+    Refetch metadata for the given slugs and return the updated DataFrame.
 
-    Refetches data for movies that have aged beyond the configured days_to_update
-    threshold. Updates the cache with fresh metadata while preserving other entries.
+    Refetches movies that have aged beyond the configured days_to_update threshold,
+    updating them in-place while preserving other entries (and their ``source``).
+    **Does not persist** — the caller owns the single cache write.
 
     Args:
         data_df: Existing DataFrame with cached movie data.
         slugs_to_refresh: List of movie slugs to update.
-        output_path: Path to cache file (parquet format).
         api_key: TMDB API key for authenticated requests.
 
     Returns:
         Updated DataFrame with refreshed movie data and new integration_date.
+        The caller persists it.
     """
     if not slugs_to_refresh:
         logger.info("No movies to refresh")
@@ -232,8 +233,5 @@ def refresh_letterboxd_data(
         data_df.update(refresh_df.set_index("slug"))
         data_df = data_df.reset_index()
         logger.info("Refreshed %d movies in cache", len(results))
-
-    if results or dead_slugs:
-        data_df.to_parquet(output_path, index=False)
 
     return data_df

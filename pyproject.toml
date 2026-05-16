@@ -1,6 +1,6 @@
 [project]
 name = "movies-management"
-version = "1.0.0"
+version = "1.1.0"
 description = "A Python application that aggregates and enriches your Letterboxd movie data by combining user ratings and watchlist information with comprehensive movie metadata from the Letterboxd API."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -8,15 +8,15 @@ dependencies = [
     "bandit>=1.9.4",
     "click==8.3.3",
     "letterboxdpy==6.5.5",
-    "mypy>=2.0.0",
-    "pandas==3.0.2",
+    "mypy>=2.1.0",
+    "pandas==3.0.3",
     "pyarrow==24.0.0",
     "pydantic-settings>=2.14.1",
     "pytest>=9.0.3",
     "pytest-mock>=3.15.1",
     "python-dotenv==1.2.2",
-    "requests>=2.33.1",
-    "ruff>=0.15.12",
+    "requests>=2.34.2",
+    "ruff>=0.15.13",
 ]
 
 # ruff, mypy, and pytest all read from here — no more scattered .flake8 / mypy.ini / pytest.ini.
@@ -44,4 +44,9 @@ addopts = "-v --tb=short"
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:pandas",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
 ]

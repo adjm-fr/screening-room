@@ -67,6 +67,24 @@ def merge_letterboxd_metadata(all_movies_df: pd.DataFrame, data_letterboxd_df: p
     return merged
 
 
+def assign_cache_source(cache_df: pd.DataFrame, ratings_slugs: set[str], watchlist_slugs: set[str]) -> pd.DataFrame:
+    """Reconcile ``ratings``/``watchlist`` provenance on the cache from user-slug membership.
+
+    A slug in the user's ratings becomes ``"ratings"``; in the watchlist, ``"watchlist"``
+    (ratings wins — ``build_movies_df`` already forbids a slug in both). Every other row
+    keeps its existing ``source`` untouched. This never assigns ``"allocine_showtimes"``:
+    that value is the Allocine pipeline's own ingest stamp, written exclusively by
+    ``get_letterboxd_data(..., source="allocine_showtimes")``. Returns a copy.
+    """
+    if cache_df.empty:
+        return cache_df
+    cache_df = cache_df.copy()
+    slug = cache_df["slug"]
+    cache_df.loc[slug.isin(watchlist_slugs), "source"] = "watchlist"
+    cache_df.loc[slug.isin(ratings_slugs), "source"] = "ratings"
+    return cache_df
+
+
 def reorder_columns(df: pd.DataFrame, column_order: list[str]) -> pd.DataFrame:
     """Return df with columns in column_order first, then any remaining columns."""
     existing = [c for c in column_order if c in df.columns]

@@ -161,32 +161,32 @@ def refresh_df():
     return df
 
 
-def test_empty_refresh_list_returns_df_unchanged(tmp_path, refresh_df):
-    result = refresh_letterboxd_data(refresh_df, [], str(tmp_path / "cache.parquet"), "")
+def test_empty_refresh_list_returns_df_unchanged(refresh_df):
+    result = refresh_letterboxd_data(refresh_df, [], "")
     pd.testing.assert_frame_equal(result, refresh_df)
 
 
-def test_refreshed_slug_gets_updated_fields(tmp_path, refresh_df, mocker):
+def test_refreshed_slug_gets_updated_fields(refresh_df, mocker):
     mocker.patch(
         "modules.get_letterboxd_data._fetch_movie",
         return_value={"slug": "slug-a", "title": "New Title"},
     )
-    result = refresh_letterboxd_data(refresh_df, ["slug-a"], str(tmp_path / "cache.parquet"), "")
+    result = refresh_letterboxd_data(refresh_df, ["slug-a"], "")
 
     assert result.loc[result["slug"] == "slug-a", "title"].iloc[0] == "New Title"
 
 
-def test_non_refreshed_slug_is_preserved(tmp_path, refresh_df, mocker):
+def test_non_refreshed_slug_is_preserved(refresh_df, mocker):
     mocker.patch(
         "modules.get_letterboxd_data._fetch_movie",
         return_value={"slug": "slug-a", "title": "New Title"},
     )
-    result = refresh_letterboxd_data(refresh_df, ["slug-a"], str(tmp_path / "cache.parquet"), "")
+    result = refresh_letterboxd_data(refresh_df, ["slug-a"], "")
 
     assert result.loc[result["slug"] == "slug-b", "title"].iloc[0] == "Untouched"
 
 
-def test_integration_date_updated_on_refresh(tmp_path, mocker):
+def test_integration_date_updated_on_refresh(mocker):
     df = pd.DataFrame([{"slug": "slug-a", "title": "Movie A"}])
     df["integration_date"] = pd.to_datetime(date(2023, 1, 1))
 
@@ -194,33 +194,21 @@ def test_integration_date_updated_on_refresh(tmp_path, mocker):
         "modules.get_letterboxd_data._fetch_movie",
         return_value={"slug": "slug-a", "title": "Movie A"},
     )
-    result = refresh_letterboxd_data(df, ["slug-a"], str(tmp_path / "cache.parquet"), "")
+    result = refresh_letterboxd_data(df, ["slug-a"], "")
 
     today = pd.to_datetime(date.today())
     assert result.loc[result["slug"] == "slug-a", "integration_date"].iloc[0] == today
 
 
-def test_dead_slug_is_pruned_from_cache(tmp_path, mocker):
+def test_dead_slug_is_pruned_from_cache(mocker):
     df = pd.DataFrame([{"slug": "slug-a", "title": "Old Title"}, {"slug": "slug-b", "title": "Kept"}])
     df["integration_date"] = pd.to_datetime(date(2023, 1, 1))
 
     mocker.patch("modules.get_letterboxd_data._fetch_movie", return_value=None)
-    result = refresh_letterboxd_data(df, ["slug-a"], str(tmp_path / "cache.parquet"), "")
+    result = refresh_letterboxd_data(df, ["slug-a"], "")
 
     assert "slug-a" not in result["slug"].values
     assert "slug-b" in result["slug"].values
-
-
-def test_dead_slug_pruning_writes_cache(tmp_path, mocker):
-    cache_path = tmp_path / "cache.parquet"
-    df = pd.DataFrame([{"slug": "slug-a", "title": "Old Title"}])
-    df["integration_date"] = pd.to_datetime(date(2023, 1, 1))
-
-    mocker.patch("modules.get_letterboxd_data._fetch_movie", return_value=None)
-    refresh_letterboxd_data(df, ["slug-a"], str(cache_path), "")
-
-    saved = pd.read_parquet(cache_path)
-    assert saved.empty
 
 
 # ── _fetch_french_title ───────────────────────────────────────────────────────

@@ -73,7 +73,9 @@ CLAUDE.md
 # macOS
 .DS_Store
 
+# Notebooks — local experimentation, never committed
+notebooks/
+
 # Project-specific: scraped data and temporary cache files
 *.parquet
 tmp/
-exploration.ipynb

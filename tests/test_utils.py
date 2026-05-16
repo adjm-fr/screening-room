@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from modules.utils import (
+    assign_cache_source,
     build_movies_df,
     fetch_user_data,
     find_stale_slugs,
@@ -202,3 +203,37 @@ def test_fetch_user_data_raises_when_get_watchlist_fails(mocker):
 
     with pytest.raises(RuntimeError, match="watchlist error"):
         fetch_user_data(user)
+
+
+# ── assign_cache_source ───────────────────────────────────────────────────────
+
+
+def test_assign_cache_source_tags_ratings_and_watchlist():
+    cache = pd.DataFrame([{"slug": "r"}, {"slug": "w"}])
+    result = assign_cache_source(cache, {"r"}, {"w"})
+    assert result.set_index("slug")["source"].to_dict() == {"r": "ratings", "w": "watchlist"}
+
+
+def test_assign_cache_source_ratings_wins_over_watchlist():
+    cache = pd.DataFrame([{"slug": "both"}])
+    result = assign_cache_source(cache, {"both"}, {"both"})
+    assert result.iloc[0]["source"] == "ratings"
+
+
+def test_assign_cache_source_preserves_existing_non_user_source():
+    cache = pd.DataFrame([{"slug": "alc", "source": "allocine_showtimes"}])
+    result = assign_cache_source(cache, {"r"}, {"w"})
+    assert result.iloc[0]["source"] == "allocine_showtimes"
+
+
+def test_assign_cache_source_never_assigns_allocine_showtimes():
+    # Slug in neither set with no prior source — left NA, not invented as allocine.
+    cache = pd.DataFrame([{"slug": "x", "source": pd.NA}])
+    result = assign_cache_source(cache, {"r"}, {"w"})
+    assert pd.isna(result.iloc[0]["source"])
+
+
+def test_assign_cache_source_empty_df_passthrough():
+    cache = pd.DataFrame()
+    result = assign_cache_source(cache, {"r"}, {"w"})
+    assert result.empty

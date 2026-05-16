@@ -119,6 +119,23 @@ To delete the metadata cache and rebuild it from scratch:
 python main.py --username your_letterboxd_username --reset_database
 ```
 
+### Expand the cache from Allocine showtimes
+
+After the Allocine scraper has run, expand `data_letterboxd.parquet` to include metadata for **every film currently playing in Paris**, not only the films you have rated or watchlisted:
+
+```bash
+python main.py --enrich-from-allocine /path/to/showtimes.parquet
+```
+
+This mode can be run standalone (no `--username` needed) or combined with `--username` in one call. The enrichment:
+
+1. Reads all unique `(title, original_title, director, release_year)` tuples from the showtimes parquet
+2. Resolves each to a Letterboxd slug via Letterboxd search (with year + director post-filtering), falling back to a TMDB search when unresolved
+3. Fetches and appends metadata for new slugs to `data_letterboxd.parquet` (idempotent — already-cached slugs are skipped)
+4. Writes tuples that could not be resolved to `{OUTPUT_PATH}/unresolved_allocine.parquet` for visibility
+
+`cinema_dashboard`'s `orchestrate.py` calls this automatically after each Allocine scrape.
+
 ## Output
 
 The application generates three parquet files in your `OUTPUT_PATH`:
@@ -167,6 +184,18 @@ The application generates three parquet files in your `OUTPUT_PATH`:
 
 **Metadata:**
 - `integration_date` - When metadata was fetched (used for refresh logic)
+- `source` - Provenance of the row, by the pipeline that ingested it:
+  - `ratings` / `watchlist` — written by the Letterboxd user-data pipeline. On every
+    `--username` run, `assign_cache_source` reconciles these across the whole cache from
+    the current user's rated/watchlisted slugs (ratings wins if a slug is in both).
+  - `allocine_showtimes` — written **only** by the Allocine enrichment pipeline
+    (`enrich_cache_from_showtimes`) when it adds a film found in the showtimes parquet.
+    It is that pipeline's own stamp, never a generic default; the reconciler never
+    produces it.
+
+  The fetch helpers (`get_letterboxd_data` / `refresh_letterboxd_data`) no longer
+  persist the cache — each caller (`main.py`, `enrich_cache_from_showtimes`) assigns
+  `source` and performs the single write.
 
 ### 2. `ratings_with_letterboxd.parquet`
 **Enriched user ratings** combining your ratings with full metadata.
@@ -191,6 +220,9 @@ Contains all columns from `data_letterboxd.parquet` (see above) for movies on yo
 
 *Note: Only contains movies where metadata was successfully fetched from Letterboxd.*
 
+### 4. `unresolved_allocine.parquet` *(optional)*
+Written when `--enrich-from-allocine` is used. Contains `(movie, original_title, director, release_year)` tuples from the showtimes file that could not be resolved to a Letterboxd slug. Useful for diagnosing match failures. Empty when all films resolved successfully.
+
 ## Architecture
 
 ### Module Structure
@@ -201,7 +233,8 @@ movies_management/
 ├── modules/
 │   ├── config.py                     # Centralised settings (pydantic-settings BaseSettings)
 │   ├── utils.py                      # Data transformation helpers
-│   └── get_letterboxd_data.py        # Letterboxd API interactions and caching
+│   ├── get_letterboxd_data.py        # Letterboxd API interactions and caching
+│   └── allocine_enrichment.py        # Allocine → Letterboxd slug resolution and cache expansion
 └── .env                              # Configuration file
 ```
 

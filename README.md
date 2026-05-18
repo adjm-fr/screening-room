@@ -206,11 +206,15 @@ python orchestrate.py --reset-db # pass --reset_database to movies_management
 - `showtimes.parquet` — stale if last written before the most recent Tuesday (French cinemas publish the new week's programme on Tuesdays)
 - `watchlist_with_letterboxd.parquet` — stale if older than 7 days
 
+After the Allocine scrape succeeds, the orchestrator automatically runs a third step that expands `data_letterboxd.parquet` with Letterboxd metadata for every film found in the fresh `showtimes.parquet` — not only the user's watchlist and ratings. Films that cannot be resolved to a Letterboxd slug are written to `{MOVIES_OUTPUT_PATH}/unresolved_allocine.parquet`.
+
 Output is timestamped and labelled per scraper:
 ```
 2026-05-04 13:00:00 [INFO] [allocine] Fetching Le Champo...
 2026-05-04 13:00:01 [INFO] [letterboxd] Fetching watchlist for adjm...
 2026-05-04 13:01:30 [INFO] [allocine] Done.
+2026-05-04 13:01:31 [INFO] [enrich] Enriching Letterboxd cache from showtimes...
+2026-05-04 13:03:00 [INFO] [enrich] Done.
 ```
 
 ### Option 2 — Dagster UI
@@ -225,9 +229,9 @@ dagster dev -m pipeline.definitions    # opens UI at localhost:3000
 Three jobs are available in the UI:
 - `showtimes_job` — runs the Allocine scraper
 - `watchlist_job` — runs the Letterboxd scraper
-- `all_scrapers_job` — runs both
+- `all_scrapers_job` — runs all three assets (showtimes, cache enrichment, watchlist)
 
-Assets are also configured with `AutomationCondition` for automatic scheduling (showtimes: Tuesday 06:00, watchlist: Monday 06:00) when the Dagster daemon is running.
+Assets are also configured with `AutomationCondition` for automatic scheduling (showtimes: Tuesday 06:00, watchlist: Monday 06:00) when the Dagster daemon is running. The `letterboxd_cache_enriched` asset has `deps=["showtimes"]` and runs automatically after each showtimes materialisation.
 
 You can also run each scraper manually:
 ```bash

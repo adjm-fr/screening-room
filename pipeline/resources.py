@@ -8,3 +8,4 @@ class ScraperConfig(ConfigurableResource):
     movies_dir: str
     allocine_output_path: str
     movies_output_path: str
+    letterboxd_username: str

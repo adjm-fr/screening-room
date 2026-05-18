@@ -136,7 +136,7 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
     if force or allocine_stale:
         reason = "forced" if force else f"stale (last Tuesday: {_last_tuesday().strftime('%Y-%m-%d')})"
         logger.info("Allocine showtimes: %s", reason)
-        allocine_cmd = ["python", "main.py", "--days", str(days)]
+        allocine_cmd = ["uv", "run", "python", "main.py", "--days", str(days)]
         if reset:
             allocine_cmd.append("--reset")
         tasks.append(("allocine", allocine_cmd, allocine_dir))
@@ -149,13 +149,15 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
         logger.info("Letterboxd data:    %s", reason)
         if not settings.letterboxd_username:
             raise click.ClickException("LETTERBOXD_USERNAME is not set in cinema_dashboard/.env")
-        letterboxd_cmd = ["python", "main.py", "--username", settings.letterboxd_username]
+        letterboxd_cmd = ["uv", "run", "python", "main.py", "--username", settings.letterboxd_username]
         if reset_db:
             letterboxd_cmd.append("--reset_database")
         tasks.append(("letterboxd", letterboxd_cmd, movies_dir))
     else:
         mtime = _mtime(watchlist_path)
         logger.info("Letterboxd data:    fresh (last updated %s)", mtime.strftime("%Y-%m-%d %H:%M") if mtime else "never")
+
+    run_allocine = force or allocine_stale
 
     if not tasks:
         logger.info("All data is fresh. Use --force to re-run anyway.")
@@ -177,6 +179,29 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
 
     if not all_ok:
         raise click.ClickException("One or more scrapers failed.")
+
+    # ── Allocine cache enrichment ─────────────────────────────────────────────
+    # Expand data_letterboxd.parquet to include metadata for every film in the
+    # fresh showtimes parquet, not only the user's watchlist and ratings.
+    # Only runs when Allocine was refreshed (new showtimes data available).
+    if run_allocine and results.get("allocine"):
+        if not settings.letterboxd_username:
+            logger.warning("LETTERBOXD_USERNAME not set — skipping Allocine cache enrichment")
+        else:
+            logger.info("Allocine scrape succeeded — running Letterboxd cache enrichment")
+            enrich_cmd = [
+                "uv",
+                "run",
+                "python",
+                "main.py",
+                "--enrich-from-allocine",
+                str(showtimes_path),
+            ]
+            ok = asyncio.run(run_scraper("enrich", enrich_cmd, movies_dir))
+            if ok:
+                logger.info("  %-12s ✓ ok", "enrich")
+            else:
+                logger.error("  %-12s ✗ failed", "enrich")
 
 
 if __name__ == "__main__":

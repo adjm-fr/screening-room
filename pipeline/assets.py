@@ -1,6 +1,7 @@
 import subprocess
 from pathlib import Path
 
+import pandas as pd
 from dagster import AssetExecutionContext, AutomationCondition, Config, MaterializeResult, MetadataValue, asset
 
 from .resources import ScraperConfig
@@ -21,7 +22,7 @@ class WatchlistConfig(Config):
     description="Allocine showtimes parquet — refreshed every Tuesday.",
 )
 def showtimes(context: AssetExecutionContext, config: ShowtimesConfig, scraper_config: ScraperConfig) -> MaterializeResult:
-    cmd = ["python", "main.py", "--days", str(config.days)]
+    cmd = ["uv", "run", "python", "main.py", "--days", str(config.days)]
     if config.reset:
         cmd.append("--reset")
 
@@ -48,12 +49,51 @@ def showtimes(context: AssetExecutionContext, config: ShowtimesConfig, scraper_c
 
 
 @asset(
+    deps=["showtimes"],
+    group_name="scrapers",
+    description="Letterboxd metadata cache enriched with all films from the latest showtimes parquet.",
+)
+def letterboxd_cache_enriched(context: AssetExecutionContext, scraper_config: ScraperConfig) -> MaterializeResult:
+    cmd = [
+        "uv",
+        "run",
+        "python",
+        "main.py",
+        "--enrich-from-allocine",
+        scraper_config.allocine_output_path,
+    ]
+
+    context.log.info("Running: %s (cwd=%s)", " ".join(cmd), scraper_config.movies_dir)
+    result = subprocess.run(cmd, cwd=scraper_config.movies_dir, capture_output=True, text=True)
+
+    for line in result.stdout.splitlines():
+        context.log.info("[enrich] %s", line)
+    for line in result.stderr.splitlines():
+        context.log.warning("[enrich] %s", line)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Cache enrichment failed (exit {result.returncode})")
+
+    unresolved = Path(scraper_config.movies_output_path) / "unresolved_allocine.parquet"
+    unresolved_count = len(pd.read_parquet(unresolved)) if unresolved.exists() else 0
+
+    return MaterializeResult(
+        metadata={
+            "unresolved_count": MetadataValue.int(unresolved_count),
+        }
+    )
+
+
+@asset(
     automation_condition=AutomationCondition.on_cron("0 6 * * 1"),  # Monday 06:00
     group_name="scrapers",
     description="Letterboxd watchlist parquet — refreshed weekly.",
 )
 def watchlist(context: AssetExecutionContext, config: WatchlistConfig, scraper_config: ScraperConfig) -> MaterializeResult:
-    cmd = ["python", "main.py"]
+    if not scraper_config.letterboxd_username:
+        raise RuntimeError("LETTERBOXD_USERNAME is not set in cinema_dashboard/.env")
+
+    cmd = ["uv", "run", "python", "main.py", "--username", scraper_config.letterboxd_username]
     if config.reset_db:
         cmd.append("--reset_database")
 

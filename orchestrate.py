@@ -4,10 +4,8 @@ Pipeline orchestration for the cinema dashboard.
 Runs the two data scrapers (Allocine showtimes + Letterboxd movies) in parallel,
 only when their output files are considered stale.
 
-Staleness rules:
-  - showtimes.parquet   : stale if last modified before the most recent Tuesday 00:00
-                          (French cinemas publish the new weekly programme on Tuesdays)
-  - watchlist parquet   : stale if older than 7 days
+Scraper argv lists and the staleness rules live in ``modules/scrapers.py`` — the
+single source of truth shared with the Dagster pipeline (``pipeline/assets.py``).
 
 Usage:
     python orchestrate.py            # refresh only stale data
@@ -17,12 +15,21 @@ Usage:
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import click
 
 from modules.config import settings
+from modules.scrapers import (
+    WATCHLIST_MAX_AGE_DAYS,
+    _last_tuesday,
+    _mtime,
+    allocine_command,
+    enrich_command,
+    is_showtimes_stale,
+    is_watchlist_stale,
+    letterboxd_command,
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -32,41 +39,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WATCHLIST_MAX_AGE_DAYS = 7
-
-# ── Staleness helpers ─────────────────────────────────────────────────────────
-
-
-def _last_tuesday() -> datetime:
-    """Return the most recent Tuesday at 00:00 (today if today is Tuesday)."""
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    # Monday=0 … Sunday=6, so Tuesday=1
-    days_back = (today.weekday() - 1) % 7
-    return today - timedelta(days=days_back)
-
-
-def _mtime(path: Path) -> datetime | None:
-    """Return the file's last-modified datetime, or None if the file doesn't exist."""
-    if not path.exists():
-        return None
-    return datetime.fromtimestamp(path.stat().st_mtime)
-
-
-def is_showtimes_stale(path: Path) -> bool:
-    """True if showtimes.parquet was last written before the most recent Tuesday."""
-    mtime = _mtime(path)
-    if mtime is None:
-        return True
-    return mtime < _last_tuesday()
-
-
-def is_watchlist_stale(path: Path) -> bool:
-    """True if watchlist parquet is older than WATCHLIST_MAX_AGE_DAYS days."""
-    mtime = _mtime(path)
-    if mtime is None:
-        return True
-    return (datetime.now() - mtime).days >= WATCHLIST_MAX_AGE_DAYS
-
+# Staleness rules and scraper argv lists live in modules/scrapers.py — the
+# single source of truth shared with the Dagster pipeline (pipeline/assets.py).
 
 # ── Scraper runner ────────────────────────────────────────────────────────────
 
@@ -106,6 +80,14 @@ async def _run_all(tasks: list[tuple[str, list[str], Path]]) -> dict[str, bool]:
     return {label: task.result() for label, task in futures.items()}
 
 
+def _log_result(label: str, ok: bool) -> None:
+    """Log a one-line ✓/✗ summary for a finished scraper."""
+    if ok:
+        logger.info("  %-12s ✓ ok", label)
+    else:
+        logger.error("  %-12s ✗ failed", label)
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
@@ -130,34 +112,26 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
     # ── Decide which scrapers to run ──────────────────────────────────────────
     tasks: list[tuple[str, list[str], Path]] = []
 
-    allocine_stale = is_showtimes_stale(showtimes_path)
-    watchlist_stale = is_watchlist_stale(watchlist_path)
+    run_allocine = force or is_showtimes_stale(showtimes_path)
+    run_watchlist = force or is_watchlist_stale(watchlist_path)
 
-    if force or allocine_stale:
+    if run_allocine:
         reason = "forced" if force else f"stale (last Tuesday: {_last_tuesday().strftime('%Y-%m-%d')})"
         logger.info("Allocine showtimes: %s", reason)
-        allocine_cmd = ["uv", "run", "python", "main.py", "--days", str(days)]
-        if reset:
-            allocine_cmd.append("--reset")
-        tasks.append(("allocine", allocine_cmd, allocine_dir))
+        tasks.append(("allocine", allocine_command(days, reset), allocine_dir))
     else:
         mtime = _mtime(showtimes_path)
         logger.info("Allocine showtimes: fresh (last updated %s)", mtime.strftime("%Y-%m-%d %H:%M") if mtime else "never")
 
-    if force or watchlist_stale:
+    if run_watchlist:
         reason = "forced" if force else f"stale (>{WATCHLIST_MAX_AGE_DAYS} days old)"
         logger.info("Letterboxd data:    %s", reason)
         if not settings.letterboxd_username:
             raise click.ClickException("LETTERBOXD_USERNAME is not set in cinema_dashboard/.env")
-        letterboxd_cmd = ["uv", "run", "python", "main.py", "--username", settings.letterboxd_username]
-        if reset_db:
-            letterboxd_cmd.append("--reset_database")
-        tasks.append(("letterboxd", letterboxd_cmd, movies_dir))
+        tasks.append(("letterboxd", letterboxd_command(settings.letterboxd_username, reset_db), movies_dir))
     else:
         mtime = _mtime(watchlist_path)
         logger.info("Letterboxd data:    fresh (last updated %s)", mtime.strftime("%Y-%m-%d %H:%M") if mtime else "never")
-
-    run_allocine = force or allocine_stale
 
     if not tasks:
         logger.info("All data is fresh. Use --force to re-run anyway.")
@@ -171,11 +145,8 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
     # ── Summary ───────────────────────────────────────────────────────────────
     all_ok = True
     for label, ok in results.items():
-        if ok:
-            logger.info("  %-12s ✓ ok", label)
-        else:
-            logger.error("  %-12s ✗ failed", label)
-            all_ok = False
+        _log_result(label, ok)
+        all_ok = all_ok and ok
 
     if not all_ok:
         raise click.ClickException("One or more scrapers failed.")
@@ -189,19 +160,8 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
             logger.warning("LETTERBOXD_USERNAME not set — skipping Allocine cache enrichment")
         else:
             logger.info("Allocine scrape succeeded — running Letterboxd cache enrichment")
-            enrich_cmd = [
-                "uv",
-                "run",
-                "python",
-                "main.py",
-                "--enrich-from-allocine",
-                str(showtimes_path),
-            ]
-            ok = asyncio.run(run_scraper("enrich", enrich_cmd, movies_dir))
-            if ok:
-                logger.info("  %-12s ✓ ok", "enrich")
-            else:
-                logger.error("  %-12s ✗ failed", "enrich")
+            ok = asyncio.run(run_scraper("enrich", enrich_command(str(showtimes_path)), movies_dir))
+            _log_result("enrich", ok)
 
 
 if __name__ == "__main__":

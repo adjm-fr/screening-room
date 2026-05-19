@@ -28,12 +28,6 @@ defs = Definitions(
         define_asset_job("all_scrapers_job", selection=["showtimes", "watchlist", "letterboxd_cache_enriched"]),
     ],
     resources={
-        "scraper_config": ScraperConfig(
-            allocine_dir=str(settings.allocine_dir),
-            movies_dir=str(settings.movies_dir),
-            allocine_output_path=str(settings.allocine_output_path or ""),
-            movies_output_path=str(settings.movies_output_path or ""),
-            letterboxd_username=str(settings.letterboxd_username or ""),
-        ),
+        "scraper_config": ScraperConfig.from_settings(settings),
     },
 )

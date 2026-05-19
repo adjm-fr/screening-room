@@ -98,16 +98,17 @@ movies_management          Allocine-Showtimes-Scraping
 ```
 cinema_dashboard/
 ├── app.py                        # Streamlit entry point — registers pages, injects CSS, mounts Cmd+K
-├── orchestrate.py                # Lightweight CLI to refresh all data (runs both scrapers in parallel)
+├── orchestrate.py                # Lightweight CLI to refresh all data (consumes modules/scrapers.py)
 ├── .streamlit/
 │   └── config.toml               # Cinema theme: dark + light, system-driven
 ├── assets/
 │   └── styles.css                # Design tokens, movie cards, poster rails, chips, KPI cards, motion, focus rings, mobile media queries
 ├── modules/
-│   └── config.py                 # Centralised settings via pydantic-settings (BaseSettings)
+│   ├── config.py                 # Centralised settings via pydantic-settings (BaseSettings)
+│   └── scrapers.py               # Shared scraper command builders + staleness rules (single source of truth)
 ├── pipeline/                     # Dagster pipeline (alternative to orchestrate.py)
-│   ├── assets.py                 # @asset definitions for showtimes + watchlist
-│   ├── resources.py              # ScraperConfig resource (paths from env)
+│   ├── assets.py                 # @asset definitions for showtimes + watchlist (consume modules/scrapers.py)
+│   ├── resources.py              # ScraperConfig resource (ScraperConfig.from_settings)
 │   └── definitions.py            # Dagster Definitions entry point
 ├── pages/
 │   ├── 0_home.py                 # Home — hero "tonight" card, poster rails, KPI strip

@@ -30,6 +30,7 @@ from modules.scrapers import (
     is_watchlist_stale,
     letterboxd_command,
 )
+from utils.streaming import refresh_streaming_providers
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
+# httpx logs every request at INFO; quiet it so the streaming refresh doesn't
+# spam one line per TMDB call (can be thousands for a large watchlist).
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Staleness rules and scraper argv lists live in modules/scrapers.py — the
@@ -133,23 +137,21 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
         mtime = _mtime(watchlist_path)
         logger.info("Letterboxd data:    fresh (last updated %s)", mtime.strftime("%Y-%m-%d %H:%M") if mtime else "never")
 
-    if not tasks:
-        logger.info("All data is fresh. Use --force to re-run anyway.")
-        return
-
-    logger.info("Running %d scraper(s) in parallel...", len(tasks))
-
     # ── Run in parallel ───────────────────────────────────────────────────────
-    results = asyncio.run(_run_all(tasks))
+    if tasks:
+        logger.info("Running %d scraper(s) in parallel...", len(tasks))
+        results = asyncio.run(_run_all(tasks))
 
-    # ── Summary ───────────────────────────────────────────────────────────────
-    all_ok = True
-    for label, ok in results.items():
-        _log_result(label, ok)
-        all_ok = all_ok and ok
+        all_ok = True
+        for label, ok in results.items():
+            _log_result(label, ok)
+            all_ok = all_ok and ok
 
-    if not all_ok:
-        raise click.ClickException("One or more scrapers failed.")
+        if not all_ok:
+            raise click.ClickException("One or more scrapers failed.")
+    else:
+        logger.info("All scraper data is fresh. Use --force to re-run anyway.")
+        results = {}
 
     # ── Allocine cache enrichment ─────────────────────────────────────────────
     # Expand data_letterboxd.parquet to include metadata for every film in the
@@ -162,6 +164,21 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
             logger.info("Allocine scrape succeeded — running Letterboxd cache enrichment")
             ok = asyncio.run(run_scraper("enrich", enrich_command(str(showtimes_path)), movies_dir))
             _log_result("enrich", ok)
+
+    # ── TMDB streaming-providers refresh ──────────────────────────────────────
+    # In-repo Python (the streaming cache is dashboard-owned, like the geocode
+    # cache) — not a sibling-repo subprocess. Incremental: skips rows fetched
+    # < 7 days ago, so it is cheap to call on every run.
+    if not settings.tmdb_api_key:
+        logger.warning("TMDB_API_KEY not set — skipping streaming-providers refresh")
+    else:
+        logger.info("Refreshing TMDB watch providers (FR)…")
+        summary = refresh_streaming_providers(
+            movies_output=str(settings.movies_output_path),
+            tmdb_api_key=settings.tmdb_api_key,
+            force=force,
+        )
+        _log_result("streaming", summary.get("errors", 0) == 0)
 
 
 if __name__ == "__main__":

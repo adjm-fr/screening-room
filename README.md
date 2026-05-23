@@ -178,6 +178,8 @@ cp .env.example .env
 | `LETTERBOXD_DAYS_TO_UPDATE` | Days before cached movie metadata is considered stale and refreshed (default: 365) |
 | `HF_MODEL` | Hugging Face model ID for the Recommendations page (default: `Qwen/Qwen2.5-72B-Instruct`) |
 | `HF_MAX_TOKENS` | Max tokens for model responses (default: 1024) |
+| `TMDB_API_KEY` | *(optional)* TMDB v3 API key. Enables the FR streaming-availability cache (`data/streaming_providers.parquet`) refreshed by `orchestrate.py`. Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
+| `STREAMING_SERVICES` | *(optional)* Comma-separated provider slugs you subscribe to (e.g. `mubi,netflix,canalplus`). Declared for Phase 3; unused until the streaming UI lands |
 | `ALLOCINE_DIR` | *(optional)* Absolute path to the `Allocine-Showtimes-Scraping` repo. Defaults to `../Allocine-Showtimes-Scraping` relative to this repo. |
 | `MOVIES_DIR` | *(optional)* Absolute path to the `movies_management` repo. Defaults to `../movies_management` relative to this repo. |
 

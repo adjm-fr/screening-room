@@ -36,5 +36,26 @@ class Settings(BaseSettings):
     hf_model: str = "Qwen/Qwen2.5-72B-Instruct"
     hf_max_tokens: int = 1024
 
+    # TMDB watch providers
+    tmdb_api_key: str | None = None
+    streaming_services: str = ""  # comma-separated provider slugs the user subscribes to
+
+    @property
+    def streaming_service_slugs(self) -> set[str]:
+        """Parsed, slugified set of subscribed services (consumed in Phase 3).
+
+        The import is local (not a circular-import workaround — ``utils.streaming``
+        never imports this module). ``modules.config`` is imported very early and
+        very widely (orchestrate, every page, the Dagster pipeline, tests) and
+        deliberately depends only on ``pathlib`` + ``pydantic-settings``. A
+        top-level import would pull ``streamlit``/``pandas``/``requests`` into
+        that hot path just to read env vars; deferring it keeps the cost on the
+        Phase-3-only caller while still single-sourcing the slug rule in
+        ``utils.streaming``.
+        """
+        from utils.streaming import _slugify
+
+        return {_slugify(s) for s in self.streaming_services.split(",") if s.strip()}
+
 
 settings = Settings()

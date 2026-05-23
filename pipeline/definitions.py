@@ -25,7 +25,10 @@ defs = Definitions(
     jobs=[
         define_asset_job("showtimes_job", selection=["showtimes"]),
         define_asset_job("watchlist_job", selection=["watchlist"]),
-        define_asset_job("all_scrapers_job", selection=["showtimes", "watchlist", "letterboxd_cache_enriched"]),
+        define_asset_job(
+            "all_scrapers_job",
+            selection=["showtimes", "watchlist", "letterboxd_cache_enriched", "streaming_providers"],
+        ),
     ],
     resources={
         "scraper_config": ScraperConfig.from_settings(settings),

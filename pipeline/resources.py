@@ -16,6 +16,7 @@ class ScraperConfig(ConfigurableResource):
     allocine_output_path: str
     movies_output_path: str
     letterboxd_username: str
+    tmdb_api_key: str
 
     @classmethod
     def from_settings(cls, settings: Settings) -> ScraperConfig:
@@ -30,4 +31,5 @@ class ScraperConfig(ConfigurableResource):
             allocine_output_path=str(settings.allocine_output_path or ""),
             movies_output_path=str(settings.movies_output_path or ""),
             letterboxd_username=str(settings.letterboxd_username or ""),
+            tmdb_api_key=str(settings.tmdb_api_key or ""),
         )

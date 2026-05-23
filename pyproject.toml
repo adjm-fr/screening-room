@@ -1,6 +1,6 @@
 [project]
 name = "cinema-dashboard"
-version = "1.1.2"
+version = "1.2.0"
 description = "A dashboard to watch cinema data"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -11,6 +11,7 @@ dependencies = [
     "dagster>=1.13.5",
     "dagster-webserver>=1.13.5",
     "geopy>=2.4.1",
+    "httpx>=0.28.0",
     "huggingface-hub>=1.15.0",
     "mypy>=2.1.0",
     "pandas>=3.0.3",
@@ -19,6 +20,7 @@ dependencies = [
     "pydantic-settings>=2.14.1",
     "pytest>=9.0.3",
     "pytest-mock>=3.15.1",
+    "respx>=0.22.0",
     "python-dotenv>=1.2.2",
     "requests>=2.34.2",
     "ruff==0.15.13",
@@ -45,4 +47,9 @@ addopts = "-v --tb=short"
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:pandas",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
 ]

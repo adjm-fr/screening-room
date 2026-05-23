@@ -5,6 +5,7 @@ import pandas as pd
 from dagster import AssetExecutionContext, AutomationCondition, Config, MaterializeResult, MetadataValue, asset
 
 from modules.scrapers import allocine_command, enrich_command, letterboxd_command
+from utils.streaming import refresh_streaming_providers
 
 from .resources import ScraperConfig
 
@@ -95,5 +96,31 @@ def watchlist(context: AssetExecutionContext, config: WatchlistConfig, scraper_c
         metadata={
             "output_path": MetadataValue.path(str(output)),
             "size_mb": MetadataValue.float(round(size_mb, 3)),
+        }
+    )
+
+
+@asset(
+    deps=["watchlist"],
+    automation_condition=AutomationCondition.on_cron("0 7 * * 1"),  # Monday 07:00, after the watchlist asset
+    group_name="scrapers",
+    description="FR streaming-availability cache for every watchlist film (TMDB watch/providers).",
+)
+def streaming_providers(context: AssetExecutionContext, scraper_config: ScraperConfig) -> MaterializeResult:
+    # In-repo Python (dashboard-owned cache) — not a sibling-repo subprocess,
+    # so this calls the function directly rather than the _run helper.
+    summary = refresh_streaming_providers(
+        movies_output=scraper_config.movies_output_path,
+        tmdb_api_key=scraper_config.tmdb_api_key or None,
+        force=False,
+    )
+    context.log.info("Streaming providers refresh: %s", summary)
+
+    return MaterializeResult(
+        metadata={
+            "fetched": MetadataValue.int(int(summary.get("fetched", 0))),
+            "skipped_fresh": MetadataValue.int(int(summary.get("skipped_fresh", 0))),
+            "errors": MetadataValue.int(int(summary.get("errors", 0))),
+            "skipped": MetadataValue.bool(bool(summary.get("skipped", False))),
         }
     )

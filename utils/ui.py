@@ -277,26 +277,31 @@ def render_hero_card(
 
     # Use <img> for the background — CSS background-image is blocked by Streamlit's CSP
     banner_html = f'<img class="hero-bg" src="{html.escape(banner)}" alt="" aria-hidden="true" />' if banner else ""
-    eyebrow_str = eyebrow or (when_str or "Up next")
-    meta_parts = [p for p in (theater, directors) if p]
-    meta_html = " · ".join(html.escape(p) for p in meta_parts)
+    eyebrow_base = eyebrow or when_str or "Up next"
+    eyebrow_str = f"{eyebrow_base} · {theater}" if theater else eyebrow_base
+    meta_html = html.escape(directors) if directors else ""
     rating_chip = _rating_chip_html(rating if isinstance(rating, (int, float)) else None)
     streaming_chips = _streaming_badges_html(row.get("flatrate"), subscribed)
+    rating_html = f'<div style="margin-top: 0.75rem;">{rating_chip}</div>' if rating_chip else ""
+    meta_block = f'<div class="hero-meta">{meta_html}</div>' if meta_html else ""
 
+    body_parts = "".join(
+        p
+        for p in (
+            f'<div class="hero-eyebrow">{html.escape(eyebrow_str)}</div>',
+            f'<div class="hero-title h-display">{html.escape(title)}</div>',
+            meta_block,
+            rating_html,
+            streaming_chips,
+        )
+        if p
+    )
     st.markdown(
-        f"""
-        <div class="hero-card" role="img" aria-label="{html.escape(title)}">
-            {banner_html}
-            <div class="hero-overlay"></div>
-            <div class="hero-body">
-                <div class="hero-eyebrow">{html.escape(eyebrow_str)}</div>
-                <div class="hero-title h-display">{html.escape(title)}</div>
-                <div class="hero-meta">{meta_html}</div>
-                <div style="margin-top: 0.75rem;">{rating_chip}</div>
-                {streaming_chips}
-            </div>
-        </div>
-        """,
+        f'<div class="hero-card" role="img" aria-label="{html.escape(title)}">'
+        f"{banner_html}"
+        f'<div class="hero-overlay"></div>'
+        f'<div class="hero-body">{body_parts}</div>'
+        f"</div>",
         unsafe_allow_html=True,
     )
 

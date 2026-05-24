@@ -122,9 +122,25 @@ def main() -> None:
     render_hero_card(next_screening, eyebrow=eyebrow, subscribed=subscribed)
     st.write("")
 
-    # ── Up next rail ─────────────────────────────────────────────────────────
+    # ── Screening next rail ──────────────────────────────────────────────────
     up_next = wl_shows.iloc[1:9]
-    render_poster_rail(up_next, title="Up next on your watchlist", subscribed=subscribed)
+    render_poster_rail(up_next, title="Screening next on your watchlist", subscribed=subscribed)
+
+    # ── Available on streaming platforms ─────────────────────────────────────
+    # When STREAMING_SERVICES is unset, fall back to "any provider" so the rail
+    # is still useful before the user configures their subscriptions.
+    wl_streaming = attach_streaming(watchlist_df, str(movies_path))
+    if subscribed:
+        wl_streaming = wl_streaming[wl_streaming["flatrate"].apply(lambda f: bool(set(f) & subscribed))]
+    else:
+        wl_streaming = wl_streaming[wl_streaming["flatrate"].apply(lambda f: len(f) > 0)]
+    if not wl_streaming.empty:
+        wl_streaming = (
+            wl_streaming.sort_values("letterboxd_avg_rating", ascending=False, na_position="last")
+            .drop_duplicates(subset=["tmdb_id"])
+            .head(8)
+        )
+        render_poster_rail(wl_streaming, title="Available on streaming platforms", subscribed=subscribed)
 
     # ── Because you liked X ──────────────────────────────────────────────────
     if not ratings_df.empty:

@@ -12,7 +12,9 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from modules.config import settings
 from utils.data_loader import (
+    attach_streaming,
     build_watchlist_showtimes,
     future_showtimes,
     get_paths,
@@ -102,6 +104,8 @@ def main() -> None:
 
     showtimes_df = future_showtimes(showtimes_df)
     wl_shows = build_watchlist_showtimes(showtimes_df, watchlist_df).sort_values("showtimes").reset_index(drop=True)
+    wl_shows = attach_streaming(wl_shows, str(movies_path))
+    subscribed = settings.streaming_service_slugs
 
     if wl_shows.empty:
         render_empty_state(
@@ -115,12 +119,12 @@ def main() -> None:
     # ── Hero: tonight's pick ─────────────────────────────────────────────────
     next_screening = wl_shows.iloc[0]
     eyebrow = _eyebrow_for(pd.to_datetime(next_screening["showtimes"]))
-    render_hero_card(next_screening, eyebrow=eyebrow)
+    render_hero_card(next_screening, eyebrow=eyebrow, subscribed=subscribed)
     st.write("")
 
     # ── Up next rail ─────────────────────────────────────────────────────────
     up_next = wl_shows.iloc[1:9]
-    render_poster_rail(up_next, title="Up next on your watchlist")
+    render_poster_rail(up_next, title="Up next on your watchlist", subscribed=subscribed)
 
     # ── Because you liked X ──────────────────────────────────────────────────
     if not ratings_df.empty:
@@ -129,7 +133,7 @@ def main() -> None:
             director_films = _films_by_director(wl_shows, top_director)
             if not director_films.empty:
                 deduped = director_films.drop_duplicates(subset=["letterboxd_title"]).head(6)
-                render_poster_rail(deduped, title=f"Because you like {top_director}")
+                render_poster_rail(deduped, title=f"Because you like {top_director}", subscribed=subscribed)
 
     # ── Discover by genre chips ──────────────────────────────────────────────
     if "genres" in wl_shows.columns:
@@ -157,7 +161,7 @@ def main() -> None:
             if picked:
                 filtered = wl_shows[wl_shows["genres"].fillna("").str.contains(picked, case=False, regex=False)]
                 deduped = filtered.drop_duplicates(subset=["letterboxd_title"]).head(8)
-                render_poster_rail(deduped, title=f"{picked} on your watchlist")
+                render_poster_rail(deduped, title=f"{picked} on your watchlist", subscribed=subscribed)
 
     # ── KPI strip at the bottom ──────────────────────────────────────────────
     st.divider()

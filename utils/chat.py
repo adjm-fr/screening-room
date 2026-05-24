@@ -37,6 +37,7 @@ from modules.config import settings
 from utils.allocine_search import _get_paris_cinemas, search_theaters
 from utils.data_loader import (
     _normalize_title,
+    attach_streaming,
     build_taste_profile,
     build_watchlist_showtimes,
     future_showtimes,
@@ -80,11 +81,36 @@ class ChatContext:
     api_key: str
     taste: str
     showtimes_md: str
+    streaming_md: str
     known_theaters: list[str]
     theaters_csv: Path | None
     wl_shows: pd.DataFrame
     n_movies: int
     n_screenings: int
+
+
+def _streaming_context(wl_shows: pd.DataFrame) -> str:
+    """One markdown line per watchlist film with FR streaming availability.
+
+    Empty string when no rows carry streaming data (cache missing or no hits).
+    Caller is expected to skip the streaming block in the system prompt when
+    this is empty, so the LLM doesn't get distracted by an empty section.
+    """
+    if "flatrate" not in wl_shows.columns:
+        return ""
+    title_col = "letterboxd_title" if "letterboxd_title" in wl_shows.columns else "french_title"
+    lines: list[str] = []
+    seen: set[str] = set()
+    for _, row in wl_shows.iterrows():
+        title = row.get(title_col)
+        if not isinstance(title, str) or title in seen:
+            continue
+        flat = row.get("flatrate") if isinstance(row.get("flatrate"), list) else []
+        if not flat:
+            continue
+        lines.append(f"- {title} — flatrate={', '.join(flat)}")
+        seen.add(title)
+    return "\n".join(lines)
 
 
 def _showtimes_context(wl_shows: pd.DataFrame) -> str:
@@ -155,6 +181,7 @@ def build_chat_context() -> ChatContext | None:
 
     showtimes_df = future_showtimes(showtimes_df)
     wl_shows = build_watchlist_showtimes(showtimes_df, watchlist_df)
+    wl_shows = attach_streaming(wl_shows, str(movies_path))
 
     if wl_shows.empty:
         st.info("No upcoming showtimes found for your watchlist movies. Nothing to recommend.")
@@ -168,6 +195,7 @@ def build_chat_context() -> ChatContext | None:
         api_key=api_key,
         taste=build_taste_profile(ratings_df),
         showtimes_md=_showtimes_context(wl_shows),
+        streaming_md=_streaming_context(wl_shows),
         known_theaters=known_theaters,
         theaters_csv=theaters_csv,
         wl_shows=wl_shows,
@@ -186,16 +214,22 @@ def _ask_hf(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], list]
     log.debug("Calling HF API — model: %s, history length: %d messages", settings.hf_model, len(history))
     client = InferenceClient(api_key=ctx.api_key)
     known_theaters_str = "\n".join(f"- {t}" for t in sorted(ctx.known_theaters)) or "None"
+    streaming_block = (
+        f"\nFR streaming availability for watchlist films (TMDB / JustWatch):\n{ctx.streaming_md}\n" if ctx.streaming_md else ""
+    )
     system_msg = {
         "role": "system",
         "content": (
             "You are a cinema recommendation assistant helping a film enthusiast choose what to watch.\n\n"
             f"User taste profile (from their Letterboxd ratings history):\n{ctx.taste}\n\n"
-            f"These are the watchlist movies currently showing at their theaters:\n{ctx.showtimes_md}\n\n"
+            f"These are the watchlist movies currently showing at their theaters:\n{ctx.showtimes_md}\n"
+            f"{streaming_block}\n"
             f"Known theaters (the only ones with showtimes data):\n{known_theaters_str}\n\n"
             "Rules:\n"
             "- Answer questions about the showtimes above concisely.\n"
             "- Refer to movies by title and include theater name and showtime when relevant.\n"
+            "- When the user asks what's on a streaming service, only reference titles from the "
+            "FR streaming availability list above — do not invent providers.\n"
             "- Do not invent movies or showtimes not listed above.\n"
             "- If the user mentions a theater that is NOT in the known theaters list above, "
             "you MUST call search_theater before responding — do not say the theater has no data."

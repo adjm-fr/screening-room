@@ -20,6 +20,8 @@ The dashboard is mostly read-only — it reads parquet files written by the othe
 
 Lead-with-the-answer overview hub: a hero card for tonight's next watchlist screening, horizontal poster rails (up next, "because you like {top director}", discover by genre), and a small KPI strip at the bottom. Uses the cinema theme + Inter/Playfair editorial typography. Renders a designed empty state with CTA when no upcoming watchlist screenings exist.
 
+When `STREAMING_SERVICES` is configured, every card also shows a small badge row indicating which of your subscribed streaming services currently carries the film in France (filled chip).
+
 **Requires**: `MOVIES_OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH`
 
 ### Showtimes (🎟️)
@@ -36,14 +38,14 @@ Top chip-filter bar (theaters, genres, runtime buckets `<90` / `90–120` / `>12
 Three calmer tabs in place of the old chart wall:
 - **Overview** — Genre × avg rating chart (rated films only) + micro-card insights (runtime distribution sparkline, top directors chip cloud, top themes chip cloud). A caption below the title clarifies the stats are based on your rated films count.
 - **Discover** — chip filters (genre, director multiselect with live search, min-rating slider) over a poster rail of matching films
-- **Tables** — raw dataframes with poster, IMDB, TMDB, and Letterboxd link columns
+- **Tables** — raw dataframes with poster, IMDB, TMDB, and Letterboxd link columns. When `STREAMING_SERVICES` is set, a "Streaming on" column lists the subscribed services currently carrying each film.
 
 **Requires**: `MOVIES_OUTPUT_PATH`
 
 ### Watchlist Calendar (📅)
 
 Inner-joins your watchlist with current showtimes. Top chip-filter bar (theaters, genres, runtime buckets, weekend toggle, free-text search) + sidebar date range over three tabs:
-- **By day** — horizontal poster rails grouped by date; one card per movie with all showtimes for that day listed below (time + theater), sorted by earliest showtime
+- **By day** — horizontal poster rails grouped by date; one card per movie with all showtimes for that day listed below (time + theater), sorted by earliest showtime. When `STREAMING_SERVICES` is set, the rails split into **"Cinema-only this week"** (worth leaving the house for) followed by **"Also streaming on your services"** (you can stay in). The map and any aggregate counts still use the full set so pins aren't dropped.
 - **Calendar** — ICS and CSV export for your filtered screenings (Google / Apple / Outlook compatible)
 - **Map** — pydeck map of theaters with screenings in the current filter; marker size ∝ # screenings
 
@@ -56,12 +58,13 @@ Chat interface powered by the [Hugging Face Inference API](https://huggingface.c
 - "Which watchlist movies are showing this weekend?"
 - "Based on my taste, what should I prioritise?"
 - "What's showing at Cinéma X that I'd enjoy?"
+- "What's on my streaming services tonight that fits my taste?" *(requires `STREAMING_SERVICES`)*
 
 Power-user surface: prompt-suggestion chips, streaming spinner with transparent tool-call expanders, in-page pinned-recommendations column on the right (substring-match watchlist titles in each reply, then click to pin), Markdown conversation export.
 
 The same assistant is reachable from any page via the global **`Cmd+K`** command palette (or the "✦ Ask AI" sidebar button). Both surfaces share `st.session_state['rec_messages']` so the conversation persists across them.
 
-The page derives a taste profile from your Letterboxd ratings (top genres and directors by average rating) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted.
+The page derives a taste profile from your Letterboxd ratings (top genres and directors by average rating) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted. When the FR streaming-providers cache is populated, per-film flatrate availability is injected into the system prompt, and the model is rule-bound to only reference providers from that list (no hallucinated availability).
 
 #### Auto-adding theaters
 
@@ -179,7 +182,7 @@ cp .env.example .env
 | `HF_MODEL` | Hugging Face model ID for the Recommendations page (default: `Qwen/Qwen2.5-72B-Instruct`) |
 | `HF_MAX_TOKENS` | Max tokens for model responses (default: 1024) |
 | `TMDB_API_KEY` | *(optional)* TMDB v3 API key. Enables the FR streaming-availability cache (`data/streaming_providers.parquet`) refreshed by `orchestrate.py`. Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
-| `STREAMING_SERVICES` | *(optional)* Comma-separated provider slugs you subscribe to (e.g. `mubi,netflix,canalplus`). Declared for Phase 3; unused until the streaming UI lands |
+| `STREAMING_SERVICES` | *(optional)* Comma-separated provider slugs you subscribe to (e.g. `mubi,netflix,canalplus,arte`). Enables streaming badges on movie cards (Home, Calendar), the Calendar cinema-only / also-streaming partition, the Database "Streaming on" column, and the Recommendations chat's awareness of FR availability. When unset, every streaming surface silently no-ops. |
 | `ALLOCINE_DIR` | *(optional)* Absolute path to the `Allocine-Showtimes-Scraping` repo. Defaults to `../Allocine-Showtimes-Scraping` relative to this repo. |
 | `MOVIES_DIR` | *(optional)* Absolute path to the `movies_management` repo. Defaults to `../movies_management` relative to this repo. |
 

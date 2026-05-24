@@ -56,15 +56,13 @@ def test_parse_fr_full_payload():
     )
     assert parsed == {
         "flatrate": ["mubi", "netflix"],
-        "rent": ["appletv"],
-        "buy": ["canalplus"],
         "tmdb_link": "https://www.themoviedb.org/movie/1/watch?locale=FR",
     }
 
 
 def test_parse_fr_missing_fr_key_yields_empties():
     parsed = _parse_fr(_payload(None))
-    assert parsed == {"flatrate": [], "rent": [], "buy": [], "tmdb_link": ""}
+    assert parsed == {"flatrate": [], "tmdb_link": ""}
 
 
 def test_parse_fr_skips_providers_without_name():
@@ -110,7 +108,7 @@ def test_refresh_writes_expected_schema_and_rows(movies_output, cache_path):
     assert summary == {"fetched": 2, "skipped_fresh": 0, "errors": 0}
     assert respx.calls.call_count == 2  # only the two non-empty tmdb_ids
     df = pd.read_parquet(cache_path)
-    assert set(df.columns) == {"tmdb_id", "flatrate", "rent", "buy", "tmdb_link", "fetched_at"}
+    assert set(df.columns) == {"tmdb_id", "flatrate", "tmdb_link", "fetched_at"}
     assert sorted(df["tmdb_id"]) == ["101", "202"]
     assert df.iloc[0]["flatrate"].tolist() == ["mubi"]
 
@@ -120,8 +118,8 @@ def test_incremental_skip_and_force(movies_output, cache_path):
     fresh = datetime.now(UTC) - timedelta(days=1)
     pd.DataFrame(
         [
-            {"tmdb_id": "101", "flatrate": ["mubi"], "rent": [], "buy": [], "tmdb_link": "L", "fetched_at": fresh},
-            {"tmdb_id": "202", "flatrate": [], "rent": [], "buy": [], "tmdb_link": "", "fetched_at": fresh},
+            {"tmdb_id": "101", "flatrate": ["mubi"], "tmdb_link": "L", "fetched_at": fresh},
+            {"tmdb_id": "202", "flatrate": [], "tmdb_link": "", "fetched_at": fresh},
         ]
     ).to_parquet(cache_path, index=False)
 
@@ -140,9 +138,7 @@ def test_incremental_skip_and_force(movies_output, cache_path):
 @respx.mock
 def test_stale_row_is_refetched(movies_output, cache_path):
     stale = datetime.now(UTC) - timedelta(days=30)
-    pd.DataFrame([{"tmdb_id": "101", "flatrate": [], "rent": [], "buy": [], "tmdb_link": "", "fetched_at": stale}]).to_parquet(
-        cache_path, index=False
-    )
+    pd.DataFrame([{"tmdb_id": "101", "flatrate": [], "tmdb_link": "", "fetched_at": stale}]).to_parquet(cache_path, index=False)
 
     _route(respx, "101", fr={"flatrate": [{"provider_name": "MUBI"}]})
     _route(respx, "202", fr={"flatrate": [{"provider_name": "MUBI"}]})
@@ -179,4 +175,4 @@ def test_load_returns_empty_typed_frame_when_cache_missing(mocker):
     mocker.patch("utils.streaming.STREAMING_CACHE_PATH", Path("/nonexistent/streaming.parquet"))
     df = load_streaming_providers("ignored")
     assert df.empty
-    assert list(df.columns) == ["tmdb_id", "flatrate", "rent", "buy", "tmdb_link", "fetched_at"]
+    assert list(df.columns) == ["tmdb_id", "flatrate", "tmdb_link", "fetched_at"]

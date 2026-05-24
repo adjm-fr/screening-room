@@ -6,7 +6,7 @@ import re
 
 import pytest
 
-from utils.ui import _ics_escape, format_runtime, rating_to_hsl, to_ics
+from utils.ui import _ics_escape, _streaming_badges_html, format_runtime, rating_to_hsl, to_ics
 
 # ── format_runtime ──────────────────────────────────────────────────────────
 
@@ -180,3 +180,30 @@ def test_to_ics_omits_optional_fields_when_missing():
     out = to_ics(events).decode("utf-8")
     assert "LOCATION" not in out
     assert "DESCRIPTION" not in out
+
+
+# ── _streaming_badges_html ──────────────────────────────────────────────────
+
+
+def test_streaming_badges_empty_when_no_data():
+    assert _streaming_badges_html([], {"mubi"}) == ""
+    assert _streaming_badges_html(None, {"mubi"}) == ""
+
+
+def test_streaming_badges_empty_when_no_subscription_match():
+    # flatrate present but subscriber owns none of those services → hide.
+    assert _streaming_badges_html(["netflix"], {"mubi"}) == ""
+
+
+def test_streaming_badges_subscribed_filled_first():
+    out = _streaming_badges_html(["mubi", "netflix"], {"mubi"})
+    assert 'class="chip chip--streaming"' in out
+    # Only subscribed service shows up filled; non-subscribed flatrate is hidden.
+    assert ">mubi<" in out
+    assert ">netflix<" not in out
+
+
+def test_streaming_badges_tolerates_nan_inputs():
+    import math
+
+    assert _streaming_badges_html(math.nan, {"mubi"}) == ""

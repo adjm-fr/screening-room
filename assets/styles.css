@@ -185,6 +185,16 @@ html, body, .stMarkdown, .stText {
   color: #1a1a1a;
   border: none;
 }
+.chip--streaming {
+  background: rgba(56, 178, 172, 0.18);
+  border-color: rgba(56, 178, 172, 0.45);
+}
+.streaming-row {
+  margin-top: 0.35rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
 
 /* KPI strip -------------------------------------------------------------- */
 

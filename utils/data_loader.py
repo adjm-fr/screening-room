@@ -15,6 +15,7 @@ Public API:
     load_letterboxd_cache(p)   -> full Letterboxd metadata cache
     build_watchlist_showtimes  -> join of watchlist and showtimes
     build_taste_profile(df)    -> compact taste summary string (top genres + directors by avg rating)
+    attach_streaming(df, …)    -> left-join FR streaming-providers cache by ``tmdb_id``
     future_showtimes(df)       -> rows with ``showtimes >= now`` (uncached)
 """
 
@@ -26,6 +27,7 @@ import pandas as pd
 import streamlit as st
 
 from modules.config import settings
+from utils.streaming import load_streaming_providers
 
 log = logging.getLogger(__name__)
 
@@ -172,6 +174,7 @@ def build_watchlist_showtimes(
         "release_year",
         "poster_url",
         "banner_url",
+        "tmdb_id",
     ]
     meta_cols = [c for c in _want_cols if c in watchlist_df.columns]
     wl_meta = watchlist_df[meta_cols].copy()
@@ -262,6 +265,55 @@ def build_taste_profile(ratings_df: pd.DataFrame) -> str:
     profile = "\n".join(lines)
     log.debug("Taste profile:\n%s", profile)
     return profile
+
+
+def attach_streaming(df: pd.DataFrame, movies_output: str) -> pd.DataFrame:
+    """Left-join the FR streaming-providers cache onto ``df`` by ``tmdb_id``.
+
+    Adds ``flatrate`` column (``list[str]`` of slugified provider
+    names; empty lists for unmatched rows). Returns ``df`` with the columns
+    present and empty when the cache is missing/empty or the input lacks
+    ``tmdb_id`` — pages can render unchanged in either case (graceful no-op).
+
+    Not ``@st.cache_data``-decorated: the underlying
+    :func:`utils.streaming.load_streaming_providers` already caches the read
+    for 24h, the merge is cheap, and caching DataFrame arguments has its own
+    hashing pitfalls.
+    """
+    out = df.copy()
+    if "tmdb_id" not in out.columns or out.empty:
+        out["flatrate"] = [[] for _ in range(len(out))]
+        return out
+
+    cache = load_streaming_providers(movies_output)
+    if cache.empty:
+        out["flatrate"] = [[] for _ in range(len(out))]
+        return out
+
+    keep = cache[["tmdb_id", "flatrate"]].copy()
+    keep["tmdb_id"] = keep["tmdb_id"].astype(str)
+    out["tmdb_id"] = out["tmdb_id"].astype(str)
+    out = out.merge(keep, on="tmdb_id", how="left")
+    out["flatrate"] = out["flatrate"].apply(_coerce_provider_list)
+    return out
+
+
+def _coerce_provider_list(value: object) -> list[str]:
+    """Coerce a parquet/merge cell into ``list[str]``.
+
+    Handles ``None``, scalar ``NaN``, Python lists/tuples, and numpy arrays
+    (parquet list columns surface as either lists or ``np.ndarray`` depending
+    on the engine).
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value]
+    if hasattr(value, "tolist"):
+        return [str(v) for v in value.tolist()]  # type: ignore[union-attr]
+    if isinstance(value, float) and pd.isna(value):
+        return []
+    return []
 
 
 def future_showtimes(df: pd.DataFrame) -> pd.DataFrame:

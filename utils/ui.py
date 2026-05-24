@@ -111,6 +111,44 @@ def _genre_chips_html(genres_str: str | None) -> str:
     return "".join(f'<span class="chip chip--genre">{html.escape(p)}</span>' for p in parts)
 
 
+def _streaming_badges_html(
+    flatrate: object,
+    subscribed: set[str] | frozenset[str] | None,
+) -> str:
+    """Render streaming-availability chips for a single film.
+
+    Subscribed services where the film is on flatrate render as filled chips
+    (``.chip--streaming``). Returns ``""`` when no chips would render, so
+    callers can safely interpolate the result unconditionally.
+
+    ``flatrate`` accepts lists, numpy arrays, ``None``, or ``NaN`` (parquet
+    object columns surface as any of these depending on the engine);
+    everything else is treated as empty.
+    """
+    sub: frozenset[str] = frozenset(subscribed or ())
+    flat = _to_str_list(flatrate)
+    subscribed_flat = [p for p in flat if p in sub]
+    if not subscribed_flat:
+        return ""
+    chips: list[str] = []
+    for slug in subscribed_flat:
+        chips.append(f'<span class="chip chip--streaming">{html.escape(slug)}</span>')
+    return f'<div class="streaming-row">{"".join(chips)}</div>'
+
+
+def _to_str_list(value: object) -> list[str]:
+    """Coerce a possibly-NaN / numpy / list cell into ``list[str]``."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value if v]
+    if hasattr(value, "tolist"):
+        return [str(v) for v in value.tolist() if v]  # type: ignore[union-attr]
+    if isinstance(value, float) and pd.isna(value):
+        return []
+    return []
+
+
 def _rating_chip_html(rating: float | None) -> str:
     if rating is None or (isinstance(rating, float) and pd.isna(rating)):
         return ""
@@ -118,7 +156,13 @@ def _rating_chip_html(rating: float | None) -> str:
     return f'<span class="chip chip--rating" style="background:{color}">★ {float(rating):.1f}</span>'
 
 
-def _movie_card_html(row: pd.Series, *, size: Literal["sm", "md", "lg"] = "md", extra_html: str = "") -> str:
+def _movie_card_html(
+    row: pd.Series,
+    *,
+    size: Literal["sm", "md", "lg"] = "md",
+    extra_html: str = "",
+    subscribed: set[str] | frozenset[str] | None = None,
+) -> str:
     """Return the HTML string for a single movie card (poster + meta).
 
     Pulls ``poster_url``, ``letterboxd_title``/``title``/``french_title``,
@@ -144,6 +188,7 @@ def _movie_card_html(row: pd.Series, *, size: Literal["sm", "md", "lg"] = "md", 
     runtime_chip = f'<span class="chip">{html.escape(format_runtime(runtime))}</span>' if format_runtime(runtime) != "—" else ""
     rating_chip = _rating_chip_html(rating if isinstance(rating, (int, float)) else None)
     genre_chips = _genre_chips_html(genres if isinstance(genres, str) else None)
+    streaming_chips = _streaming_badges_html(row.get("flatrate"), subscribed)
     sub = html.escape(directors) if directors else ""
 
     return (
@@ -154,15 +199,26 @@ def _movie_card_html(row: pd.Series, *, size: Literal["sm", "md", "lg"] = "md", 
         f"{f'<div class="sub">{sub}</div>' if sub else ''}"
         f"<div>{rating_chip}{runtime_chip}</div>"
         f"<div>{genre_chips}</div>"
+        f"{streaming_chips}"
         f"{extra_html}"
         f"</div>"
         f"</div>"
     )
 
 
-def render_movie_card(row: pd.Series, *, size: Literal["sm", "md", "lg"] = "md") -> None:
-    """Render a single movie card (poster + meta) as inline HTML."""
-    st.markdown(_movie_card_html(row, size=size), unsafe_allow_html=True)
+def render_movie_card(
+    row: pd.Series,
+    *,
+    size: Literal["sm", "md", "lg"] = "md",
+    subscribed: set[str] | frozenset[str] | None = None,
+) -> None:
+    """Render a single movie card (poster + meta) as inline HTML.
+
+    ``subscribed`` enables the streaming-availability badge row when the row
+    carries a ``flatrate`` column (populated by
+    :func:`utils.data_loader.attach_streaming`).
+    """
+    st.markdown(_movie_card_html(row, size=size, subscribed=subscribed), unsafe_allow_html=True)
 
 
 def render_poster_rail(
@@ -172,13 +228,14 @@ def render_poster_rail(
     empty_icon: str = "🎬",
     empty_title: str = "Nothing here yet",
     empty_hint: str = "Check back when new screenings are scraped.",
+    subscribed: set[str] | frozenset[str] | None = None,
 ) -> None:
     """Render a horizontal scroll rail of movie cards. Falls back to an empty state."""
     if rows.empty:
         render_empty_state(empty_icon, empty_title, empty_hint)
         return
 
-    cards_html = "".join(_movie_card_html(row) for _, row in rows.iterrows())
+    cards_html = "".join(_movie_card_html(row, subscribed=subscribed) for _, row in rows.iterrows())
     st.markdown(
         f'<div class="poster-rail-wrap">'
         f'<div class="poster-rail-title">{html.escape(title)}</div>'
@@ -188,7 +245,12 @@ def render_poster_rail(
     )
 
 
-def render_hero_card(row: pd.Series, *, eyebrow: str | None = None) -> None:
+def render_hero_card(
+    row: pd.Series,
+    *,
+    eyebrow: str | None = None,
+    subscribed: set[str] | frozenset[str] | None = None,
+) -> None:
     """Render a large banner-backed hero card for the Home page's "tonight" answer.
 
     Uses ``banner_url`` (falls back to ``poster_url``) as the background image.
@@ -219,6 +281,7 @@ def render_hero_card(row: pd.Series, *, eyebrow: str | None = None) -> None:
     meta_parts = [p for p in (theater, directors) if p]
     meta_html = " · ".join(html.escape(p) for p in meta_parts)
     rating_chip = _rating_chip_html(rating if isinstance(rating, (int, float)) else None)
+    streaming_chips = _streaming_badges_html(row.get("flatrate"), subscribed)
 
     st.markdown(
         f"""
@@ -230,6 +293,7 @@ def render_hero_card(row: pd.Series, *, eyebrow: str | None = None) -> None:
                 <div class="hero-title h-display">{html.escape(title)}</div>
                 <div class="hero-meta">{meta_html}</div>
                 <div style="margin-top: 0.75rem;">{rating_chip}</div>
+                {streaming_chips}
             </div>
         </div>
         """,

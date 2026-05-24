@@ -45,7 +45,7 @@ jobs:
           key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
 
       - run: uv sync
-      - run: uv run mypy app.py pages/ utils/
+      - run: uv run mypy app.py pages/ utils/ modules/ pipeline/ orchestrate.py
 
   # ── Security scanning ──────────────────────────────────────────────────────
   security:

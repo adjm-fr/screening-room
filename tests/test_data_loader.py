@@ -1,6 +1,6 @@
 import pandas as pd
 
-from utils.data_loader import build_taste_profile, build_watchlist_showtimes, future_showtimes
+from utils.data_loader import attach_streaming, build_taste_profile, build_watchlist_showtimes, future_showtimes
 
 # ---------------------------------------------------------------------------
 # build_taste_profile
@@ -87,6 +87,48 @@ def test_future_showtimes_empty_input():
 # ---------------------------------------------------------------------------
 # build_watchlist_showtimes — dedup branch
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# attach_streaming
+# ---------------------------------------------------------------------------
+
+
+def test_attach_streaming_no_tmdb_id_column(mocker):
+    """Input without ``tmdb_id`` gets an empty list column, no merge attempted."""
+    df = pd.DataFrame({"title": ["A"]})
+    load = mocker.patch("utils.data_loader.load_streaming_providers")
+    out = attach_streaming(df, "/tmp/movies")
+    load.assert_not_called()
+    assert out["flatrate"].tolist() == [[]]
+
+
+def test_attach_streaming_empty_cache_returns_empty_lists(mocker):
+    df = pd.DataFrame({"tmdb_id": ["1", "2"], "title": ["A", "B"]})
+    mocker.patch(
+        "utils.data_loader.load_streaming_providers",
+        return_value=pd.DataFrame(columns=["tmdb_id", "flatrate", "tmdb_link", "fetched_at"]),
+    )
+    out = attach_streaming(df, "/tmp/movies")
+    assert len(out) == 2
+    assert all(v == [] for v in out["flatrate"])
+
+
+def test_attach_streaming_left_join_preserves_unmatched(mocker):
+    df = pd.DataFrame({"tmdb_id": ["1", "2", "3"], "title": ["A", "B", "C"]})
+    cache = pd.DataFrame(
+        {
+            "tmdb_id": ["1", "3"],
+            "flatrate": [["mubi"], ["netflix", "canalplus"]],
+            "tmdb_link": ["", ""],
+            "fetched_at": [pd.Timestamp.now("UTC"), pd.Timestamp.now("UTC")],
+        }
+    )
+    mocker.patch("utils.data_loader.load_streaming_providers", return_value=cache)
+    out = attach_streaming(df, "/tmp/movies").set_index("tmdb_id")
+    assert out.loc["1", "flatrate"] == ["mubi"]
+    assert out.loc["2", "flatrate"] == []  # unmatched → empty list, not NaN
+    assert out.loc["3", "flatrate"] == ["netflix", "canalplus"]
 
 
 def test_dedup_same_showtime_same_slug():

@@ -2,7 +2,7 @@
 TMDB watch-providers (France) data layer.
 
 For every film on the watchlist we ask TMDB where it is streamable in France
-right now (subscription / rent / buy) and persist the answer to a local cache
+right now (subscription only) and persist the answer to a local cache
 parquet, exactly mirroring the geocoding-cache pattern in ``utils/geo.py``:
 fetch once, persist on disk, incremental-refresh on subsequent runs.
 
@@ -40,7 +40,7 @@ REQUEST_TIMEOUT = 10
 # TMDB allows ~50 rps. 20 in-flight requests keeps us well under that while
 # letting a multi-thousand-film watchlist finish in a sensible wall time.
 MAX_CONCURRENCY = 20
-_CACHE_COLUMNS = ["tmdb_id", "flatrate", "rent", "buy", "tmdb_link", "fetched_at"]
+_CACHE_COLUMNS = ["tmdb_id", "flatrate", "tmdb_link", "fetched_at"]
 
 
 def _slugify(name: str) -> str:
@@ -59,8 +59,8 @@ def _parse_fr(payload: dict) -> dict:
     """Extract the France block from a TMDB watch/providers payload.
 
     The endpoint returns ``results`` keyed by ISO country code. Returns
-    slugified provider-name lists for ``flatrate``/``rent``/``buy`` plus the
-    FR JustWatch deep link. A missing ``FR`` key yields empty lists/link.
+    slugified provider-name list for ``flatrate`` plus the FR JustWatch deep
+    link. A missing ``FR`` key yields an empty list/link.
     """
     fr = payload.get("results", {}).get("FR", {})
 
@@ -69,8 +69,6 @@ def _parse_fr(payload: dict) -> dict:
 
     return {
         "flatrate": _slugs("flatrate"),
-        "rent": _slugs("rent"),
-        "buy": _slugs("buy"),
         "tmdb_link": str(fr.get("link", "")),
     }
 
@@ -79,9 +77,7 @@ def _read_cache(cache_path: Path) -> pd.DataFrame:
     """Read the streaming cache; return an empty typed frame if it's missing."""
     if cache_path.exists():
         return pd.read_parquet(cache_path)
-    return pd.DataFrame(columns=_CACHE_COLUMNS).astype(
-        {"tmdb_id": "string", "flatrate": "object", "rent": "object", "buy": "object", "tmdb_link": "string"}
-    )
+    return pd.DataFrame(columns=_CACHE_COLUMNS).astype({"tmdb_id": "string", "flatrate": "object", "tmdb_link": "string"})
 
 
 def _write_cache(df: pd.DataFrame, cache_path: Path) -> None:

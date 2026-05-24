@@ -22,7 +22,15 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from utils.data_loader import build_taste_profile, get_paths, load_letterboxd_cache, load_ratings, load_watchlist
+from modules.config import settings
+from utils.data_loader import (
+    attach_streaming,
+    build_taste_profile,
+    get_paths,
+    load_letterboxd_cache,
+    load_ratings,
+    load_watchlist,
+)
 from utils.ui import (
     format_runtime,
     rating_to_hsl,
@@ -31,6 +39,33 @@ from utils.ui import (
     render_kpi_strip,
     render_poster_rail,
 )
+
+
+def _with_streaming_column(
+    df: pd.DataFrame,
+    movies_output: str,
+    subscribed: set[str] | frozenset[str],
+) -> pd.DataFrame:
+    """Append a ``streaming_on`` column listing subscribed services that carry each film.
+
+    Returns the df unchanged (sans column) when the user has no subscriptions
+    configured or the df lacks ``tmdb_id`` — the link table still renders.
+    The column is a comma-separated string (empty for unmatched rows) to avoid
+    the ``float('nan') → "nan"`` rendering pitfall called out in ``CLAUDE.md``.
+    """
+    if not subscribed or "tmdb_id" not in df.columns:
+        return df
+    enriched = attach_streaming(df, movies_output)
+
+    def _label(flat: object) -> str:
+        if not isinstance(flat, list):
+            return ""
+        hits = [p for p in flat if p in subscribed]
+        return ", ".join(sorted(hits))
+
+    enriched = enriched.copy()
+    enriched["streaming_on"] = enriched["flatrate"].apply(_label)
+    return enriched.drop(columns=["flatrate"], errors="ignore")
 
 
 def _explode_tags(series: pd.Series, separator: str = ", ") -> pd.Series:
@@ -225,19 +260,28 @@ def main() -> None:
             render_poster_rail(sample, title=f"{len(pool)} films match")
 
     with tab_tables:
+        subscribed = settings.streaming_service_slugs
+        cache_df_s = _with_streaming_column(cache_df, str(output_path), subscribed)
+        ratings_df_s = _with_streaming_column(ratings_df, str(output_path), subscribed)
+        watchlist_df_s = _with_streaming_column(watchlist_df, str(output_path), subscribed)
+
         sub_cache, sub_ratings, sub_watch = st.tabs(["Cache", "Ratings", "Watchlist"])
         link_cfg = {
             "letterboxd_url": st.column_config.LinkColumn("Letterboxd", display_text="Open ↗"),
             "imdb_url": st.column_config.LinkColumn("IMDB", display_text="Open ↗"),
             "tmdb_url": st.column_config.LinkColumn("TMDB", display_text="Open ↗"),
             "poster_url": st.column_config.ImageColumn("Poster", width="small"),
+            "streaming_on": st.column_config.TextColumn(
+                "Streaming on",
+                help="Subscribed services where this film is currently streamable in France (TMDB / JustWatch).",
+            ),
         }
         with sub_cache:
-            st.dataframe(cache_df, width="stretch", hide_index=True, column_config=link_cfg)
+            st.dataframe(cache_df_s, width="stretch", hide_index=True, column_config=link_cfg)
         with sub_ratings:
-            st.dataframe(ratings_df, width="stretch", hide_index=True, column_config=link_cfg)
+            st.dataframe(ratings_df_s, width="stretch", hide_index=True, column_config=link_cfg)
         with sub_watch:
-            st.dataframe(watchlist_df, width="stretch", hide_index=True, column_config=link_cfg)
+            st.dataframe(watchlist_df_s, width="stretch", hide_index=True, column_config=link_cfg)
 
 
 main()

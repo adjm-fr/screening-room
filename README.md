@@ -18,7 +18,9 @@ The dashboard is mostly read-only — it reads parquet files written by the othe
 
 ### Home (🏠)
 
-Lead-with-the-answer overview hub: a hero card for tonight's next watchlist screening, horizontal poster rails (up next, "because you like {top director}", discover by genre), and a small KPI strip at the bottom. Uses the cinema theme + Inter/Playfair editorial typography. Renders a designed empty state with CTA when no upcoming watchlist screenings exist.
+Lead-with-the-answer overview hub: a hero card for tonight's next watchlist screening, horizontal poster rails ("screening next on your watchlist", "available on streaming platforms", "because you like {top director}", discover by genre), and a small KPI strip at the bottom. Uses the cinema theme + Inter/Playfair editorial typography. Renders a designed empty state with CTA when no upcoming watchlist screenings exist.
+
+The "available on streaming platforms" rail is drawn from the full watchlist (not the cinema join), sorted by Letterboxd rating, and filtered to the providers in `STREAMING_SERVICES` when set — when unset it falls back to any provider so the rail is still useful before subscriptions are configured.
 
 When `STREAMING_SERVICES` is configured, every card also shows a small badge row indicating which of your subscribed streaming services currently carries the film in France (filled chip).
 

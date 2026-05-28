@@ -33,8 +33,10 @@ class Settings(BaseSettings):
 
     # Hugging Face (Recommendations page)
     hf_api_key: str | None = None
-    hf_model: str = "Qwen/Qwen2.5-72B-Instruct"
+    hf_model: str = "moonshotai/Kimi-K2-Instruct"
     hf_max_tokens: int = 1024
+    hf_temperature: float = 0.2
+    hf_top_p: float = 0.8
 
     # TMDB watch providers
     tmdb_api_key: str | None = None

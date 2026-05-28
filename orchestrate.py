@@ -15,6 +15,7 @@ Usage:
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 import click
@@ -56,12 +57,16 @@ async def run_scraper(label: str, cmd: list[str], cwd: Path) -> bool:
     stderr is merged into stdout so all output is captured in order.
     """
     logger.info("[%s] Starting: %s", label, " ".join(cmd))
+    # Strip VIRTUAL_ENV so `uv run` in the sibling repo doesn't warn about a
+    # mismatched ancestor venv (cinema_dashboard's) — let it resolve its own.
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=env,
         )
         assert proc.stdout is not None
         async for line in proc.stdout:

@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 
 import streamlit as st
+import streamlit_shortcuts  # type: ignore[import-untyped]
 
 from utils.chat import build_chat_context, render_chat
 
@@ -38,29 +39,17 @@ def _open_palette() -> None:
 
 
 def mount_cmdk() -> None:
-    """Mount the global command-palette button + keyboard shortcut.
+    """Mount the global command-palette button + ``Cmd+K`` / ``Ctrl+K`` shortcut.
 
     Renders an "✦ Ask AI" button at the top of the sidebar that opens the
-    chat dialog. Attempts to bind ``Cmd+K`` (and ``Ctrl+K``) via
-    ``streamlit-shortcuts``; if the lib is missing or its API has shifted,
-    silently falls back to the button-only flow without breaking the page.
+    chat dialog, and binds the keyboard shortcut to that same button via
+    ``streamlit-shortcuts``.
     """
     with st.sidebar:
         if st.button("✦ Ask AI · ⌘K", use_container_width=True, key="_cmdk_btn"):
             _open_palette()
 
-    try:
-        import streamlit_shortcuts  # type: ignore[import-untyped]
-
-        bind = getattr(streamlit_shortcuts, "add_keyboard_shortcuts", None) or getattr(
-            streamlit_shortcuts, "shortcut_button", None
-        )
-        if bind and hasattr(streamlit_shortcuts, "add_keyboard_shortcuts"):
-            streamlit_shortcuts.add_keyboard_shortcuts({"Ctrl+K": _open_palette, "Meta+K": _open_palette})
-    except ImportError:
-        log.debug("streamlit-shortcuts not available — Cmd+K shortcut disabled, button still works")
-    except Exception as exc:
-        log.warning("Failed to bind Cmd+K shortcut (%s) — button still works", exc)
+    streamlit_shortcuts.add_shortcuts(_cmdk_btn=["ctrl+k", "meta+k"])
 
     if st.session_state.get("_cmdk_open"):
         st.session_state["_cmdk_open"] = False

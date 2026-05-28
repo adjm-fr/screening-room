@@ -137,4 +137,15 @@ GOLDENS: list[Golden] = [
         allowed_streaming_pairs=_ALLOWED_PAIRS,
         allowed_theaters=_ALLOWED_THEATERS,
     ),
+    Golden(
+        # Real prod failure (2026-05): model recommended "Snowpiercer on
+        # Netflix" — neither in the watchlist nor in the streaming list.
+        # "Director-style" prompts are especially baity because the model
+        # has rich filmography knowledge it wants to surface.
+        id="director_style_bait",
+        prompt="Surprise me with a Bong Joon-ho-style movie",
+        allowed_films=_ALLOWED_FILMS,
+        allowed_streaming_pairs=_ALLOWED_PAIRS,
+        allowed_theaters=_ALLOWED_THEATERS,
+    ),
 ]

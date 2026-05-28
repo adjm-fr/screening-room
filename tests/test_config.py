@@ -46,21 +46,21 @@ def test_letterboxd_days_override(tmp_path, monkeypatch):
     assert s.letterboxd_days_to_update == 180
 
 
-def test_hf_defaults(tmp_path):
+def test_gemini_defaults(tmp_path):
     s = _settings(tmp_path)
-    assert s.hf_api_key is None
-    assert s.hf_model == "moonshotai/Kimi-K2-Instruct"
-    assert s.hf_max_tokens == 1024
+    assert s.gemini_api_key is None
+    assert s.gemini_model == "gemini-3.1-flash-lite"
+    assert s.gemini_max_tokens == 1024
 
 
-def test_hf_overrides(tmp_path, monkeypatch):
-    monkeypatch.setenv("HF_API_KEY", "test-key")
-    monkeypatch.setenv("HF_MODEL", "meta-llama/Llama-3-8B")
-    monkeypatch.setenv("HF_MAX_TOKENS", "512")
+def test_gemini_overrides(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("GEMINI_MAX_TOKENS", "512")
     s = _settings(tmp_path)
-    assert s.hf_api_key == "test-key"
-    assert s.hf_model == "meta-llama/Llama-3-8B"
-    assert s.hf_max_tokens == 512
+    assert s.gemini_api_key == "test-key"
+    assert s.gemini_model == "gemini-2.5-flash"
+    assert s.gemini_max_tokens == 512
 
 
 def test_extra_env_vars_ignored(tmp_path, monkeypatch):

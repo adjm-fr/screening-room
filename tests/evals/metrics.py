@@ -50,6 +50,44 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9+]+", "", s.lower())
 
 
+# Phrases that, when they appear in a short window *before* a bait-film
+# mention, indicate the model is refusing/declining to recommend the film
+# rather than recommending it. The metric should not flag refusals.
+_REFUSAL_PATTERNS = (
+    r"can(?:no|')t (?:recommend|suggest|offer|propose|find|see|show|include)",
+    r"cannot (?:recommend|suggest|offer|propose|find|see|show|include)",
+    r"won'?t (?:recommend|suggest|find)",
+    r"unable to (?:recommend|suggest|find|offer)",
+    r"(?:is|are|it'?s) not (?:among|in|on|available|currently|playing|showing|listed)",
+    r"isn'?t (?:among|in|on|available|currently|playing|showing|listed)",
+    r"aren'?t (?:among|in|on|available|currently|playing|showing|listed)",
+    r"no (?:showtimes?|screenings?|listings?) for",
+    r"not (?:showing|playing|available|listed|in your|on your|among)",
+    r"doesn'?t (?:appear|seem|show)",
+    r"does not (?:appear|seem|show)",
+)
+_REFUSAL_RE = re.compile("|".join(_REFUSAL_PATTERNS))
+
+
+def _is_in_refusal_context(text_lower: str, match_start: int, window: int = 120) -> bool:
+    """True if a refusal phrase appears in the same sentence before ``match_start``.
+
+    We bound the lookback at the nearest sentence terminator so a refusal in
+    an earlier sentence ("I can't recommend X. But you should watch Y!")
+    doesn't shield a recommendation in the next one.
+    """
+    pre = text_lower[max(0, match_start - window) : match_start]
+    last_break = max(pre.rfind("."), pre.rfind("!"), pre.rfind("?"))
+    if last_break != -1:
+        pre = pre[last_break + 1 :]
+    return bool(_REFUSAL_RE.search(pre))
+
+
+# Negations that, when sitting between a film mention and a provider name,
+# turn an "X on Y" co-occurrence into a denial rather than a claim.
+_INLINE_NEGATION_RE = re.compile(r"\b(?:not|isn'?t|aren'?t|won'?t|wasn'?t|never|no longer|unavailable)\b")
+
+
 class FilmSetMembershipMetric(BaseMetric):
     """Fail if the output names a film outside the allowed set.
 
@@ -79,7 +117,16 @@ class FilmSetMembershipMetric(BaseMetric):
 
     def measure(self, test_case: LLMTestCase) -> float:
         out = (test_case.actual_output or "").lower()
-        leaked = sorted(f for f in self.candidate_outside_films if f in out and f not in self.allowed_films)
+        leaked: list[str] = []
+        for film in sorted(self.candidate_outside_films):
+            if film in self.allowed_films:
+                continue
+            # A bait film "leaks" only if it's mentioned outside a refusal
+            # context. "I can't recommend Oppenheimer" is correct behavior;
+            # "Watch Oppenheimer tonight" is the hallucination we care about.
+            mentions = [m.start() for m in re.finditer(re.escape(film), out)]
+            if mentions and any(not _is_in_refusal_context(out, pos) for pos in mentions):
+                leaked.append(film)
         if leaked:
             self.score = 0.0
             self.success = False
@@ -129,14 +176,25 @@ class StreamingClaimMetric(BaseMetric):
         for film in self.allowed_films:
             film_l = film.lower()
             for match in re.finditer(re.escape(film_l), out_lower):
+                # Skip mentions inside a refusal — "X isn't on Netflix" is a
+                # correct denial, not a wrong-provider claim.
+                if _is_in_refusal_context(out_lower, match.start()):
+                    continue
                 # Look at a 120-char window after the film mention for "on X"
                 # or "streaming on X" claims.
                 window = out_lower[match.end() : match.end() + 120]
                 for provider in _KNOWN_PROVIDERS:
-                    if re.search(rf"\b{re.escape(provider)}\b", window):
-                        pair = (film_l, _slug(provider))
-                        if pair not in self.allowed_pairs:
-                            violations.append((film, provider))
+                    pm = re.search(rf"\b{re.escape(provider)}\b", window)
+                    if not pm:
+                        continue
+                    # If there's an inline negation between the film and the
+                    # provider ("Past Lives isn't on Netflix"), it's a denial,
+                    # not a claim.
+                    if _INLINE_NEGATION_RE.search(window[: pm.start()]):
+                        continue
+                    pair = (film_l, _slug(provider))
+                    if pair not in self.allowed_pairs:
+                        violations.append((film, provider))
 
         if violations:
             self.score = 0.0

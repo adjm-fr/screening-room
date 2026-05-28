@@ -16,14 +16,13 @@ This module owns:
     render_chat(ctx, ...) -> None                (the UI)
     PROMPT_SUGGESTIONS    : list[str]            (chip-row examples)
 
-The Hugging Face API call lives in :func:`_ask_hf` which streams the assistant
+The Gemini API call lives in :func:`_ask_gemini` which streams the assistant
 reply and handles a single round of ``search_theater`` tool use.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import json
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -31,7 +30,8 @@ from typing import cast
 
 import pandas as pd
 import streamlit as st
-from huggingface_hub import InferenceClient
+from google import genai
+from google.genai import types
 
 from modules.config import settings
 from utils.allocine_search import _get_paris_cinemas, search_theaters
@@ -57,21 +57,22 @@ PROMPT_SUGGESTIONS = [
     "What can I watch this weekend?",
 ]
 
-SEARCH_THEATER_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "search_theater",
-        "description": (
-            "Search Allocine for Paris cinemas matching a name. "
-            "Call this when the user asks about a theater that is not in the current showtimes data."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {"query": {"type": "string", "description": "Theater name to search for"}},
-            "required": ["query"],
-        },
-    },
-}
+SEARCH_THEATER_TOOL = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="search_theater",
+            description=(
+                "Search Allocine for Paris cinemas matching a name. "
+                "Call this when the user asks about a theater that is not in the current showtimes data."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={"query": types.Schema(type=types.Type.STRING, description="Theater name to search for")},
+                required=["query"],
+            ),
+        )
+    ]
+)
 
 
 @dataclasses.dataclass
@@ -136,11 +137,11 @@ def build_chat_context() -> ChatContext | None:
     so callers don't have to repeat the boilerplate. Called from both the
     dedicated page and the ``Cmd+K`` dialog.
     """
-    api_key = settings.hf_api_key
+    api_key = settings.gemini_api_key
     movies_path, showtimes_path, theaters_csv = get_paths()
 
     if not api_key:
-        st.error("**HF_API_KEY** is not set in `cinema_dashboard/.env`.")
+        st.error("**GEMINI_API_KEY** is not set in `cinema_dashboard/.env`.")
         return None
     if not movies_path:
         st.error("**MOVIES_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
@@ -224,22 +225,28 @@ def build_system_message(ctx: ChatContext) -> dict:
         "role": "system",
         "content": (
             "You are a cinema recommendation assistant helping a film enthusiast choose what to watch.\n\n"
+            "ABSOLUTE RULE — read first, applies to every response:\n"
+            "You may ONLY name films that literally appear in the two data blocks below "
+            "('watchlist movies currently showing' or 'FR streaming availability'). This is a closed "
+            "set. Treat any film NOT in those blocks as if it does not exist — do not name it, "
+            "describe it, compare to it, or acknowledge it, even if the user names it first and even "
+            "if you are certain it exists in reality.\n"
+            "This rule covers: direct recommendations, 'in the style of X' or 'similar to Y' "
+            "suggestions, director filmographies (e.g. if the user asks about Bong Joon-ho, do NOT "
+            "name Parasite, Snowpiercer, Memories of Murder, etc. — pick from the provided lists or "
+            "say nothing fits), genre comparisons, examples, and apologies.\n"
+            "For streaming: you may ONLY pair a film with a provider when that exact (film, provider) "
+            "row appears in the 'FR streaming availability' block. Do NOT add providers from outside "
+            "knowledge, even if you are certain the film streams there in reality.\n"
+            "If nothing in the provided lists fits, say so plainly without naming any outside film "
+            "or provider.\n\n"
             f"User taste profile (from their Letterboxd ratings history):\n{ctx.taste}\n\n"
             f"These are the watchlist movies currently showing at their theaters:\n{ctx.showtimes_md}\n"
             f"{streaming_block}\n"
             f"Known theaters (the only ones with showtimes data):\n{known_theaters_str}\n\n"
-            "Rules:\n"
+            "Other rules:\n"
             "- Answer questions about the showtimes above concisely.\n"
             "- Refer to movies by title and include theater name and showtime when relevant.\n"
-            "- HARD CONSTRAINT: the ONLY films you may mention by name — in ANY context, including "
-            "recommendations, comparisons, apologies, or examples — are those that appear in the "
-            "'watchlist movies currently showing' table or the 'FR streaming availability' list above. "
-            "You must NEVER name any other film, even to say it is unavailable. Do not write phrases "
-            "like 'unfortunately X is not in your watchlist' or 'films like Y and Z aren't available' — "
-            "those still leak outside knowledge. If nothing in the provided lists fits the user's "
-            "request, simply say so without naming any external film.\n"
-            "- Streaming recommendations: only recommend films from the 'FR streaming availability' "
-            "list, and only on the providers explicitly listed for that film. Never invent providers.\n"
             "- The taste profile describes the user's preferences (genres, directors, themes) for "
             "STYLE matching only. Use it to pick which provided films to suggest — NEVER as a source "
             "of titles, director filmographies, or 'similar films' from outside the provided lists.\n"
@@ -249,70 +256,63 @@ def build_system_message(ctx: ChatContext) -> dict:
     }
 
 
-def _ask_hf(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], list]:
-    """Stream a HF chat response, handling one round of ``search_theater`` tool use.
+def _history_to_contents(history: list[dict]) -> list[types.Content]:
+    """Map OpenAI-style chat history (``role`` in ``{user, assistant}``) to Gemini ``Content``s.
+
+    Gemini uses ``"model"`` where OpenAI uses ``"assistant"``. Only text turns
+    are stored in ``rec_messages`` — tool exchanges are added inline in
+    :func:`_ask_gemini` and not persisted to history.
+    """
+    contents: list[types.Content] = []
+    for msg in history:
+        role = "model" if msg["role"] == "assistant" else "user"
+        contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])]))
+    return contents
+
+
+def _ask_gemini(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], list]:
+    """Stream a Gemini chat response, handling one round of ``search_theater`` tool use.
 
     Returns ``(text_stream, pending_ref)`` where ``pending_ref`` is a
     single-element list populated *after* the generator is exhausted with the
     list of theater suggestions awaiting user confirmation (or ``None``).
     """
-    log.debug("Calling HF API — model: %s, history length: %d messages", settings.hf_model, len(history))
-    client = InferenceClient(api_key=ctx.api_key)
-    system_msg = build_system_message(ctx)
-    messages = [system_msg] + history
+    log.debug("Calling Gemini API — model: %s, history length: %d messages", settings.gemini_model, len(history))
+    client = genai.Client(api_key=ctx.api_key)
+    system_instruction = build_system_message(ctx)["content"]
+    contents = _history_to_contents(history)
+    cfg = types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        tools=[SEARCH_THEATER_TOOL],
+        max_output_tokens=settings.gemini_max_tokens,
+        temperature=settings.gemini_temperature,
+        top_p=settings.gemini_top_p,
+    )
     pending_ref: list[list[dict] | None] = [None]
 
     def _generate() -> Iterator[str]:
-        tool_call_id = ""
-        tool_call_name = ""
-        tool_call_args = ""
-        is_tool_call = False
+        fn_call: types.FunctionCall | None = None
+        assistant_parts: list[types.Part] = []
 
-        stream = client.chat.completions.create(  # type: ignore[call-overload]
-            model=settings.hf_model,
-            messages=messages,
-            max_tokens=settings.hf_max_tokens,
-            temperature=settings.hf_temperature,
-            top_p=settings.hf_top_p,
-            tools=cast(list, [SEARCH_THEATER_TOOL]),
-            tool_choice="auto",
-            stream=True,
-        )
+        stream = client.models.generate_content_stream(model=settings.gemini_model, contents=cast(list, contents), config=cfg)
         for chunk in stream:
-            if not chunk.choices:
+            if not chunk.candidates or chunk.candidates[0].content is None:
                 continue
-            delta = chunk.choices[0].delta
-            if delta.content:
-                yield delta.content
-            if delta.tool_calls:
-                is_tool_call = True
-                for tc in delta.tool_calls:
-                    if tc.id:
-                        tool_call_id = tc.id
-                    if tc.function:
-                        tool_call_name += tc.function.name or ""
-                        tool_call_args += tc.function.arguments or ""
+            for part in chunk.candidates[0].content.parts or []:
+                if part.text:
+                    assistant_parts.append(part)
+                    yield part.text
+                elif part.function_call:
+                    fn_call = part.function_call
+                    assistant_parts.append(part)
 
-        if not is_tool_call:
+        if fn_call is None:
             return
 
-        args = json.loads(tool_call_args)
-        query = args.get("query", "")
+        query = (fn_call.args or {}).get("query", "")
         log.info("Tool call: search_theater(query=%r)", query)
         results = search_theaters(query)
         log.info("search_theater returned %d result(s)", len(results))
-
-        assistant_msg = {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "id": tool_call_id,
-                    "type": "function",
-                    "function": {"name": tool_call_name, "arguments": tool_call_args},
-                }
-            ],
-        }
-        tool_result_msg = {"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(results)}
 
         # Surface the tool call to the UI as a transparent expander.
         with st.expander(f"🛠 Searched theaters: {query}", expanded=False):
@@ -321,20 +321,22 @@ def _ask_hf(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], list]
             else:
                 st.caption("No matches.")
 
-        follow_up = client.chat.completions.create(
-            model=settings.hf_model,
-            messages=messages + [assistant_msg, tool_result_msg],
-            max_tokens=settings.hf_max_tokens,
-            temperature=settings.hf_temperature,
-            top_p=settings.hf_top_p,
-            stream=True,
+        follow_contents = contents + [
+            types.Content(role="model", parts=assistant_parts),
+            types.Content(
+                role="user",
+                parts=[types.Part.from_function_response(name="search_theater", response={"results": results})],
+            ),
+        ]
+        follow_up = client.models.generate_content_stream(
+            model=settings.gemini_model, contents=cast(list, follow_contents), config=cfg
         )
         for chunk in follow_up:
-            if not chunk.choices:
+            if not chunk.candidates or chunk.candidates[0].content is None:
                 continue
-            delta_content = chunk.choices[0].delta.content
-            if delta_content:
-                yield delta_content
+            for part in chunk.candidates[0].content.parts or []:
+                if part.text:
+                    yield part.text
 
         pending_ref[0] = results if results else None
 
@@ -395,7 +397,7 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
         pinned_col = None
 
     with chat_col:
-        st.caption(f"Model: `{settings.hf_model}` · {ctx.n_movies} watchlist movies · {ctx.n_screenings} upcoming screenings")
+        st.caption(f"Model: `{settings.gemini_model}` · {ctx.n_movies} watchlist movies · {ctx.n_screenings} upcoming screenings")
 
         if show_prompt_chips and not st.session_state.rec_messages:
             chosen = st.pills(
@@ -424,9 +426,9 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
             with st.chat_message("assistant"):
                 with st.status("Thinking…", expanded=False) as status:
                     try:
-                        stream, pending_ref = _ask_hf(ctx, st.session_state.rec_messages)
+                        stream, pending_ref = _ask_gemini(ctx, st.session_state.rec_messages)
                     except Exception as exc:
-                        log.exception("HF API call failed")
+                        log.exception("Gemini API call failed")
                         reply: str = f"API error: {exc}"
                         pending: list[dict] | None = None
                         st.markdown(reply)

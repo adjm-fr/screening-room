@@ -6,7 +6,7 @@ Run with::
 
 The whole module is marked ``evals`` and deselected by the default
 ``-m 'not evals'`` in ``pyproject.toml``, so plain ``pytest tests/`` (incl.
-CI) skips it. Requires ``HF_API_KEY`` in the environment; without it the
+CI) skips it. Requires ``GEMINI_API_KEY`` in the environment; without it the
 suite skips at fixture setup.
 
 The deterministic metrics (``FilmSetMembershipMetric``, ``StreamingClaimMetric``)
@@ -19,7 +19,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 from deepeval.test_case import LLMTestCase
-from huggingface_hub import InferenceClient
+from google import genai
+from google.genai import types
 
 from evals.goldens import GOLDENS, Golden
 from evals.metrics import FilmSetMembershipMetric, StreamingClaimMetric
@@ -29,14 +30,28 @@ from utils.chat import ChatContext, build_system_message
 # Bait titles a golden may try to lure the model into naming. Listed here so
 # the metric can detect them in the output even when they don't appear in any
 # allowed set. Keep this list aligned with the prompts in ``goldens.py``.
-_BAIT_FILMS = ["Oppenheimer", "Parasite", "Interstellar", "Tenet", "Dune", "Barbie"]
+_BAIT_FILMS = [
+    "Oppenheimer",
+    "Parasite",
+    "Interstellar",
+    "Tenet",
+    "Dune",
+    "Barbie",
+    # Bong Joon-ho filmography — bait for the director-style prompt.
+    "Snowpiercer",
+    "Memories of Murder",
+    "The Host",
+    "Mother",
+    "Okja",
+    "Mickey 17",
+]
 
 pytestmark = pytest.mark.evals
 
 
 def _ctx_from_golden(g: Golden) -> ChatContext:
     return ChatContext(
-        api_key=settings.hf_api_key or "",
+        api_key=settings.gemini_api_key or "",
         taste=g.taste,
         showtimes_md=g.showtimes_md,
         streaming_md=g.streaming_md,
@@ -49,26 +64,29 @@ def _ctx_from_golden(g: Golden) -> ChatContext:
 
 
 def _ask_once(ctx: ChatContext, prompt: str) -> str:
-    """Non-streaming, no-tool HF call. Mirrors `_ask_hf` minus Streamlit + tools."""
-    client = InferenceClient(api_key=ctx.api_key)
-    resp = client.chat.completions.create(
-        model=settings.hf_model,
-        messages=[build_system_message(ctx), {"role": "user", "content": prompt}],
-        max_tokens=settings.hf_max_tokens,
-        temperature=settings.hf_temperature,
-        top_p=settings.hf_top_p,
+    """Non-streaming, no-tool Gemini call. Mirrors `_ask_gemini` minus Streamlit + tools."""
+    client = genai.Client(api_key=ctx.api_key)
+    resp = client.models.generate_content(
+        model=settings.gemini_model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=build_system_message(ctx)["content"],
+            max_output_tokens=settings.gemini_max_tokens,
+            temperature=settings.gemini_temperature,
+            top_p=settings.gemini_top_p,
+        ),
     )
-    return resp.choices[0].message.content or ""
+    return resp.text or ""
 
 
 @pytest.fixture(scope="module")
-def _require_hf_key() -> None:
-    if not settings.hf_api_key:
-        pytest.skip("HF_API_KEY not set — eval suite needs a live HF Inference API key")
+def _require_gemini_key() -> None:
+    if not settings.gemini_api_key:
+        pytest.skip("GEMINI_API_KEY not set — eval suite needs a live Gemini API key")
 
 
 @pytest.mark.parametrize("golden", GOLDENS, ids=lambda g: g.id)
-def test_chat_stays_in_bounds(golden: Golden, _require_hf_key: None) -> None:
+def test_chat_stays_in_bounds(golden: Golden, _require_gemini_key: None) -> None:
     ctx = _ctx_from_golden(golden)
     output = _ask_once(ctx, golden.prompt)
 

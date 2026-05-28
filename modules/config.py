@@ -31,12 +31,12 @@ class Settings(BaseSettings):
     letterboxd_username: str | None = None
     letterboxd_days_to_update: int = 365
 
-    # Hugging Face (Recommendations page)
-    hf_api_key: str | None = None
-    hf_model: str = "moonshotai/Kimi-K2-Instruct"
-    hf_max_tokens: int = 1024
-    hf_temperature: float = 0.2
-    hf_top_p: float = 0.8
+    # Gemini (Recommendations page)
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-3.1-flash-lite"
+    gemini_max_tokens: int = 1024
+    gemini_temperature: float = 0.2
+    gemini_top_p: float = 0.8
 
     # TMDB watch providers
     tmdb_api_key: str | None = None

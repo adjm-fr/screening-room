@@ -23,6 +23,7 @@ Refresh = re-run the pipeline; the 7-day incremental rule keeps it cheap.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
@@ -41,6 +42,74 @@ REQUEST_TIMEOUT = 10
 # letting a multi-thousand-film watchlist finish in a sensible wall time.
 MAX_CONCURRENCY = 20
 _CACHE_COLUMNS = ["tmdb_id", "flatrate", "tmdb_link", "fetched_at"]
+
+# Persistent slug -> human-readable provider name catalogue. The JSON file is
+# the single source of truth across the app (page rails, card badges, chip
+# filters) and is updated in place by `refresh_streaming_providers` whenever
+# TMDB returns a slug we have not seen before (new key) — pre-existing entries
+# are left untouched so manual capitalisation fixes (e.g. `"MUBI"`) stick.
+PROVIDER_DISPLAY_NAMES_PATH = Path(__file__).parent.parent / "assets" / "provider_display_names.json"
+
+
+def load_display_names_catalog(path: Path | None = None) -> dict[str, str]:
+    """Read the slug -> name catalogue from disk; `{}` when the file is absent.
+
+    `path` defaults to the module-level `PROVIDER_DISPLAY_NAMES_PATH` resolved
+    at call time (not at function-definition time), so `mocker.patch` on the
+    module attribute redirects writes/reads in tests.
+    """
+    path = path or PROVIDER_DISPLAY_NAMES_PATH
+    if not path.exists():
+        return {}
+    try:
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("Failed to read provider display-names catalogue at %s: %s", path, exc)
+        return {}
+
+
+def _update_display_names_catalog(
+    new_pairs: dict[str, str],
+    *,
+    path: Path | None = None,
+) -> int:
+    """Merge `new_pairs` into the on-disk catalogue, return the number added.
+
+    Only **new** slugs are written — existing entries keep their curated names,
+    so manually edited values (e.g. `"MUBI"` over TMDB's `"Mubi"`) stay put.
+    """
+    if not new_pairs:
+        return 0
+    path = path or PROVIDER_DISPLAY_NAMES_PATH
+    catalogue = load_display_names_catalog(path)
+    added = {slug: name for slug, name in new_pairs.items() if slug and name and slug not in catalogue}
+    if not added:
+        return 0
+    catalogue.update(added)
+    catalogue_sorted = dict(sorted(catalogue.items()))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(catalogue_sorted, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    log.info("Provider display-names catalogue: %d new entries written to %s", len(added), path)
+    return len(added)
+
+
+def display_name(slug: str, catalogue: dict[str, str] | None = None) -> str:
+    """Return a human-readable provider name for a slugified TMDB provider.
+
+    `catalogue` is the in-memory snapshot of the JSON file
+    (`load_display_names_catalog`). When omitted, the file is read on every
+    call — fine for one-off uses, but pass the dict for hot paths (page render
+    loops) so we don't reopen the JSON for every slug. Unknown slugs fall back
+    to a best-effort title-case with `"plus"` rewritten to `"+"`.
+    """
+    cat = catalogue if catalogue is not None else load_display_names_catalog()
+    if slug in cat:
+        return cat[slug]
+    return slug.replace("plus", "+").title()
 
 
 def _slugify(name: str) -> str:
@@ -73,6 +142,22 @@ def _parse_fr(payload: dict) -> dict:
     }
 
 
+def _fr_flatrate_name_pairs(payload: dict) -> dict[str, str]:
+    """Extract `{slug: original_provider_name}` for the FR flatrate block.
+
+    Used by `refresh_streaming_providers` to grow the display-names catalogue
+    with whatever TMDB returned, so newly-seen providers get a sensible label
+    without manual curation.
+    """
+    fr = payload.get("results", {}).get("FR", {})
+    pairs: dict[str, str] = {}
+    for p in fr.get("flatrate", []):
+        name = p.get("provider_name")
+        if name:
+            pairs[_slugify(name)] = name
+    return pairs
+
+
 def _read_cache(cache_path: Path) -> pd.DataFrame:
     """Read the streaming cache; return an empty typed frame if it's missing."""
     if cache_path.exists():
@@ -98,10 +183,12 @@ async def _fetch_fr_providers(
     tmdb_api_key: str,
     sem: asyncio.Semaphore,
 ) -> tuple[str, dict | None]:
-    """Fetch + parse the FR providers for one film. ``(tmdb_id, None)`` on any failure.
+    """Fetch the raw FR providers payload for one film. ``(tmdb_id, None)`` on any failure.
 
-    The semaphore caps in-flight requests so a multi-thousand-film watchlist
-    stays comfortably under TMDB's rate limit.
+    Returns the raw TMDB JSON (not the parsed cache dict) so the caller can
+    both build the persisted row *and* harvest pretty provider names from the
+    same response. The semaphore caps in-flight requests so a multi-thousand-
+    film watchlist stays comfortably under TMDB's rate limit.
     """
     async with sem:
         try:
@@ -115,7 +202,7 @@ async def _fetch_fr_providers(
     if resp.status_code != 200:
         log.warning("TMDB providers returned HTTP %d for tmdb_id=%s", resp.status_code, tmdb_id)
         return tmdb_id, None
-    return tmdb_id, _parse_fr(resp.json())
+    return tmdb_id, resp.json()
 
 
 async def _fetch_all_fr_providers(
@@ -175,17 +262,20 @@ def refresh_streaming_providers(
     results = asyncio.run(_fetch_all_fr_providers(to_fetch, tmdb_api_key)) if to_fetch else []
 
     fetched = errors = 0
-    for tmdb_id, providers in results:
-        if providers is None:
+    name_pairs: dict[str, str] = {}
+    for tmdb_id, payload in results:
+        if payload is None:
             errors += 1
             continue  # keep any stale row rather than dropping the film
-        rows[tmdb_id] = {"tmdb_id": tmdb_id, **providers, "fetched_at": now}
+        rows[tmdb_id] = {"tmdb_id": tmdb_id, **_parse_fr(payload), "fetched_at": now}
+        name_pairs.update(_fr_flatrate_name_pairs(payload))
         fetched += 1
 
     out = pd.DataFrame(list(rows.values()), columns=_CACHE_COLUMNS) if rows else _read_cache(cache_path)
     _write_cache(out, cache_path)
+    new_names = _update_display_names_catalog(name_pairs)
 
-    summary = {"fetched": fetched, "skipped_fresh": skipped_fresh, "errors": errors}
+    summary = {"fetched": fetched, "skipped_fresh": skipped_fresh, "errors": errors, "new_provider_names": new_names}
     log.info(
         "Streaming providers: %d fetched, %d fresh-skipped, %d errors (%d films cached)",
         fetched,

@@ -13,6 +13,9 @@ from utils.streaming import (
     TMDB_PROVIDERS_URL,
     _parse_fr,
     _slugify,
+    _update_display_names_catalog,
+    display_name,
+    load_display_names_catalog,
     load_streaming_providers,
     refresh_streaming_providers,
 )
@@ -34,6 +37,45 @@ from utils.streaming import (
 )
 def test_slugify(name, expected):
     assert _slugify(name) == expected
+
+
+# ── display_name ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("slug", "expected", "catalogue"),
+    [
+        ("netflix", "Netflix", {"netflix": "Netflix"}),
+        ("canalplus", "Canal+", {"canalplus": "Canal+"}),
+        ("mubi", "MUBI", {"mubi": "MUBI"}),
+        ("hbomax", "HBO Max", {"hbomax": "HBO Max"}),
+        # Unknown slug: fall back to title-case with `plus` → `+`.
+        ("someoddplus", "Someodd+", {}),
+        ("randomprovider", "Randomprovider", {}),
+    ],
+)
+def test_display_name(slug, expected, catalogue):
+    assert display_name(slug, catalogue) == expected
+
+
+# ── provider display-names catalogue ──────────────────────────────────────────
+
+
+def test_update_catalogue_writes_new_entries(tmp_path):
+    path = tmp_path / "catalog.json"
+    added = _update_display_names_catalog({"hbomax": "HBO Max", "tf1plus": "TF1+"}, path=path)
+    assert added == 2
+    assert load_display_names_catalog(path) == {"hbomax": "HBO Max", "tf1plus": "TF1+"}
+
+
+def test_update_catalogue_preserves_existing_entries(tmp_path):
+    path = tmp_path / "catalog.json"
+    # Pre-seed with a manual canonical capitalisation.
+    _update_display_names_catalog({"mubi": "MUBI"}, path=path)
+    # TMDB sends a different casing — we should not overwrite.
+    added = _update_display_names_catalog({"mubi": "Mubi", "netflix": "Netflix"}, path=path)
+    assert added == 1
+    assert load_display_names_catalog(path) == {"mubi": "MUBI", "netflix": "Netflix"}
 
 
 # ── _parse_fr ─────────────────────────────────────────────────────────────────
@@ -86,6 +128,13 @@ def cache_path(tmp_path):
     return tmp_path / "streaming.parquet"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_display_names_catalog(tmp_path, mocker):
+    """Redirect the on-disk provider-names catalogue into the test's tmp_path
+    so refresh runs don't mutate the checked-in assets file."""
+    mocker.patch("utils.streaming.PROVIDER_DISPLAY_NAMES_PATH", tmp_path / "provider_display_names.json")
+
+
 def _route(mock, tmdb_id: str, *, status: int = 200, fr: dict | None = None) -> respx.Route:
     return mock.get(TMDB_PROVIDERS_URL.format(tmdb_id=tmdb_id)).mock(
         return_value=httpx.Response(status, content=json.dumps(_payload(fr)))
@@ -105,7 +154,7 @@ def test_refresh_writes_expected_schema_and_rows(movies_output, cache_path):
 
     summary = refresh_streaming_providers(movies_output=movies_output, tmdb_api_key="key", cache_path=cache_path)
 
-    assert summary == {"fetched": 2, "skipped_fresh": 0, "errors": 0}
+    assert summary == {"fetched": 2, "skipped_fresh": 0, "errors": 0, "new_provider_names": 1}
     assert respx.calls.call_count == 2  # only the two non-empty tmdb_ids
     df = pd.read_parquet(cache_path)
     assert set(df.columns) == {"tmdb_id", "flatrate", "tmdb_link", "fetched_at"}
@@ -127,11 +176,11 @@ def test_incremental_skip_and_force(movies_output, cache_path):
     _route(respx, "202", fr={"flatrate": [{"provider_name": "Netflix"}]})
 
     summary = refresh_streaming_providers(movies_output=movies_output, tmdb_api_key="key", cache_path=cache_path)
-    assert summary == {"fetched": 0, "skipped_fresh": 2, "errors": 0}
+    assert summary == {"fetched": 0, "skipped_fresh": 2, "errors": 0, "new_provider_names": 0}
     assert respx.calls.call_count == 0
 
     forced = refresh_streaming_providers(movies_output=movies_output, tmdb_api_key="key", cache_path=cache_path, force=True)
-    assert forced == {"fetched": 2, "skipped_fresh": 0, "errors": 0}
+    assert forced == {"fetched": 2, "skipped_fresh": 0, "errors": 0, "new_provider_names": 1}
     assert respx.calls.call_count == 2
 
 
@@ -154,7 +203,7 @@ def test_one_request_failure_does_not_abort_batch(movies_output, cache_path):
 
     summary = refresh_streaming_providers(movies_output=movies_output, tmdb_api_key="key", cache_path=cache_path)
 
-    assert summary == {"fetched": 1, "skipped_fresh": 0, "errors": 1}
+    assert summary == {"fetched": 1, "skipped_fresh": 0, "errors": 1, "new_provider_names": 1}
     df = pd.read_parquet(cache_path)
     assert df["tmdb_id"].tolist() == ["202"]  # the failed "101" is absent
 

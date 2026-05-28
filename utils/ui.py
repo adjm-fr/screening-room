@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -22,6 +23,8 @@ from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
+
+from utils.streaming import display_name, load_display_names_catalog
 
 log = logging.getLogger(__name__)
 
@@ -130,9 +133,10 @@ def _streaming_badges_html(
     subscribed_flat = [p for p in flat if p in sub]
     if not subscribed_flat:
         return ""
+    catalogue = load_display_names_catalog()
     chips: list[str] = []
     for slug in subscribed_flat:
-        chips.append(f'<span class="chip chip--streaming">{html.escape(slug)}</span>')
+        chips.append(f'<span class="chip chip--streaming">{html.escape(display_name(slug, catalogue))}</span>')
     return f'<div class="streaming-row">{"".join(chips)}</div>'
 
 
@@ -340,6 +344,7 @@ def render_chip_filter(
     key: str,
     selection_mode: Literal["single", "multi"] = "multi",
     default: list[str] | str | None = None,
+    on_change: Callable[[], None] | None = None,
 ) -> list[str]:
     """Wrap ``st.pills`` with normalised return type and consistent labelling.
 
@@ -355,6 +360,7 @@ def render_chip_filter(
         selection_mode=selection_mode,
         default=default,
         key=key,
+        on_change=on_change,
     )
     if selection is None:
         return []

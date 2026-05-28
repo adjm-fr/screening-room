@@ -199,8 +199,9 @@ def test_streaming_badges_subscribed_filled_first():
     out = _streaming_badges_html(["mubi", "netflix"], {"mubi"})
     assert 'class="chip chip--streaming"' in out
     # Only subscribed service shows up filled; non-subscribed flatrate is hidden.
-    assert ">mubi<" in out
-    assert ">netflix<" not in out
+    # Badges render the human-readable display name, not the raw slug.
+    assert ">MUBI<" in out
+    assert "netflix" not in out.lower()
 
 
 def test_streaming_badges_tolerates_nan_inputs():

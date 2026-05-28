@@ -55,7 +55,7 @@ Inner-joins your watchlist with current showtimes. Top chip-filter bar (theaters
 
 ### Recommendations (🤖)
 
-Chat interface powered by the [Hugging Face Inference API](https://huggingface.co/inference-api) (model configurable via `HF_MODEL`, defaults to `Qwen/Qwen2.5-72B-Instruct`). Ask questions like:
+Chat interface powered by the [Hugging Face Inference API](https://huggingface.co/inference-api) (model configurable via `HF_MODEL`, defaults to `moonshotai/Kimi-K2-Instruct`). Ask questions like:
 
 - "Which watchlist movies are showing this weekend?"
 - "Based on my taste, what should I prioritise?"
@@ -91,7 +91,7 @@ movies_management          Allocine-Showtimes-Scraping
   Showtimes  Database  Calendar  Recommendations
                                       │
                               Hugging Face API
-                          (Qwen/Qwen2.5-72B-Instruct)
+                          (moonshotai/Kimi-K2-Instruct)
                                       │
                                utils/data_loader.py       ← cached parquet readers
                                utils/allocine_search.py   ← theater lookup
@@ -129,6 +129,12 @@ cinema_dashboard/
 │   ├── cmdk.py                   # Global Cmd+K command palette (st.dialog + streamlit-shortcuts)
 │   ├── allocine_search.py        # Searches Paris theaters via the Allocine API
 │   └── theater_manager.py        # Reads/appends to the theaters CSV
+├── tests/
+│   ├── conftest.py               # Shared fixtures + @st.cache_data no-op patch
+│   └── evals/                    # LLM hallucination evals (opt-in via `-m evals`)
+│       ├── goldens.py            # Bait prompts + allowed film/provider sets
+│       ├── metrics.py            # FilmSetMembership + StreamingClaim DeepEval metrics
+│       └── test_chat_evals.py    # Parameterized harness (hits live HF API)
 └── .env                          # Local environment variables (not committed)
 ```
 
@@ -181,8 +187,10 @@ cp .env.example .env
 | `HF_API_KEY` | Hugging Face API token (free) — required for the Recommendations page. Create one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
 | `LETTERBOXD_USERNAME` | Your Letterboxd username — required for the orchestrator and Dagster pipeline |
 | `LETTERBOXD_DAYS_TO_UPDATE` | Days before cached movie metadata is considered stale and refreshed (default: 365) |
-| `HF_MODEL` | Hugging Face model ID for the Recommendations page (default: `Qwen/Qwen2.5-72B-Instruct`) |
+| `HF_MODEL` | Hugging Face model ID for the Recommendations page (default: `moonshotai/Kimi-K2-Instruct`) |
 | `HF_MAX_TOKENS` | Max tokens for model responses (default: 1024) |
+| `HF_TEMPERATURE` | Sampling temperature; lower = more deterministic (default: 0.2) |
+| `HF_TOP_P` | Nucleus sampling cutoff; lower = less creative drift (default: 0.8) |
 | `TMDB_API_KEY` | *(optional)* TMDB v3 API key. Enables the FR streaming-availability cache (`data/streaming_providers.parquet`) refreshed by `orchestrate.py`. Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
 | `STREAMING_SERVICES` | *(optional)* Comma-separated provider slugs you subscribe to (e.g. `mubi,netflix,canalplus,arte`). Enables streaming badges on movie cards (Home, Calendar), the Calendar cinema-only / also-streaming partition, the Database "Streaming on" column, and the Recommendations chat's awareness of FR availability. When unset, every streaming surface silently no-ops. |
 | `ALLOCINE_DIR` | *(optional)* Absolute path to the `Allocine-Showtimes-Scraping` repo. Defaults to `../Allocine-Showtimes-Scraping` relative to this repo. |
@@ -248,6 +256,22 @@ cd ../Allocine-Showtimes-Scraping && python main.py
 ```
 
 Streamlit cache TTL is **5 minutes**, shared across all pages (`DATA_TTL_SECONDS` in [`utils/data_loader.py`](utils/data_loader.py)). Conversation history on the Recommendations page is session-scoped and not affected by the cache.
+
+## LLM evals
+
+The Recommendations chat is rule-bound to only reference watchlist titles and FR streaming providers from the lists injected into its system prompt. To verify that the live model actually respects those rules, `tests/evals/` ships a small DeepEval-based regression suite of bait prompts (e.g. *"Recommend me Oppenheimer for tonight."*, *"Is Parasite on Disney+?"*). Two deterministic metrics flag violations:
+
+- **`FilmSetMembershipMetric`** — fails if the output names a film outside the allowed set.
+- **`StreamingClaimMetric`** — fails if the output ties a film to a provider not in the allowed `(film, provider)` set.
+
+The suite is deselected from the default `pytest` run (every file is tagged `pytest.mark.evals` and `pyproject.toml` uses `addopts = "-m 'not evals'"`) because each case hits the live Hugging Face Inference API.
+
+```bash
+uv run pytest tests/evals/ -m evals                          # full suite
+uv run pytest tests/evals/ -m evals -k outside_film_bait     # one golden
+```
+
+Requires `HF_API_KEY`; the suite skips itself when unset. To add a new failure mode, append a `Golden(...)` entry to `tests/evals/goldens.py` — keep the dataset tight and curated rather than sprawling.
 
 ## Troubleshooting
 

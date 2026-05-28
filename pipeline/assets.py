@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -25,7 +26,10 @@ def _run(context: AssetExecutionContext, label: str, cmd: list[str], cwd: str) -
     Raises RuntimeError on a non-zero exit code.
     """
     context.log.info("Running: %s (cwd=%s)", " ".join(cmd), cwd)
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    # Strip VIRTUAL_ENV so `uv run` in the sibling repo doesn't warn about a
+    # mismatched ancestor venv — let it resolve its own.
+    env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env)
 
     for line in result.stdout.splitlines():
         context.log.info("[%s] %s", label, line)

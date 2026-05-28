@@ -49,7 +49,7 @@ def test_letterboxd_days_override(tmp_path, monkeypatch):
 def test_hf_defaults(tmp_path):
     s = _settings(tmp_path)
     assert s.hf_api_key is None
-    assert s.hf_model == "Qwen/Qwen2.5-72B-Instruct"
+    assert s.hf_model == "moonshotai/Kimi-K2-Instruct"
     assert s.hf_max_tokens == 1024
 
 

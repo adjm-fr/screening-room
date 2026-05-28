@@ -1,13 +1,13 @@
 [project]
 name = "cinema-dashboard"
-version = "1.2.2"
+version = "1.2.3"
 description = "A dashboard to watch cinema data"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "bandit==1.9.4",
     "beautifulsoup4>=4.14.3",
-    "click>=8.4.0",
+    "click>=8.4.1",
     "dagster>=1.13.5",
     "dagster-webserver>=1.13.5",
     "geopy>=2.4.1",
@@ -43,13 +43,29 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short -m 'not evals'"
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:pandas",
 ]
+markers = [
+    "evals: deepeval LLM-judged tests (hit HF + Gemini, skipped by default)",
+]
 
 [dependency-groups]
 dev = [
+    # Pinned to 2.x — newer deepeval lines have tight pins (tabulate<0.10,
+    # click<8.4) that conflict with this project's runtime deps.
+    "deepeval>=2.5,<3",
+    # deepeval 2.x imports ``langchain.schema`` at module load; that module was
+    # removed in langchain 1.0, so pin to the last compatible series.
+    # Lower bound 0.3 — earlier 0.0.x releases use @root_validator() without
+    # ``skip_on_failure=True``, which pydantic 2.13 promoted from deprecation
+    # to a hard error at class definition time.
+    "langchain>=0.3,<1",
+    # deepeval's pytest plugin imports ``llama_index.core.query_engine`` at
+    # startup; that namespace landed in llama-index 0.10. Without a lower
+    # bound uv picks the pre-namespace 0.9.x release and pytest fails to load.
+    "llama-index>=0.10,<0.13",
     "ipykernel>=7.2.0",
 ]

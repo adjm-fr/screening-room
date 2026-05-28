@@ -181,11 +181,12 @@ def build_chat_context() -> ChatContext | None:
 
     showtimes_df = future_showtimes(showtimes_df)
     wl_shows = build_watchlist_showtimes(showtimes_df, watchlist_df)
-    wl_shows = attach_streaming(wl_shows, str(movies_path))
 
     if wl_shows.empty:
         st.info("No upcoming showtimes found for your watchlist movies. Nothing to recommend.")
         return None
+
+    watchlist_streaming = attach_streaming(watchlist_df.rename(columns={"title": "letterboxd_title"}), str(movies_path))
 
     showtime_theaters = set(wl_shows["theater_name"].dropna().unique()) if "theater_name" in wl_shows.columns else set()
     csv_theaters = {t["name"] for t in load_theaters(theaters_csv)} if theaters_csv else set()
@@ -195,13 +196,57 @@ def build_chat_context() -> ChatContext | None:
         api_key=api_key,
         taste=build_taste_profile(ratings_df),
         showtimes_md=_showtimes_context(wl_shows),
-        streaming_md=_streaming_context(wl_shows),
+        streaming_md=_streaming_context(watchlist_streaming),
         known_theaters=known_theaters,
         theaters_csv=theaters_csv,
         wl_shows=wl_shows,
         n_movies=int(wl_shows["letterboxd_title"].nunique()),
         n_screenings=int(len(wl_shows)),
     )
+
+
+def build_system_message(ctx: ChatContext) -> dict:
+    """Build the system message used to anchor the LLM to the provided lists.
+
+    Extracted so eval tests can reproduce the exact system prompt without
+    depending on Streamlit or the streaming tool-use loop.
+    """
+    known_theaters_str = "\n".join(f"- {t}" for t in sorted(ctx.known_theaters)) or "None"
+    streaming_block = (
+        f"\nFR streaming availability for watchlist films (TMDB / JustWatch):\n{ctx.streaming_md}\n"
+        if ctx.streaming_md
+        else (
+            "\nFR streaming availability for watchlist films: NONE — "
+            "no watchlist films are currently available on any streaming service.\n"
+        )
+    )
+    return {
+        "role": "system",
+        "content": (
+            "You are a cinema recommendation assistant helping a film enthusiast choose what to watch.\n\n"
+            f"User taste profile (from their Letterboxd ratings history):\n{ctx.taste}\n\n"
+            f"These are the watchlist movies currently showing at their theaters:\n{ctx.showtimes_md}\n"
+            f"{streaming_block}\n"
+            f"Known theaters (the only ones with showtimes data):\n{known_theaters_str}\n\n"
+            "Rules:\n"
+            "- Answer questions about the showtimes above concisely.\n"
+            "- Refer to movies by title and include theater name and showtime when relevant.\n"
+            "- HARD CONSTRAINT: the ONLY films you may mention by name — in ANY context, including "
+            "recommendations, comparisons, apologies, or examples — are those that appear in the "
+            "'watchlist movies currently showing' table or the 'FR streaming availability' list above. "
+            "You must NEVER name any other film, even to say it is unavailable. Do not write phrases "
+            "like 'unfortunately X is not in your watchlist' or 'films like Y and Z aren't available' — "
+            "those still leak outside knowledge. If nothing in the provided lists fits the user's "
+            "request, simply say so without naming any external film.\n"
+            "- Streaming recommendations: only recommend films from the 'FR streaming availability' "
+            "list, and only on the providers explicitly listed for that film. Never invent providers.\n"
+            "- The taste profile describes the user's preferences (genres, directors, themes) for "
+            "STYLE matching only. Use it to pick which provided films to suggest — NEVER as a source "
+            "of titles, director filmographies, or 'similar films' from outside the provided lists.\n"
+            "- If the user mentions a theater that is NOT in the known theaters list above, "
+            "you MUST call search_theater before responding — do not say the theater has no data."
+        ),
+    }
 
 
 def _ask_hf(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], list]:
@@ -213,28 +258,7 @@ def _ask_hf(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], list]
     """
     log.debug("Calling HF API — model: %s, history length: %d messages", settings.hf_model, len(history))
     client = InferenceClient(api_key=ctx.api_key)
-    known_theaters_str = "\n".join(f"- {t}" for t in sorted(ctx.known_theaters)) or "None"
-    streaming_block = (
-        f"\nFR streaming availability for watchlist films (TMDB / JustWatch):\n{ctx.streaming_md}\n" if ctx.streaming_md else ""
-    )
-    system_msg = {
-        "role": "system",
-        "content": (
-            "You are a cinema recommendation assistant helping a film enthusiast choose what to watch.\n\n"
-            f"User taste profile (from their Letterboxd ratings history):\n{ctx.taste}\n\n"
-            f"These are the watchlist movies currently showing at their theaters:\n{ctx.showtimes_md}\n"
-            f"{streaming_block}\n"
-            f"Known theaters (the only ones with showtimes data):\n{known_theaters_str}\n\n"
-            "Rules:\n"
-            "- Answer questions about the showtimes above concisely.\n"
-            "- Refer to movies by title and include theater name and showtime when relevant.\n"
-            "- When the user asks what's on a streaming service, only reference titles from the "
-            "FR streaming availability list above — do not invent providers.\n"
-            "- Do not invent movies or showtimes not listed above.\n"
-            "- If the user mentions a theater that is NOT in the known theaters list above, "
-            "you MUST call search_theater before responding — do not say the theater has no data."
-        ),
-    }
+    system_msg = build_system_message(ctx)
     messages = [system_msg] + history
     pending_ref: list[list[dict] | None] = [None]
 
@@ -248,7 +272,9 @@ def _ask_hf(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], list]
             model=settings.hf_model,
             messages=messages,
             max_tokens=settings.hf_max_tokens,
-            tools=[SEARCH_THEATER_TOOL],
+            temperature=settings.hf_temperature,
+            top_p=settings.hf_top_p,
+            tools=cast(list, [SEARCH_THEATER_TOOL]),
             tool_choice="auto",
             stream=True,
         )
@@ -299,6 +325,8 @@ def _ask_hf(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], list]
             model=settings.hf_model,
             messages=messages + [assistant_msg, tool_result_msg],
             max_tokens=settings.hf_max_tokens,
+            temperature=settings.hf_temperature,
+            top_p=settings.hf_top_p,
             stream=True,
         )
         for chunk in follow_up:

@@ -1,17 +1,17 @@
 [project]
 name = "cinema-dashboard"
-version = "1.2.4"
+version = "1.2.5"
 description = "A dashboard to watch cinema data"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "bandit==1.9.4",
     "beautifulsoup4>=4.14.3",
-    "click>=8.4.1",
+    "click>=8.3,<9",
     "dagster>=1.13.6",
     "dagster-webserver>=1.13.6",
     "geopy>=2.4.1",
-    "google-genai>=1.0.0",
+    "google-genai>=2.6.0",
     "httpx>=0.28.1",
     "mypy>=2.1.0",
     "pandas>=3.0.3",
@@ -27,7 +27,6 @@ dependencies = [
     "streamlit>=1.57.0",
     "streamlit-calendar>=1.4.0",
     "streamlit-shortcuts>=1.2.1",
-    "tabulate>=0.10.0",
 ]
 
 [tool.ruff]
@@ -54,9 +53,7 @@ markers = [
 
 [dependency-groups]
 dev = [
-    # Pinned to 2.x — newer deepeval lines have tight pins (tabulate<0.10,
-    # click<8.4) that conflict with this project's runtime deps.
-    "deepeval>=2.5,<3",
+    "deepeval>=4,<5",
     # deepeval 2.x imports ``langchain.schema`` at module load; that module was
     # removed in langchain 1.0, so pin to the last compatible series.
     # Lower bound 0.3 — earlier 0.0.x releases use @root_validator() without

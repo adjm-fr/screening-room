@@ -2,7 +2,34 @@
 
 from pathlib import Path
 
+import pytest
+
 from modules.config import Settings
+
+_SETTINGS_ENV_VARS = (
+    "MOVIES_OUTPUT_PATH",
+    "ALLOCINE_OUTPUT_PATH",
+    "ALLOCINE_INPUT_PATH",
+    "ALLOCINE_DIR",
+    "MOVIES_DIR",
+    "LETTERBOXD_USERNAME",
+    "LETTERBOXD_DAYS_TO_UPDATE",
+    "GEMINI_API_KEY",
+    "GEMINI_MODEL",
+    "GEMINI_MAX_TOKENS",
+    "GEMINI_TEMPERATURE",
+    "GEMINI_TOP_P",
+    "TMDB_API_KEY",
+    "STREAMING_SERVICES",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_settings_env(monkeypatch):
+    # Importing deepeval triggers load_dotenv(), which leaks the repo's .env
+    # into os.environ. Scrub the Settings-backed vars so each test starts clean.
+    for name in _SETTINGS_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
 
 def _settings(tmp_path, **env_overrides):

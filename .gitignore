@@ -55,3 +55,6 @@ uv.lock
 
 # Notebooks — local experimentation, never committed
 notebooks/
+
+# MCP server config — local only
+.mcp.json

@@ -172,6 +172,10 @@ class StreamingClaimMetric(BaseMetric):
         out = test_case.actual_output or ""
         out_lower = out.lower()
         violations: list[tuple[str, str]] = []
+        # Lowercased allowed-film names — used to truncate the post-mention
+        # window so providers attributed to a *later* film in the same
+        # sentence aren't falsely pinned on the current one.
+        other_films_l = [f.lower() for f in self.allowed_films]
 
         for film in self.allowed_films:
             film_l = film.lower()
@@ -180,9 +184,14 @@ class StreamingClaimMetric(BaseMetric):
                 # correct denial, not a wrong-provider claim.
                 if _is_in_refusal_context(out_lower, match.start()):
                     continue
-                # Look at a 120-char window after the film mention for "on X"
-                # or "streaming on X" claims.
+                # 120-char window after the film mention, truncated at the
+                # next allowed-film mention so each film "owns" only the text
+                # up to where the next film is introduced.
                 window = out_lower[match.end() : match.end() + 120]
+                next_positions = [window.find(o) for o in other_films_l if o != film_l]
+                next_positions = [p for p in next_positions if p != -1]
+                if next_positions:
+                    window = window[: min(next_positions)]
                 for provider in _KNOWN_PROVIDERS:
                     pm = re.search(rf"\b{re.escape(provider)}\b", window)
                     if not pm:

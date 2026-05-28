@@ -55,7 +55,7 @@ Inner-joins your watchlist with current showtimes. Top chip-filter bar (theaters
 
 ### Recommendations (🤖)
 
-Chat interface powered by the [Hugging Face Inference API](https://huggingface.co/inference-api) (model configurable via `HF_MODEL`, defaults to `moonshotai/Kimi-K2-Instruct`). Ask questions like:
+Chat interface powered by the [Gemini API](https://ai.google.dev/) via the native `google-genai` SDK (model configurable via `GEMINI_MODEL`, defaults to `gemini-3.1-flash-lite`). Ask questions like:
 
 - "Which watchlist movies are showing this weekend?"
 - "Based on my taste, what should I prioritise?"
@@ -74,7 +74,7 @@ If you mention a theater that isn't already tracked, the model automatically sea
 
 The page also backfills missing addresses for existing CSV entries on first load, using the Allocine API cache.
 
-**Requires**: `MOVIES_OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` + `ALLOCINE_INPUT_PATH` + `HF_API_KEY`
+**Requires**: `MOVIES_OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` + `ALLOCINE_INPUT_PATH` + `GEMINI_API_KEY`
 
 ## Architecture
 
@@ -134,6 +134,7 @@ cinema_dashboard/
 │   └── evals/                    # LLM hallucination evals (opt-in via `-m evals`)
 │       ├── goldens.py            # Bait prompts + allowed film/provider sets
 │       ├── metrics.py            # FilmSetMembership + StreamingClaim DeepEval metrics
+│       ├── test_metrics.py       # Unit tests for the metric regex (no HF calls)
 │       └── test_chat_evals.py    # Parameterized harness (hits live HF API)
 └── .env                          # Local environment variables (not committed)
 ```
@@ -184,13 +185,13 @@ cp .env.example .env
 | `MOVIES_OUTPUT_PATH` | Directory containing the three `*_letterboxd.parquet` files from `movies_management` |
 | `ALLOCINE_OUTPUT_PATH` | Path to `showtimes.parquet` written by `Allocine-Showtimes-Scraping` |
 | `ALLOCINE_INPUT_PATH` | Path to the theaters CSV read by `Allocine-Showtimes-Scraping` — also written to when adding a theater via the Recommendations chat |
-| `HF_API_KEY` | Hugging Face API token (free) — required for the Recommendations page. Create one at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+| `GEMINI_API_KEY` | Gemini API key (free tier: 15 RPM, 250K TPM) — required for the Recommendations page. Create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
 | `LETTERBOXD_USERNAME` | Your Letterboxd username — required for the orchestrator and Dagster pipeline |
 | `LETTERBOXD_DAYS_TO_UPDATE` | Days before cached movie metadata is considered stale and refreshed (default: 365) |
-| `HF_MODEL` | Hugging Face model ID for the Recommendations page (default: `moonshotai/Kimi-K2-Instruct`) |
-| `HF_MAX_TOKENS` | Max tokens for model responses (default: 1024) |
-| `HF_TEMPERATURE` | Sampling temperature; lower = more deterministic (default: 0.2) |
-| `HF_TOP_P` | Nucleus sampling cutoff; lower = less creative drift (default: 0.8) |
+| `GEMINI_MODEL` | Gemini model ID for the Recommendations page (default: `gemini-3.1-flash-lite`) |
+| `GEMINI_MAX_TOKENS` | Max output tokens for model responses (default: 1024) |
+| `GEMINI_TEMPERATURE` | Sampling temperature; lower = more deterministic (default: 0.2) |
+| `GEMINI_TOP_P` | Nucleus sampling cutoff; lower = less creative drift (default: 0.8) |
 | `TMDB_API_KEY` | *(optional)* TMDB v3 API key. Enables the FR streaming-availability cache (`data/streaming_providers.parquet`) refreshed by `orchestrate.py`. Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
 | `STREAMING_SERVICES` | *(optional)* Comma-separated provider slugs you subscribe to (e.g. `mubi,netflix,canalplus,arte`). Enables streaming badges on movie cards (Home, Calendar), the Calendar cinema-only / also-streaming partition, the Database "Streaming on" column, and the Recommendations chat's awareness of FR availability. When unset, every streaming surface silently no-ops. |
 | `ALLOCINE_DIR` | *(optional)* Absolute path to the `Allocine-Showtimes-Scraping` repo. Defaults to `../Allocine-Showtimes-Scraping` relative to this repo. |
@@ -259,19 +260,21 @@ Streamlit cache TTL is **5 minutes**, shared across all pages (`DATA_TTL_SECONDS
 
 ## LLM evals
 
-The Recommendations chat is rule-bound to only reference watchlist titles and FR streaming providers from the lists injected into its system prompt. To verify that the live model actually respects those rules, `tests/evals/` ships a small DeepEval-based regression suite of bait prompts (e.g. *"Recommend me Oppenheimer for tonight."*, *"Is Parasite on Disney+?"*). Two deterministic metrics flag violations:
+The Recommendations chat is rule-bound to only reference watchlist titles and FR streaming providers from the lists injected into its system prompt. To verify that the live model actually respects those rules, `tests/evals/` ships a small DeepEval-based regression suite of bait prompts (e.g. *"Recommend me Oppenheimer for tonight."*, *"Is Parasite on Disney+?"*, *"Surprise me with a Bong Joon-ho-style movie"*). Two deterministic metrics flag violations:
 
 - **`FilmSetMembershipMetric`** — fails if the output names a film outside the allowed set.
 - **`StreamingClaimMetric`** — fails if the output ties a film to a provider not in the allowed `(film, provider)` set.
 
-The suite is deselected from the default `pytest` run (every file is tagged `pytest.mark.evals` and `pyproject.toml` uses `addopts = "-m 'not evals'"`) because each case hits the live Hugging Face Inference API.
+Both metrics ignore mentions inside a **refusal context** (*"I can't recommend Oppenheimer"*, *"Past Lives isn't on Netflix"*) so a principled denial doesn't count as a hallucination. The refusal logic is regex-based and unit-tested separately in `tests/evals/test_metrics.py`, which runs in the default `pytest` suite and does **not** hit the Gemini API.
+
+The suite is deselected from the default `pytest` run (every file is tagged `pytest.mark.evals` and `pyproject.toml` uses `addopts = "-m 'not evals'"`) because each case hits the live Gemini API.
 
 ```bash
 uv run pytest tests/evals/ -m evals                          # full suite
 uv run pytest tests/evals/ -m evals -k outside_film_bait     # one golden
 ```
 
-Requires `HF_API_KEY`; the suite skips itself when unset. To add a new failure mode, append a `Golden(...)` entry to `tests/evals/goldens.py` — keep the dataset tight and curated rather than sprawling.
+Requires `GEMINI_API_KEY`; the suite skips itself when unset. To add a new failure mode, append a `Golden(...)` entry to `tests/evals/goldens.py` — keep the dataset tight and curated rather than sprawling.
 
 ## Troubleshooting
 
@@ -291,7 +294,7 @@ Requires `HF_API_KEY`; the suite skips itself when unset. To add a new failure m
 
 **Theme looks broken / fonts not loading** — `assets/styles.css` imports Inter and Playfair Display from Google Fonts. Browsers without internet access render the dashboard with system fallbacks; the layout still works.
 
-**"HF_API_KEY is not set"** — add your Hugging Face token to `cinema_dashboard/.env`.
+**"GEMINI_API_KEY is not set"** — add your Gemini API key to `cinema_dashboard/.env`. Create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
 
 **"No upcoming showtimes for your watchlist"** (Recommendations page) — either no watchlist movies are currently showing, or the showtimes data is stale. Re-run both scrapers to refresh.
 

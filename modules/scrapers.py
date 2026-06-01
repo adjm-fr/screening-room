@@ -13,7 +13,10 @@ Staleness helpers take an optional ``now`` so the clock can be pinned in tests.
 Staleness rules:
   - showtimes.parquet : stale if last modified before the most recent Tuesday
                         00:00 (French cinemas publish the weekly programme on
-                        Tuesdays)
+                        Tuesdays), OR if the theater list (theaters.csv) was
+                        modified after the parquet was last written — adding a
+                        theater via the Recommendations chat means the existing
+                        showtimes no longer cover the current theater set.
   - watchlist parquet : stale if older than WATCHLIST_MAX_AGE_DAYS days
 """
 
@@ -64,12 +67,28 @@ def _mtime(path: Path) -> datetime | None:
     return datetime.fromtimestamp(path.stat().st_mtime)
 
 
-def is_showtimes_stale(path: Path, now: datetime | None = None) -> bool:
-    """True if showtimes.parquet was last written before the most recent Tuesday."""
+def is_showtimes_stale(path: Path, theaters_path: Path | None = None, now: datetime | None = None) -> bool:
+    """True if showtimes.parquet is out of date.
+
+    Stale when any of:
+      - the file is missing
+      - it was last written before the most recent Tuesday 00:00 (the weekly
+        programme refresh)
+      - ``theaters_path`` (the theater list) was modified *after* the parquet
+        was last written — i.e. theaters were added/removed since the last
+        scrape, so the existing showtimes no longer cover the current set.
+        Skipped when ``theaters_path`` is None or missing.
+    """
     mtime = _mtime(path)
     if mtime is None:
         return True
-    return mtime < _last_tuesday(now)
+    if mtime < _last_tuesday(now):
+        return True
+    if theaters_path is not None:
+        theaters_mtime = _mtime(theaters_path)
+        if theaters_mtime is not None and theaters_mtime > mtime:
+            return True
+    return False
 
 
 def is_watchlist_stale(path: Path, now: datetime | None = None) -> bool:

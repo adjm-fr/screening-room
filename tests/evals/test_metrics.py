@@ -38,6 +38,19 @@ class TestFilmSetMembership:
         metric.measure(_case("Past Lives is a great pick tonight."))
         assert metric.success
 
+    def test_subject_first_refusal_passes(self):
+        # The bait film is the *subject* of the refusal ("X is not in your
+        # watchlist"), so the refusal marker follows the name. The forward
+        # lookahead must recognise this as a refusal, not a recommendation.
+        metric = FilmSetMembershipMetric(allowed_films=["past lives"], candidate_outside_films=["oppenheimer"])
+        metric.measure(
+            _case(
+                "Oppenheimer is not in your watchlist or streaming availability. "
+                "Would you like me to suggest something from your watchlist instead?"
+            )
+        )
+        assert metric.success, metric.reason
+
     def test_refusal_then_recommendation_still_fails(self):
         # If the model refuses one bait film but recommends another, we must catch it.
         metric = FilmSetMembershipMetric(allowed_films=["past lives"], candidate_outside_films=["oppenheimer", "barbie"])

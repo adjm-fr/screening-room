@@ -11,7 +11,9 @@ run:
 	streamlit run app.py
 
 # Install all dependencies using uv
+# Sibling repos have their own .venv; unset VIRTUAL_ENV so uv targets each
+# project's environment instead of warning about the activated cinema_dashboard one.
 install:
 	uv sync
-	cd ../movies_management && uv sync && cd ../cinema_dashboard
-	cd ../Allocine-Showtimes-Scraping && uv sync && cd ../cinema_dashboard
+	env -u VIRTUAL_ENV uv sync --project ../movies_management
+	env -u VIRTUAL_ENV uv sync --project ../Allocine-Showtimes-Scraping

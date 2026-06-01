@@ -78,7 +78,7 @@ The page derives a taste profile from your Letterboxd ratings (top genres and di
 
 #### Auto-adding theaters
 
-If you mention a theater that isn't already tracked, the model automatically searches Allocine for matching Paris cinemas (via tool use). You'll see "Add" buttons for each match — clicking one appends the theater to your theaters CSV (`ALLOCINE_INPUT_PATH`) as `theater_id,theater_name,address`. Re-run the Allocine scraper afterwards to fetch its showtimes.
+If you mention a theater that isn't already tracked, the model automatically searches Allocine for matching Paris cinemas (via tool use). You'll see "Add" buttons for each match — clicking one appends the theater to your theaters CSV (`ALLOCINE_INPUT_PATH`) as `theater_id,theater_name,address`. The next `orchestrate.py` run detects the changed CSV and re-scrapes Allocine automatically (no `--force` needed) to fetch the new theater's showtimes.
 
 The page also backfills missing addresses for existing CSV entries on first load, using the Allocine API cache.
 
@@ -234,7 +234,7 @@ python orchestrate.py --reset-db # pass --reset_database to movies_management
 ```
 
 **Staleness rules:**
-- `showtimes.parquet` — stale if last written before the most recent Tuesday (French cinemas publish the new week's programme on Tuesdays)
+- `showtimes.parquet` — stale if last written before the most recent Tuesday (French cinemas publish the new week's programme on Tuesdays), **or** if the theaters CSV (`ALLOCINE_INPUT_PATH`) has been modified since the parquet was last written (a theater was added/removed, so the showtimes no longer cover the current set). Adding a theater via the Recommendations chat therefore triggers a re-scrape on the next run, even mid-week.
 - `watchlist_with_letterboxd.parquet` — stale if older than 7 days
 
 After the Allocine scrape succeeds, the orchestrator automatically runs a third step that expands `data_letterboxd.parquet` with Letterboxd metadata for every film found in the fresh `showtimes.parquet` — not only the user's watchlist and ratings. Films that cannot be resolved to a Letterboxd slug are written to `{MOVIES_OUTPUT_PATH}/unresolved_allocine.parquet`.

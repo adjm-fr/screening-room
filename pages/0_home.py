@@ -151,34 +151,6 @@ def main() -> None:
                 deduped = director_films.drop_duplicates(subset=["letterboxd_title"]).head(6)
                 render_poster_rail(deduped, title=f"Because you like {top_director}", subscribed=subscribed)
 
-    # ── Discover by genre chips ──────────────────────────────────────────────
-    if "genres" in wl_shows.columns:
-        all_genres: list[str] = (
-            wl_shows["genres"]
-            .dropna()
-            .str.split(", ")
-            .explode()
-            .str.strip()
-            .replace("", pd.NA)
-            .dropna()
-            .value_counts()
-            .head(12)
-            .index.tolist()
-        )
-        if all_genres:
-            st.markdown("##### Discover by genre")
-            picked = st.pills(
-                "genre filter",
-                options=all_genres,
-                selection_mode="single",
-                key="home_genre",
-                label_visibility="collapsed",
-            )
-            if picked:
-                filtered = wl_shows[wl_shows["genres"].fillna("").str.contains(picked, case=False, regex=False)]
-                deduped = filtered.drop_duplicates(subset=["letterboxd_title"]).head(8)
-                render_poster_rail(deduped, title=f"{picked} on your watchlist", subscribed=subscribed)
-
     # ── KPI strip at the bottom ──────────────────────────────────────────────
     st.divider()
     n_rated = len(ratings_df) if not ratings_df.empty else 0

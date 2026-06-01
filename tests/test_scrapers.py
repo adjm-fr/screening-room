@@ -115,6 +115,41 @@ def test_showtimes_boundary_exactly_last_tuesday_is_fresh(tmp_path: Path):
     assert is_showtimes_stale(f, now=now) is False
 
 
+def test_showtimes_stale_when_theater_list_changed(tmp_path: Path):
+    now = datetime(2026, 5, 20, 12, 0)  # Wednesday → last Tuesday is 2026-05-19
+    showtimes = tmp_path / "showtimes.parquet"
+    _touch(showtimes, datetime(2026, 5, 19, 9, 0))  # fresh by the weekly rule
+    theaters = tmp_path / "theaters.csv"
+    _touch(theaters, datetime(2026, 5, 19, 18, 0))  # edited after the last scrape
+    assert is_showtimes_stale(showtimes, theaters, now=now) is True
+
+
+def test_showtimes_fresh_when_theater_list_older(tmp_path: Path):
+    now = datetime(2026, 5, 20, 12, 0)
+    showtimes = tmp_path / "showtimes.parquet"
+    _touch(showtimes, datetime(2026, 5, 19, 18, 0))  # fresh, scraped after theater edit
+    theaters = tmp_path / "theaters.csv"
+    _touch(theaters, datetime(2026, 5, 19, 9, 0))  # last edited before the scrape
+    assert is_showtimes_stale(showtimes, theaters, now=now) is False
+
+
+def test_showtimes_fresh_when_theater_list_missing(tmp_path: Path):
+    now = datetime(2026, 5, 20, 12, 0)
+    showtimes = tmp_path / "showtimes.parquet"
+    _touch(showtimes, datetime(2026, 5, 19, 9, 0))
+    assert is_showtimes_stale(showtimes, tmp_path / "no_theaters.csv", now=now) is False
+
+
+def test_showtimes_stale_takes_precedence_over_theater_list(tmp_path: Path):
+    # Parquet predates last Tuesday: stale regardless of an older theater list.
+    now = datetime(2026, 5, 20, 12, 0)
+    showtimes = tmp_path / "showtimes.parquet"
+    _touch(showtimes, datetime(2026, 5, 18, 12, 0))  # before last Tuesday
+    theaters = tmp_path / "theaters.csv"
+    _touch(theaters, datetime(2026, 5, 17, 12, 0))
+    assert is_showtimes_stale(showtimes, theaters, now=now) is True
+
+
 def test_watchlist_stale_when_missing(tmp_path: Path):
     assert is_watchlist_stale(tmp_path / "missing.parquet") is True
 

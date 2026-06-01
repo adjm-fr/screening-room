@@ -116,16 +116,22 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
         raise click.ClickException("MOVIES_OUTPUT_PATH is not set in cinema_dashboard/.env")
 
     showtimes_path = settings.allocine_output_path
+    theaters_path = settings.allocine_input_path  # theaters.csv — re-scrape if it changed
     watchlist_path = settings.movies_output_path / "watchlist_with_letterboxd.parquet"
 
     # ── Decide which scrapers to run ──────────────────────────────────────────
     tasks: list[tuple[str, list[str], Path]] = []
 
-    run_allocine = force or is_showtimes_stale(showtimes_path)
+    run_allocine = force or is_showtimes_stale(showtimes_path, theaters_path)
     run_watchlist = force or is_watchlist_stale(watchlist_path)
 
     if run_allocine:
-        reason = "forced" if force else f"stale (last Tuesday: {_last_tuesday().strftime('%Y-%m-%d')})"
+        if force:
+            reason = "forced"
+        elif is_showtimes_stale(showtimes_path):  # weekly-programme rule or missing file
+            reason = f"stale (last Tuesday: {_last_tuesday().strftime('%Y-%m-%d')})"
+        else:
+            reason = "theater list changed since last scrape"
         logger.info("Allocine showtimes: %s", reason)
         tasks.append(("allocine", allocine_command(days, reset), allocine_dir))
     else:

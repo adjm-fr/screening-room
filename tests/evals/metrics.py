@@ -69,18 +69,32 @@ _REFUSAL_PATTERNS = (
 _REFUSAL_RE = re.compile("|".join(_REFUSAL_PATTERNS))
 
 
-def _is_in_refusal_context(text_lower: str, match_start: int, window: int = 120) -> bool:
-    """True if a refusal phrase appears in the same sentence before ``match_start``.
+def _is_in_refusal_context(text_lower: str, match_start: int, match_end: int | None = None, window: int = 120) -> bool:
+    """True if a refusal phrase sits in the same sentence as the mention.
 
-    We bound the lookback at the nearest sentence terminator so a refusal in
-    an earlier sentence ("I can't recommend X. But you should watch Y!")
-    doesn't shield a recommendation in the next one.
+    Checks both directions, each bounded at the nearest sentence terminator:
+
+    - *before* the mention — "I can't recommend X" — so the refusal marker
+      precedes the film name. The lookback is bounded so a refusal in an
+      earlier sentence ("I can't recommend X. But watch Y!") doesn't shield a
+      recommendation in the next one.
+    - *after* the mention — "X is not in your watchlist" — so the film name is
+      the subject of the refusal and the marker follows it. The lookahead is
+      bounded at the next terminator for the same reason.
     """
     pre = text_lower[max(0, match_start - window) : match_start]
     last_break = max(pre.rfind("."), pre.rfind("!"), pre.rfind("?"))
     if last_break != -1:
         pre = pre[last_break + 1 :]
-    return bool(_REFUSAL_RE.search(pre))
+    if _REFUSAL_RE.search(pre):
+        return True
+
+    end = match_end if match_end is not None else match_start
+    post = text_lower[end : end + window]
+    first_break = min((i for i in (post.find("."), post.find("!"), post.find("?")) if i != -1), default=-1)
+    if first_break != -1:
+        post = post[:first_break]
+    return bool(_REFUSAL_RE.search(post))
 
 
 # Negations that, when sitting between a film mention and a provider name,
@@ -124,8 +138,8 @@ class FilmSetMembershipMetric(BaseMetric):
             # A bait film "leaks" only if it's mentioned outside a refusal
             # context. "I can't recommend Oppenheimer" is correct behavior;
             # "Watch Oppenheimer tonight" is the hallucination we care about.
-            mentions = [m.start() for m in re.finditer(re.escape(film), out)]
-            if mentions and any(not _is_in_refusal_context(out, pos) for pos in mentions):
+            mentions = [(m.start(), m.end()) for m in re.finditer(re.escape(film), out)]
+            if mentions and any(not _is_in_refusal_context(out, start, end) for start, end in mentions):
                 leaked.append(film)
         if leaked:
             self.score = 0.0
@@ -182,7 +196,7 @@ class StreamingClaimMetric(BaseMetric):
             for match in re.finditer(re.escape(film_l), out_lower):
                 # Skip mentions inside a refusal — "X isn't on Netflix" is a
                 # correct denial, not a wrong-provider claim.
-                if _is_in_refusal_context(out_lower, match.start()):
+                if _is_in_refusal_context(out_lower, match.start(), match.end()):
                     continue
                 # 120-char window after the film mention, truncated at the
                 # next allowed-film mention so each film "owns" only the text

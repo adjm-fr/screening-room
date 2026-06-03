@@ -36,7 +36,7 @@ from utils.streaming import refresh_streaming_providers
 # ── Config ────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=settings.log_level.upper(),
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 # httpx logs every request at INFO; quiet it so the streaming refresh doesn't

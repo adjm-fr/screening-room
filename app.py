@@ -10,11 +10,12 @@ import logging
 import plotly.io as pio
 import streamlit as st
 
+from modules.config import settings
 from utils.cmdk import mount_cmdk
 from utils.ui import inject_css
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=settings.log_level.upper(),
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     datefmt="%H:%M:%S",
 )

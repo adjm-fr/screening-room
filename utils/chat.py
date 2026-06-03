@@ -8,8 +8,8 @@ The chat is mounted in two places:
 - ``utils/cmdk.py`` — the global ``Cmd+K`` dialog (compact variant, no pinned
   column, shares the same conversation state via Streamlit ``session_state``)
 
-Both surfaces share ``session_state['rec_messages']`` and
-``session_state['pending_theaters']`` so the conversation persists across them.
+Both surfaces share a single ``session_state['chat']`` (a :class:`ChatState`
+dataclass) so the conversation persists across them.
 
 This module owns:
     build_chat_context()  -> ChatContext | None  (config + data validation)
@@ -49,6 +49,34 @@ from utils.data_loader import (
 from utils.theater_manager import append_theater, backfill_addresses, load_theater_ids, load_theaters
 
 log = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass
+class ChatState:
+    """All conversational state for the chat, kept in one place.
+
+    Stored under ``st.session_state['chat']`` and shared by both chat surfaces
+    (the dedicated page and the ``Cmd+K`` dialog). Widget-bound keys
+    (``prompt_chips``, ``pin_picker``, ``_cmdk_btn``) and one-shot session flags
+    (``theaters_backfilled``, ``_cmdk_open``) live outside this dataclass on
+    purpose. Reset the conversation by replacing the object:
+    ``st.session_state['chat'] = ChatState()``.
+    """
+
+    messages: list[dict] = dataclasses.field(default_factory=list)
+    pending_theaters: list[dict] | None = None
+    pinned_recs: list[dict] = dataclasses.field(default_factory=list)
+    pinnable: list[str] = dataclasses.field(default_factory=list)
+    last_chip: str | None = None
+    pending_prompt: str | None = None
+
+
+def chat_state() -> ChatState:
+    """Return the shared :class:`ChatState`, creating it on first access."""
+    if "chat" not in st.session_state:
+        st.session_state["chat"] = ChatState()
+    return cast(ChatState, st.session_state["chat"])
+
 
 PROMPT_SUGGESTIONS = [
     "What's playing tonight?",
@@ -384,12 +412,12 @@ def _find_pinnable_titles(reply_text: str, wl_shows: pd.DataFrame) -> list[str]:
 
 
 def _render_pending_theaters(ctx: ChatContext) -> None:
-    pending = st.session_state.get("pending_theaters")
-    if not pending or not ctx.theaters_csv:
+    state = chat_state()
+    if not state.pending_theaters or not ctx.theaters_csv:
         return
     st.divider()
     st.markdown("**Found these Paris theaters — add one to your list?**")
-    for theater in pending:
+    for theater in state.pending_theaters:
         col1, col2 = st.columns([4, 1])
         col1.markdown(f"**{theater['name']}** — {theater.get('address', '')}")
         if col2.button("Add", key=f"add_{theater['id']}"):
@@ -398,10 +426,10 @@ def _render_pending_theaters(ctx: ChatContext) -> None:
                 st.success(f"Added **{theater['name']}**. Re-run the Allocine scraper to fetch its showtimes.")
             else:
                 st.info(f"**{theater['name']}** is already in your theater list.")
-            st.session_state.pending_theaters = None
+            state.pending_theaters = None
             st.rerun()
     if st.button("Dismiss", key="dismiss_pending"):
-        st.session_state.pending_theaters = None
+        state.pending_theaters = None
         st.rerun()
     st.divider()
 
@@ -413,12 +441,7 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
     2/3 column with pinned recommendations on the right. When False (dialog
     surface), the chat fills the available width.
     """
-    if "rec_messages" not in st.session_state:
-        st.session_state.rec_messages = []
-    if "pending_theaters" not in st.session_state:
-        st.session_state.pending_theaters = None
-    if "pinned_recs" not in st.session_state:
-        st.session_state.pinned_recs = []
+    state = chat_state()
 
     if show_pinned_column:
         chat_col, pinned_col = st.columns([2, 1])
@@ -429,34 +452,36 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
     with chat_col:
         st.caption(f"Model: `{settings.gemini_model}` · {ctx.n_movies} watchlist movies · {ctx.n_screenings} upcoming screenings")
 
-        if show_prompt_chips and not st.session_state.rec_messages:
+        if show_prompt_chips and not state.messages:
             chosen = st.pills(
                 "Try a prompt",
                 options=PROMPT_SUGGESTIONS,
                 selection_mode="single",
                 key="prompt_chips",
             )
-            if chosen and st.session_state.get("_last_chip") != chosen:
-                st.session_state["_last_chip"] = chosen
-                st.session_state["pending_prompt"] = chosen
+            if chosen and state.last_chip != chosen:
+                state.last_chip = chosen
+                state.pending_prompt = chosen
                 st.rerun()
 
         _render_pending_theaters(ctx)
 
-        for msg in st.session_state.rec_messages:
+        for msg in state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-        prompt = st.session_state.pop("pending_prompt", None) or st.chat_input("Ask about what's showing…")
+        queued = state.pending_prompt
+        state.pending_prompt = None
+        prompt = queued or st.chat_input("Ask about what's showing…")
         if prompt:
-            st.session_state.rec_messages.append({"role": "user", "content": prompt})
+            state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
                 with st.status("Thinking…", expanded=False) as status:
                     try:
-                        stream, pending_ref = _ask_gemini(ctx, st.session_state.rec_messages)
+                        stream, pending_ref = _ask_gemini(ctx, state.messages)
                     except Exception as exc:
                         log.exception("Gemini API call failed")
                         reply: str = f"API error: {exc}"
@@ -468,22 +493,22 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
                         pending = pending_ref[0]
                         status.update(label="Done", state="complete")
 
-            st.session_state.rec_messages.append({"role": "assistant", "content": reply})
+            state.messages.append({"role": "assistant", "content": reply})
 
             pinnable = _find_pinnable_titles(reply, ctx.wl_shows)
             if pinnable:
-                st.session_state["_pinnable_from_last_reply"] = pinnable
+                state.pinnable = pinnable
 
             if pending and ctx.theaters_csv:
                 existing_ids = load_theater_ids(ctx.theaters_csv)
                 new_pending = [t for t in pending if t["id"] not in existing_ids]
-                st.session_state.pending_theaters = new_pending if new_pending else None
+                state.pending_theaters = new_pending if new_pending else None
             st.rerun()
 
-        if st.session_state.rec_messages:
+        if state.messages:
             c1, c2 = st.columns(2)
             with c1:
-                conv_md = "\n\n".join(f"### {m['role'].title()}\n\n{m['content']}" for m in st.session_state.rec_messages)
+                conv_md = "\n\n".join(f"### {m['role'].title()}\n\n{m['content']}" for m in state.messages)
                 st.download_button(
                     "💾 Save conversation",
                     data=conv_md.encode("utf-8"),
@@ -493,37 +518,32 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
                 )
             with c2:
                 if st.button("🗑 Clear conversation", use_container_width=True):
-                    st.session_state.rec_messages = []
-                    st.session_state.pending_theaters = None
-                    st.session_state.pinned_recs = []
-                    st.session_state.pop("_last_chip", None)
-                    st.session_state.pop("_pinnable_from_last_reply", None)
+                    st.session_state["chat"] = ChatState()
                     st.rerun()
 
     if pinned_col is not None:
         with pinned_col:
             st.markdown("##### 📌 Pinned")
-            pinnable = st.session_state.get("_pinnable_from_last_reply") or []
-            if pinnable:
+            if state.pinnable:
                 to_pin = st.multiselect(
                     "Pin from this reply",
-                    options=pinnable,
+                    options=state.pinnable,
                     key="pin_picker",
                     label_visibility="collapsed",
                 )
                 if to_pin:
-                    existing = {p["letterboxd_title"] for p in st.session_state.pinned_recs}
+                    existing = {p["letterboxd_title"] for p in state.pinned_recs}
                     for title in to_pin:
                         if title in existing:
                             continue
                         match = ctx.wl_shows[ctx.wl_shows["letterboxd_title"] == title].head(1)
                         if not match.empty:
-                            st.session_state.pinned_recs.append(match.iloc[0].to_dict())
+                            state.pinned_recs.append(match.iloc[0].to_dict())
 
-            if not st.session_state.pinned_recs:
+            if not state.pinned_recs:
                 st.caption("Pinned recommendations will appear here.")
             else:
-                for pinned in st.session_state.pinned_recs:
+                for pinned in state.pinned_recs:
                     poster_url = pinned.get("poster_url")
                     title = pinned.get("letterboxd_title") or pinned.get("french_title") or pinned.get("title") or "Untitled"
                     if poster_url and isinstance(poster_url, str):
@@ -531,5 +551,5 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
                     else:
                         st.caption(str(title))
                 if st.button("Clear pins", key="clear_pins", use_container_width=True):
-                    st.session_state.pinned_recs = []
+                    state.pinned_recs = []
                     st.rerun()

@@ -67,14 +67,21 @@ def _director_key(name: str) -> str:
     return " ".join(sorted(s.split()))
 
 
-def _directors_overlap(allocine: str | None, letterboxd: str | None) -> bool:
-    """True when the two director strings share at least one normalised name.
+def _directors_overlap(allocine: str | float | None, letterboxd: str | float | None) -> bool:
+    """True only when both director strings are present and share a name.
 
-    Returns True when either value is null/NaN — a missing director field
-    means we can't confirm a mismatch, so we keep the title-matched row.
+    A blank/NaN on *either* side means the title match can't be confirmed by
+    director, so the row is rejected. This join is precision-first (inner, no
+    left-join fallback): an unconfirmed title-only match lets a wrong film's
+    screening attach to a watchlist entry for short or recurring French titles
+    (remakes like ``"Nosferatu"`` or ``"Les Misérables"``). On real data the
+    watchlist (TMDB) director field is effectively never blank and Allocine
+    omits the director for ~0.6% of films, so requiring positive confirmation
+    closes the wrong-attach hole at no measurable recall cost. An empty or
+    whitespace-only string yields an empty key set and is rejected the same way.
     """
     if pd.isna(allocine) or pd.isna(letterboxd):
-        return True
+        return False
     alloc_keys = {_director_key(n.strip()) for n in str(allocine).split(" | ") if n.strip()}
     lb_keys = {_director_key(n.strip()) for n in str(letterboxd).split(", ") if n.strip()}
     return bool(alloc_keys & lb_keys)
@@ -155,8 +162,9 @@ def build_watchlist_showtimes(
     watchlist's TMDB ``french_title`` when present, falling back to the
     watchlist's display ``title``. Normalisation strips accents, punctuation,
     and case via :func:`_normalize_title`. Title-matched rows are then filtered
-    by director overlap (:func:`_directors_overlap`): rows where both sides
-    carry director data but share no common name are dropped.
+    by director overlap (:func:`_directors_overlap`): a row is kept only when
+    both sides carry director data and share a common name, so an unconfirmed
+    title-only collision can't attach a wrong film's screening.
     """
     showtimes_df = showtimes_df.copy().reset_index(drop=True)
     showtimes_df["_st_idx"] = showtimes_df.index

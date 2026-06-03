@@ -84,6 +84,25 @@ def test_future_showtimes_empty_input():
     assert result.empty
 
 
+def test_future_showtimes_anchors_now_to_paris(mocker):
+    # Freeze "now" to a fixed Paris instant; the naive column straddles it.
+    mocker.patch("utils.data_loader._now_paris", return_value=pd.Timestamp("2030-06-01 20:00", tz="Europe/Paris"))
+    df = pd.DataFrame({"showtimes": [pd.Timestamp("2030-06-01 19:59"), pd.Timestamp("2030-06-01 20:01")]})
+    result = future_showtimes(df)
+    assert len(result) == 1
+    assert result.iloc[0]["showtimes"] == pd.Timestamp("2030-06-01 20:01")
+
+
+def test_future_showtimes_tz_aware_column():
+    # A tz-aware column must not raise "Cannot compare tz-naive and tz-aware".
+    df = pd.DataFrame(
+        {"showtimes": [pd.Timestamp("2000-01-01", tz="Europe/Paris"), pd.Timestamp("2099-01-01", tz="Europe/Paris")]}
+    )
+    result = future_showtimes(df)
+    assert len(result) == 1
+    assert result.iloc[0]["showtimes"] == pd.Timestamp("2099-01-01", tz="Europe/Paris")
+
+
 # ---------------------------------------------------------------------------
 # build_watchlist_showtimes — dedup branch
 # ---------------------------------------------------------------------------

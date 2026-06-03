@@ -75,11 +75,21 @@ SEARCH_THEATER_TOOL = types.Tool(
 )
 
 
+def _gemini_key_configured() -> bool:
+    """Return True if the Gemini API key is set, else render an error and return False.
+
+    The Streamlit error is rendered here so both chat surfaces share one message.
+    """
+    if not settings.gemini_api_key:
+        st.error("**GEMINI_API_KEY** is not set in `cinema_dashboard/.env`.")
+        return False
+    return True
+
+
 @dataclasses.dataclass
 class ChatContext:
     """All data the chat needs once configuration is validated."""
 
-    api_key: str
     taste: str
     showtimes_md: str
     streaming_md: str
@@ -137,11 +147,9 @@ def build_chat_context() -> ChatContext | None:
     so callers don't have to repeat the boilerplate. Called from both the
     dedicated page and the ``Cmd+K`` dialog.
     """
-    api_key = settings.gemini_api_key
     movies_path, showtimes_path, theaters_csv = get_paths()
 
-    if not api_key:
-        st.error("**GEMINI_API_KEY** is not set in `cinema_dashboard/.env`.")
+    if not _gemini_key_configured():
         return None
     if not movies_path:
         st.error("**MOVIES_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
@@ -194,7 +202,6 @@ def build_chat_context() -> ChatContext | None:
     known_theaters = sorted(showtime_theaters | csv_theaters)
 
     return ChatContext(
-        api_key=api_key,
         taste=build_taste_profile(ratings_df),
         showtimes_md=_showtimes_context(wl_shows),
         streaming_md=_streaming_context(watchlist_streaming),
@@ -301,7 +308,7 @@ def _ask_gemini(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], l
     list of theater suggestions awaiting user confirmation (or ``None``).
     """
     log.debug("Calling Gemini API — model: %s, history length: %d messages", settings.gemini_model, len(history))
-    client = genai.Client(api_key=ctx.api_key)
+    client = genai.Client(api_key=settings.gemini_api_key)
     system_instruction = build_system_message(ctx)["content"]
     contents = _history_to_contents(history)
     cfg = types.GenerateContentConfig(

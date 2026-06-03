@@ -51,7 +51,6 @@ pytestmark = pytest.mark.evals
 
 def _ctx_from_golden(g: Golden) -> ChatContext:
     return ChatContext(
-        api_key=settings.gemini_api_key or "",
         taste=g.taste,
         showtimes_md=g.showtimes_md,
         streaming_md=g.streaming_md,
@@ -65,7 +64,7 @@ def _ctx_from_golden(g: Golden) -> ChatContext:
 
 def _ask_once(ctx: ChatContext, prompt: str) -> str:
     """Non-streaming, no-tool Gemini call. Mirrors `_ask_gemini` minus Streamlit + tools."""
-    client = genai.Client(api_key=ctx.api_key)
+    client = genai.Client(api_key=settings.gemini_api_key)
     resp = client.models.generate_content(
         model=settings.gemini_model,
         contents=prompt,

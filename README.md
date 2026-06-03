@@ -302,8 +302,6 @@ Requires `GEMINI_API_KEY`; the suite skips itself when unset. To add a new failu
 
 **"No upcoming showtimes for your watchlist"** — either your watchlist is empty, no watchlist movies are currently showing, or the showtimes data is stale (re-run the scraper).
 
-**`streamlit-calendar` not available** — the calendar page falls back to a table view. Install the package with `pip install streamlit-calendar`.
-
 **Map shows no theaters** — addresses are geocoded once via Nominatim (rate-limited, free) and cached to `data/theaters_geo.parquet`. To force re-geocoding, delete the parquet. Theaters whose addresses Nominatim can't resolve are kept in tables but skipped on the map.
 
 **`Cmd+K` doesn't open the assistant** — the keyboard shortcut depends on `streamlit-shortcuts`; if it's missing or the binding fails on your browser, the "✦ Ask AI" button in the sidebar opens the same dialog.

@@ -16,7 +16,7 @@ Public API:
     build_watchlist_showtimes  -> join of watchlist and showtimes
     build_taste_profile(df)    -> compact taste summary string (top genres + directors by avg rating)
     attach_streaming(df, …)    -> left-join FR streaming-providers cache by ``tmdb_id``
-    future_showtimes(df)       -> rows with ``showtimes >= now`` (uncached)
+    future_showtimes(df)       -> rows with ``showtimes >= now`` in Europe/Paris (uncached)
 """
 
 import logging
@@ -32,6 +32,10 @@ from utils.streaming import load_streaming_providers
 log = logging.getLogger(__name__)
 
 DATA_TTL_SECONDS = 300
+
+# Allocine emits naive screening times in Paris local wall-clock; future_showtimes
+# anchors its "now" cutoff here so the dashboard is correct regardless of host tz.
+SHOWTIMES_TZ = "Europe/Paris"
 
 
 def _normalize_title(raw: object) -> str:
@@ -322,11 +326,36 @@ def coerce_str_list(value: object) -> list[str]:
     return []
 
 
+def _now_paris() -> pd.Timestamp:
+    """Current time anchored to Europe/Paris (tz-aware).
+
+    Factored out so :func:`future_showtimes` has a single, mockable time source
+    and the timezone choice is documented in one place.
+    """
+    return pd.Timestamp.now(tz=SHOWTIMES_TZ)
+
+
 def future_showtimes(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter a showtimes DataFrame to rows in the future.
+    """Filter a showtimes DataFrame to rows in the future (Europe/Paris).
+
+    Allocine emits screening times as naive ISO strings in **Paris local
+    wall-clock** (no UTC offset), so the cutoff must be anchored to
+    Europe/Paris — not the dashboard host's clock. Streamlit Community Cloud
+    and most cloud regions run in UTC, where a naive ``pd.Timestamp.now()``
+    would be off by the Paris↔UTC offset and leak already-finished screenings
+    into the "upcoming" rails (or hide imminent ones).
+
+    Robust to the ``showtimes`` column being tz-naive (the usual case) or
+    tz-aware (should Allocine ever start emitting offsets): the cutoff is
+    localised to match, so the comparison never raises ``Cannot compare
+    tz-naive and tz-aware``.
 
     Intentionally **not** decorated with ``@st.cache_data``: the result depends
-    on ``pd.Timestamp.now()`` and would otherwise stick to whatever ``now``
-    was when the cache entry was first written.
+    on the current time and would otherwise stick to whatever ``now`` was when
+    the cache entry was first written.
     """
-    return df[df["showtimes"] >= pd.Timestamp.now()]
+    cutoff = _now_paris()
+    if not isinstance(df["showtimes"].dtype, pd.DatetimeTZDtype):
+        # Naive Paris wall-clock column → drop the tz so the comparison aligns.
+        cutoff = cutoff.tz_localize(None)
+    return df[df["showtimes"] >= cutoff]

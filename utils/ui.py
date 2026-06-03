@@ -24,6 +24,7 @@ from uuid import uuid4
 import pandas as pd
 import streamlit as st
 
+from utils.data_loader import coerce_str_list
 from utils.streaming import display_name, load_display_names_catalog
 
 log = logging.getLogger(__name__)
@@ -129,7 +130,7 @@ def _streaming_badges_html(
     everything else is treated as empty.
     """
     sub: frozenset[str] = frozenset(subscribed or ())
-    flat = _to_str_list(flatrate)
+    flat = coerce_str_list(flatrate)
     subscribed_flat = [p for p in flat if p in sub]
     if not subscribed_flat:
         return ""
@@ -138,19 +139,6 @@ def _streaming_badges_html(
     for slug in subscribed_flat:
         chips.append(f'<span class="chip chip--streaming">{html.escape(display_name(slug, catalogue))}</span>')
     return f'<div class="streaming-row">{"".join(chips)}</div>'
-
-
-def _to_str_list(value: object) -> list[str]:
-    """Coerce a possibly-NaN / numpy / list cell into ``list[str]``."""
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        return [str(v) for v in value if v]
-    if hasattr(value, "tolist"):
-        return [str(v) for v in value.tolist() if v]  # type: ignore[union-attr]
-    if isinstance(value, float) and pd.isna(value):
-        return []
-    return []
 
 
 def _rating_chip_html(rating: float | None) -> str:

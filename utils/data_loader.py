@@ -294,25 +294,31 @@ def attach_streaming(df: pd.DataFrame, movies_output: str) -> pd.DataFrame:
     keep["tmdb_id"] = keep["tmdb_id"].astype(str)
     out["tmdb_id"] = out["tmdb_id"].astype(str)
     out = out.merge(keep, on="tmdb_id", how="left")
-    out["flatrate"] = out["flatrate"].apply(_coerce_provider_list)
+    out["flatrate"] = out["flatrate"].apply(coerce_str_list)
     return out
 
 
-def _coerce_provider_list(value: object) -> list[str]:
-    """Coerce a parquet/merge cell into ``list[str]``.
+def coerce_str_list(value: object) -> list[str]:
+    """Coerce a possibly-NaN / numpy-array / list cell into ``list[str]``.
 
-    Handles ``None``, scalar ``NaN``, Python lists/tuples, and numpy arrays
-    (parquet list columns surface as either lists or ``np.ndarray`` depending
-    on the engine).
+    Parquet list columns surface as Python lists or ``np.ndarray`` depending on
+    the engine; unmatched left-join cells surface as ``None`` or scalar ``NaN``.
+    Falsy elements are dropped so empty provider slugs never render.
+
+    Single source of truth for the streaming-``flatrate`` coercion shared by the
+    streaming badge renderer (:mod:`utils.ui`) and the calendar partition logic
+    (``pages/calendar.py``). The scalar-``NaN`` check precedes the ``.tolist()``
+    branch because numpy float scalars (e.g. ``np.float64('nan')``) are both
+    ``float`` instances *and* expose ``.tolist()``.
     """
     if value is None:
         return []
-    if isinstance(value, (list, tuple)):
-        return [str(v) for v in value]
-    if hasattr(value, "tolist"):
-        return [str(v) for v in value.tolist()]  # type: ignore[union-attr]
     if isinstance(value, float) and pd.isna(value):
         return []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value if v]
+    if hasattr(value, "tolist"):
+        return [str(v) for v in value.tolist() if v]  # type: ignore[union-attr]
     return []
 
 

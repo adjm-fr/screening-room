@@ -27,6 +27,7 @@ from modules.config import settings
 from utils.data_loader import (
     attach_streaming,
     build_watchlist_showtimes,
+    coerce_str_list,
     future_showtimes,
     get_paths,
     load_showtimes,
@@ -39,19 +40,6 @@ from utils.ui import (
     render_empty_state,
     to_ics,
 )
-
-
-def _html_to_slugs(value: object) -> list[str]:
-    """Coerce a flatrate cell (list / np.ndarray / NaN / None) into ``list[str]``."""
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        return [str(v) for v in value if v]
-    if hasattr(value, "tolist"):
-        return [str(v) for v in value.tolist() if v]  # type: ignore[union-attr]
-    if isinstance(value, float) and pd.isna(value):
-        return []
-    return []
 
 
 def _render_day_rails(
@@ -264,7 +252,7 @@ def main() -> None:
         def _is_also_streaming(flat: object) -> bool:
             if not subscribed:
                 return False
-            return bool(set(_html_to_slugs(flat)) & subscribed)
+            return bool(set(coerce_str_list(flat)) & subscribed)
 
         filtered_sorted["_also_streaming"] = filtered_sorted["flatrate"].apply(_is_also_streaming)
         cinema_only = filtered_sorted[~filtered_sorted["_also_streaming"]]

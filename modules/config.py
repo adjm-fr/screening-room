@@ -18,6 +18,11 @@ _ROOT = Path(__file__).parent.parent
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=_ROOT / ".env", env_file_encoding="utf-8", extra="ignore")
 
+    # Logging verbosity for the entry points (app.py, orchestrate.py). Defaults to
+    # INFO so the served app doesn't emit per-rerun debug spam; set LOG_LEVEL=DEBUG
+    # to trace the render/join hot paths during development.
+    log_level: str = "INFO"
+
     # Data paths — optional so individual pages degrade gracefully when unset
     movies_output_path: Path | None = None
     allocine_output_path: Path | None = None

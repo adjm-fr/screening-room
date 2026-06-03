@@ -7,6 +7,7 @@ import pytest
 from modules.config import Settings
 
 _SETTINGS_ENV_VARS = (
+    "LOG_LEVEL",
     "MOVIES_OUTPUT_PATH",
     "ALLOCINE_OUTPUT_PATH",
     "ALLOCINE_INPUT_PATH",
@@ -88,6 +89,17 @@ def test_gemini_overrides(tmp_path, monkeypatch):
     assert s.gemini_api_key == "test-key"
     assert s.gemini_model == "gemini-2.5-flash"
     assert s.gemini_max_tokens == 512
+
+
+def test_log_level_defaults_to_info(tmp_path):
+    s = _settings(tmp_path)
+    assert s.log_level == "INFO"
+
+
+def test_log_level_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    s = _settings(tmp_path)
+    assert s.log_level == "DEBUG"
 
 
 def test_extra_env_vars_ignored(tmp_path, monkeypatch):

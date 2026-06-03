@@ -9,7 +9,8 @@ Mounts the cinema chat assistant with the full power-user surface:
 
 The same assistant is reachable from any other page via the global
 ``Cmd+K`` palette (see :mod:`utils.cmdk`); both surfaces share
-``st.session_state['rec_messages']`` so the conversation persists across them.
+``st.session_state['chat']`` (a ``ChatState``) so the conversation persists
+across them.
 """
 
 from __future__ import annotations

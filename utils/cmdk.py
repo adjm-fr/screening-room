@@ -6,8 +6,8 @@ hosting the recommendations chat — primary entry point from any page. The
 dedicated ``pages/recommendations.py`` page survives for deep history,
 prompt chips, the pinned-recs column, and conversation export.
 
-The dialog and the page share ``session_state['rec_messages']`` so the
-conversation persists across both surfaces.
+The dialog and the page share ``session_state['chat']`` (a ``ChatState``) so
+the conversation persists across both surfaces.
 
 Keyboard binding uses ``streamlit-shortcuts`` when available; otherwise the
 sidebar button is the only entry. The behaviour is identical either way —

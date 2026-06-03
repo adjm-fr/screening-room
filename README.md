@@ -72,7 +72,7 @@ Chat interface powered by the [Gemini API](https://ai.google.dev/) via the nativ
 
 Power-user surface: prompt-suggestion chips, streaming spinner with transparent tool-call expanders, in-page pinned-recommendations column on the right (substring-match watchlist titles in each reply, then click to pin), Markdown conversation export.
 
-The same assistant is reachable from any page via the global **`Cmd+K`** command palette (or the "✦ Ask AI" sidebar button). Both surfaces share `st.session_state['rec_messages']` so the conversation persists across them.
+The same assistant is reachable from any page via the global **`Cmd+K`** command palette (or the "✦ Ask AI" sidebar button). Both surfaces share a single `st.session_state['chat']` (a `ChatState` dataclass) so the conversation persists across them.
 
 The page derives a taste profile from your Letterboxd ratings (top genres and directors by average rating) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted. When the FR streaming-providers cache is populated, per-film flatrate availability is injected into the system prompt, and the model is rule-bound to only reference providers from that list (no hallucinated availability).
 
@@ -144,7 +144,7 @@ cinema_dashboard/
 │   └── theater_manager.py        # Reads/appends to the theaters CSV
 ├── tests/
 │   ├── conftest.py               # Shared fixtures + @st.cache_data no-op patch
-│   ├── test_*.py                 # Unit tests for data_loader, ui, chat, streaming, geo, scrapers, config, calendar, allocine_search
+│   ├── test_*.py                 # Unit tests for data_loader, ui, chat, streaming, geo, scrapers, config, allocine_search
 │   └── evals/                    # LLM hallucination evals (opt-in via `-m evals`)
 │       ├── goldens.py            # Bait prompts + allowed film/provider sets
 │       ├── metrics.py            # FilmSetMembership + StreamingClaim DeepEval metrics
@@ -315,5 +315,5 @@ Requires `GEMINI_API_KEY`; the suite skips itself when unset. To add a new failu
 ## Known limitations
 
 - Only covers Allocine (French cinemas). Other regions require a different showtimes source.
-- Watchlist-to-showtimes matching joins on the normalised TMDB French title (`french_title`) vs Allocine's French display title, confirmed by director overlap. Films whose French title differs significantly between the two sources may not be matched.
+- Watchlist-to-showtimes matching joins on the normalised TMDB French title (`french_title`) vs Allocine's French display title, **confirmed by director overlap**. A title match is kept only when both sources agree on at least one director, so films whose French title differs significantly between the two sources — or whose director metadata is missing on either side — may not be matched. This is a deliberate precision-first trade-off: showing a wrong film's screening (e.g. the wrong "Nosferatu") is worse than missing one.
 - Data is only as fresh as the last scraper run.

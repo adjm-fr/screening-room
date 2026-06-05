@@ -70,8 +70,10 @@ All data is stored locally in parquet format for efficient storage and analysis.
 - **click** - Command-line interface
 - **pydantic-settings** - Typed, validated environment variable management (auto-loads `.env`)
 - **letterboxdpy** - Letterboxd API client
+- **httpx** - Async HTTP client for TMDB enrichment
+- **tenacity** - Retry/backoff for transient API failures
 
-See `requirements.txt` for pinned versions.
+See `pyproject.toml` for pinned versions.
 
 ## Configuration
 
@@ -130,7 +132,7 @@ python main.py --enrich-from-allocine /path/to/showtimes.parquet
 This mode can be run standalone (no `--username` needed) or combined with `--username` in one call. The enrichment:
 
 1. Reads all unique `(title, original_title, director, release_year)` tuples from the showtimes parquet
-2. Resolves each to a Letterboxd slug via Letterboxd search (with year + director post-filtering), falling back to a TMDB search when unresolved
+2. Resolves each to a Letterboxd slug via Letterboxd search (with year + director post-filtering); films that don't resolve are dropped from downstream processing
 3. Fetches and appends metadata for new slugs to `data_letterboxd.parquet` (idempotent — already-cached slugs are skipped)
 4. Writes tuples that could not be resolved to `{OUTPUT_PATH}/unresolved_allocine.parquet` for visibility
 
@@ -324,3 +326,5 @@ The application gracefully handles transient API failures by skipping individual
 
 - [letterboxdpy](https://github.com/jarmstrong2/letterboxdpy) - Python Letterboxd API client
 - [pandas](https://pandas.pydata.org/) - Data manipulation library
+- [httpx](https://www.python-httpx.org/) - Async HTTP client
+- [tenacity](https://tenacity.readthedocs.io/) - Retry/backoff library

@@ -12,10 +12,17 @@ import os
 
 import pandas as pd
 from letterboxdpy.search import Search, SearchFilter
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from modules.get_letterboxd_data import get_letterboxd_data
 
 logger = logging.getLogger(__name__)
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=10), reraise=True)
+def _search_films(query: str) -> list[dict]:
+    """Run a Letterboxd film search, retrying on transient failures."""
+    return Search(query, SearchFilter.FILMS).results.get("results", [])
 
 
 def _allocine_director_names(value: str | None) -> set[str]:
@@ -39,7 +46,7 @@ def _search_letterboxd_slug(query: str, year_str: str | None, director: str | No
 
     logger.debug("Letterboxd search: query=%r year=%s director=%s", query, year_str, director)
     try:
-        results = Search(query, SearchFilter.FILMS).results.get("results", [])
+        results = _search_films(query)
     except Exception as e:
         logger.debug("Letterboxd search failed for query=%r: %s", query, e)
         return None

@@ -10,24 +10,52 @@ import logging
 import os
 from datetime import datetime
 
+import httpx
 import pandas as pd
-import requests
 from letterboxdpy.movie import Movie
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
 
 TMDB_API_URL = "https://api.themoviedb.org/3"
 
+# Shared retry policy for transient API failures: 3 attempts with exponential backoff,
+# re-raising the final error so callers can degrade gracefully (return None / skip movie).
+_RETRY_STOP = stop_after_attempt(3)
+_RETRY_WAIT = wait_exponential(multiplier=1, max=10)
 
-def _fetch_french_title(tmdb_id: str | None, api_key: str | None) -> str | None:
+
+@retry(
+    stop=_RETRY_STOP,
+    wait=_RETRY_WAIT,
+    reraise=True,
+    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+)
+async def _get_tmdb_movie(client: httpx.AsyncClient, tmdb_id: str, api_key: str) -> httpx.Response:
+    """GET a TMDB movie, retrying on transport errors and 429/5xx responses."""
+    resp = await client.get(
+        f"{TMDB_API_URL}/movie/{tmdb_id}",
+        params={"language": "fr-FR", "api_key": api_key},
+        timeout=10,
+    )
+    # Treat rate-limit / server errors as transient so tenacity retries them;
+    # 4xx (other than 429) raise too but won't be retried (not in retry_if_exception_type
+    # scope below) — caught by _fetch_french_title and surfaced as None.
+    if resp.status_code == 429 or resp.status_code >= 500:
+        resp.raise_for_status()
+    return resp
+
+
+async def _fetch_french_title(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> str | None:
+    """Fetch a film's French title from TMDB using an injected async client.
+
+    Returns None when ``tmdb_id`` or ``api_key`` is falsy, on any non-200 response, or
+    when the request keeps failing after retries — never raises into the batch.
+    """
     if not tmdb_id or not api_key:
         return None
     try:
-        resp = requests.get(
-            f"{TMDB_API_URL}/movie/{tmdb_id}",
-            params={"language": "fr-FR", "api_key": api_key},
-            timeout=10,
-        )
+        resp = await _get_tmdb_movie(client, tmdb_id, api_key)
         if resp.status_code == 200:
             return resp.json().get("title")
         logger.debug("TMDB returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
@@ -36,7 +64,13 @@ def _fetch_french_title(tmdb_id: str | None, api_key: str | None) -> str | None:
     return None
 
 
-def _fetch_movie(slug: str, api_key: str | None = None) -> dict | None:
+@retry(stop=_RETRY_STOP, wait=_RETRY_WAIT, reraise=True)
+def _build_movie(slug: str) -> Movie:
+    """Construct a letterboxdpy ``Movie`` (the blocking scrape), retrying on transient errors."""
+    return Movie(slug)
+
+
+def _fetch_movie(slug: str) -> dict | None:
     """
     Fetch movie metadata from Letterboxd for a single movie slug.
 
@@ -44,7 +78,8 @@ def _fetch_movie(slug: str, api_key: str | None = None) -> dict | None:
         slug: The Letterboxd movie slug identifier.
 
     Returns:
-        Dictionary containing movie metadata (title, year, genres, ratings, etc.).
+        Dictionary containing movie metadata (title, year, genres, ratings, etc.) with
+        ``french_title`` left as None — it is filled in by ``_fetch_all`` via TMDB.
         Returns None if fetching fails.
 
     Note:
@@ -54,7 +89,7 @@ def _fetch_movie(slug: str, api_key: str | None = None) -> dict | None:
         - crew is filtered to director(s), producer(s), and writer(s) only.
     """
     try:
-        movie = Movie(slug)
+        movie = _build_movie(slug)
 
         # --- Genres / themes / mini-themes ---
         # movie.genres is a list[dict] with keys: type, name, slug, url
@@ -80,8 +115,6 @@ def _fetch_movie(slug: str, api_key: str | None = None) -> dict | None:
         producers = ", ".join(p["name"] for p in crew.get("producer", [])) or None
         writers = ", ".join(p["name"] for p in crew.get("writer", [])) or None
 
-        french_title = _fetch_french_title(movie.tmdb_id, api_key)
-
         return {
             # Identifiers
             "slug": slug,
@@ -93,7 +126,7 @@ def _fetch_movie(slug: str, api_key: str | None = None) -> dict | None:
             "tmdb_url": movie.tmdb_link,
             # Core info
             "title": movie.title,
-            "french_title": french_title,
+            "french_title": None,  # filled in by _fetch_all via TMDB
             "original_title": movie.original_title,
             "release_year": movie.year,
             "runtime": movie.runtime,
@@ -120,23 +153,31 @@ def _fetch_movie(slug: str, api_key: str | None = None) -> dict | None:
 
 
 async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20) -> list[dict | None]:
-    """Run _fetch_movie for every slug concurrently, capped at _CONCURRENCY threads."""
+    """Run _fetch_movie for every slug concurrently, then attach TMDB French titles.
+
+    A single shared ``httpx.AsyncClient`` is opened for the whole batch so all TMDB
+    lookups reuse pooled connections; the blocking Letterboxd scrape still runs in a
+    worker thread per slug.
+    """
     sem = asyncio.Semaphore(concurrency)
     total = len(slugs)
     done = 0
     results: list[dict | None] = [None] * total
 
-    async def _guarded(i: int, slug: str) -> None:
+    async def _guarded(client: httpx.AsyncClient, i: int, slug: str) -> None:
         nonlocal done
         async with sem:
-            results[i] = await asyncio.to_thread(_fetch_movie, slug, api_key)
+            result = await asyncio.to_thread(_fetch_movie, slug)
+            if result is not None:
+                result["french_title"] = await _fetch_french_title(client, result.get("tmdb_id"), api_key)
+            results[i] = result
         done += 1
         if done % 50 == 0 or done == total:
             logger.info("Fetched %d/%d", done, total)
 
-    async with asyncio.TaskGroup() as tg:
+    async with httpx.AsyncClient() as client, asyncio.TaskGroup() as tg:
         for i, slug in enumerate(slugs):
-            tg.create_task(_guarded(i, slug))
+            tg.create_task(_guarded(client, i, slug))
 
     return results
 

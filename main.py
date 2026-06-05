@@ -101,7 +101,7 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
     refresh_limit = settings.letterboxd_refresh_limit
     tmdb_api_key = settings.tmdb_api_key
     if not tmdb_api_key:
-        logger.warning("TMDB_API_KEY is not set — french_title and TMDB fallback enrichment will be skipped")
+        logger.warning("TMDB_API_KEY is not set — french_title enrichment will be skipped")
 
     letterboxd_data_output_path = output_path / "data_letterboxd.parquet"
 

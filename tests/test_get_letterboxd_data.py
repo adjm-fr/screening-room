@@ -7,10 +7,14 @@ _fetch_movie and parquet I/O are mocked where needed.
 
 from datetime import date
 
+import httpx
 import pandas as pd
 import pytest
+import respx
 
 from modules.get_letterboxd_data import (
+    TMDB_API_URL,
+    _fetch_all,
     _fetch_french_title,
     _fetch_movie,
     get_letterboxd_data,
@@ -211,52 +215,67 @@ def test_dead_slug_is_pruned_from_cache(mocker):
     assert "slug-b" in result["slug"].values
 
 
-# ── _fetch_french_title ───────────────────────────────────────────────────────
+# ── retry behaviour ───────────────────────────────────────────────────────────
 
 
-def test_fetch_french_title_returns_title_on_success(mocker):
-    mock_resp = mocker.MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {"title": "Le Syndicat du Crime"}
-    mocker.patch("modules.get_letterboxd_data.requests.get", return_value=mock_resp)
+def test_fetch_movie_retries_then_succeeds(mocker, make_movie):
+    # First Letterboxd scrape blips, the retry succeeds — _build_movie retries transparently.
+    mocker.patch(
+        "modules.get_letterboxd_data.Movie",
+        side_effect=[Exception("transient blip"), make_movie()],
+    )
+    result = _fetch_movie("some-slug")
+    assert result is not None
 
-    result = _fetch_french_title("12345", "fake-key")
+
+# ── _fetch_french_title (async, httpx + respx) ────────────────────────────────
+
+
+@respx.mock
+async def test_fetch_french_title_returns_title_on_success():
+    respx.get(f"{TMDB_API_URL}/movie/12345").mock(return_value=httpx.Response(200, json={"title": "Le Syndicat du Crime"}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_french_title(client, "12345", "fake-key")
     assert result == "Le Syndicat du Crime"
 
 
-def test_fetch_french_title_returns_none_on_http_error(mocker):
-    mock_resp = mocker.MagicMock()
-    mock_resp.status_code = 404
-    mocker.patch("modules.get_letterboxd_data.requests.get", return_value=mock_resp)
-
-    result = _fetch_french_title("12345", "fake-key")
+@respx.mock
+async def test_fetch_french_title_returns_none_on_http_error():
+    respx.get(f"{TMDB_API_URL}/movie/12345").mock(return_value=httpx.Response(404))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_french_title(client, "12345", "fake-key")
     assert result is None
 
 
-def test_fetch_french_title_returns_none_when_tmdb_id_falsy(mocker):
-    mock_get = mocker.patch("modules.get_letterboxd_data.requests.get")
-
-    assert _fetch_french_title(None, "fake-key") is None
-    assert _fetch_french_title("", "fake-key") is None
-    mock_get.assert_not_called()
-
-
-def test_fetch_french_title_returns_none_when_api_key_empty(mocker):
-    mock_get = mocker.patch("modules.get_letterboxd_data.requests.get")
-
-    assert _fetch_french_title("12345", "") is None
-    mock_get.assert_not_called()
+@respx.mock
+async def test_fetch_french_title_retries_on_transient_error():
+    route = respx.get(f"{TMDB_API_URL}/movie/12345").mock(
+        side_effect=[httpx.Response(503), httpx.Response(200, json={"title": "Titre"})]
+    )
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_french_title(client, "12345", "fake-key")
+    assert result == "Titre"
+    assert route.call_count == 2
 
 
-def test_fetch_movie_includes_french_title(mocker, make_movie):
+async def test_fetch_french_title_returns_none_when_tmdb_id_falsy():
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_french_title(client, None, "fake-key") is None
+        assert await _fetch_french_title(client, "", "fake-key") is None
+
+
+async def test_fetch_french_title_returns_none_when_api_key_empty():
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_french_title(client, "12345", "") is None
+
+
+@respx.mock
+async def test_fetch_all_attaches_french_title(mocker, make_movie):
     movie_mock = make_movie()
     movie_mock.tmdb_id = "42"
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=movie_mock)
-    mocker.patch(
-        "modules.get_letterboxd_data._fetch_french_title",
-        return_value="Titre Français",
-    )
+    respx.get(f"{TMDB_API_URL}/movie/42").mock(return_value=httpx.Response(200, json={"title": "Titre Français"}))
 
-    result = _fetch_movie("some-slug", api_key="fake-key")
-    assert result is not None
-    assert result["french_title"] == "Titre Français"
+    results = await _fetch_all(["some-slug"], api_key="fake-key")
+    assert results[0] is not None
+    assert results[0]["french_title"] == "Titre Français"

@@ -43,6 +43,16 @@ def test_search_returns_none_on_exception(mocker):
     assert _search_letterboxd_slug("Anything", "2020", None) is None
 
 
+def test_search_retries_then_succeeds(mocker):
+    # First Letterboxd search blips, the retry returns a matching result.
+    results = [{"slug": "the-godfather", "year": 1972, "directors": [{"name": "Francis Ford Coppola"}]}]
+    mocker.patch(
+        "modules.allocine_enrichment.Search",
+        side_effect=[Exception("transient blip"), mocker.MagicMock(results={"results": results})],
+    )
+    assert _search_letterboxd_slug("The Godfather", "1972", "Francis Ford Coppola") == "the-godfather"
+
+
 # ── resolve_slug_from_allocine_tuple ─────────────────────────────────────────
 
 

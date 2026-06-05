@@ -1,24 +1,17 @@
 [project]
 name = "movies-management"
-version = "1.1.0"
+version = "1.1.1"
 description = "A Python application that aggregates and enriches your Letterboxd movie data by combining user ratings and watchlist information with comprehensive movie metadata from the Letterboxd API."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "bandit>=1.9.4",
     "click==8.4.1",
     "httpx>=0.28.1",
     "letterboxdpy==6.5.7",
-    "mypy>=2.1.0",
     "pandas==3.0.3",
     "pyarrow==24.0.0",
     "pydantic-settings>=2.14.1",
-    "pytest>=9.0.3",
-    "pytest-asyncio>=1.2.0",
-    "pytest-mock>=3.15.1",
     "python-dotenv==1.2.2",
-    "respx>=0.22.0",
-    "ruff>=0.15.16",
     "tenacity>=9.1.2",
 ]
 
@@ -53,5 +46,12 @@ filterwarnings = [
 
 [dependency-groups]
 dev = [
+    "bandit>=1.9.4",
     "ipykernel>=7.2.0",
+    "mypy>=2.1.0",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.2.0",
+    "pytest-mock>=3.15.1",
+    "respx>=0.22.0",
+    "ruff>=0.15.16",
 ]

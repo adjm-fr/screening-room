@@ -3,7 +3,6 @@
 import json
 
 import pytest
-
 import utils.allocine_search as search_mod
 
 

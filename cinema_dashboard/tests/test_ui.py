@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 
 import pytest
-
 from utils.ui import _ics_escape, _streaming_badges_html, format_runtime, rating_to_hsl, to_ics
 
 # ── format_runtime ──────────────────────────────────────────────────────────

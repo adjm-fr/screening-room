@@ -32,6 +32,11 @@ def configure_logging(
     """
     resolved = level.upper() if isinstance(level, str) else level
     logging.basicConfig(level=resolved, format=fmt, datefmt=datefmt)
+    # basicConfig only sets the level when the root has no handlers yet; set it
+    # explicitly so the requested level also takes effect when handlers already
+    # exist (e.g. under pytest's log capture, or a second call).
+    root = logging.getLogger()
+    root.setLevel(resolved)
     for name in quiet:
         logging.getLogger(name).setLevel(logging.WARNING)
-    return logging.getLogger()
+    return root

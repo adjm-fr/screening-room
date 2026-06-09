@@ -11,7 +11,6 @@ import httpx
 import pandas as pd
 import pytest
 import respx
-
 from modules.get_letterboxd_data import (
     TMDB_API_URL,
     _fetch_all,

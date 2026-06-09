@@ -32,8 +32,8 @@ import pandas as pd
 import streamlit as st
 from google import genai
 from google.genai import types
-
 from modules.config import settings
+
 from utils.allocine_search import _get_paris_cinemas, search_theaters
 from utils.data_loader import (
     _normalize_title,

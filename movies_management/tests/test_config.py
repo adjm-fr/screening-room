@@ -1,9 +1,8 @@
 """Unit tests for modules/config.py."""
 
 import pytest
-from pydantic import ValidationError
-
 from modules.config import Settings
+from pydantic import ValidationError
 
 
 def _settings(tmp_path, **env_overrides):

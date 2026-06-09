@@ -4,7 +4,6 @@ import os
 
 import pandas as pd
 import pytest
-
 from modules.utils import (
     assign_cache_source,
     build_movies_df,

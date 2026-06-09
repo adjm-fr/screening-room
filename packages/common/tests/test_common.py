@@ -7,12 +7,9 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-
-from common import (
-    AppSettings,
+from common import AppSettings, configure_logging, make_settings_config
+from common.parquet_io import (
     SchemaValidationError,
-    configure_logging,
-    make_settings_config,
     read_parquet_validated,
     write_parquet_validated,
 )

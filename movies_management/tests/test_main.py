@@ -6,7 +6,6 @@ All functions are pure (no network, no I/O) and tested directly.
 
 import pandas as pd
 import pytest
-
 from modules.utils import build_movies_df, find_stale_slugs, merge_letterboxd_metadata, reorder_columns
 
 # ── all_movies_df construction ────────────────────────────────────────────────

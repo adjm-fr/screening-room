@@ -22,7 +22,6 @@ import html as _html
 
 import pandas as pd
 import streamlit as st
-
 from modules.config import settings
 from utils.data_loader import (
     attach_streaming,

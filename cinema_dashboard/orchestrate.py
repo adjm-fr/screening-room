@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 
 import click
-
+from common import configure_logging
 from modules.config import settings
 from modules.scrapers import (
     WATCHLIST_MAX_AGE_DAYS,
@@ -35,13 +35,9 @@ from utils.streaming import refresh_streaming_providers
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-logging.basicConfig(
-    level=settings.log_level.upper(),
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-# httpx logs every request at INFO; quiet it so the streaming refresh doesn't
-# spam one line per TMDB call (can be thousands for a large watchlist).
-logging.getLogger("httpx").setLevel(logging.WARNING)
+# configure_logging quiets httpx (one INFO line per request) so the streaming
+# refresh doesn't spam one line per TMDB call (can be thousands for a watchlist).
+configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 # Staleness rules and scraper argv lists live in modules/scrapers.py — the

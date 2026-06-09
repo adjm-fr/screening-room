@@ -8,7 +8,6 @@ import httpx
 import pandas as pd
 import pytest
 import respx
-
 from utils.streaming import (
     TMDB_PROVIDERS_URL,
     _parse_fr,

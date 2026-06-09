@@ -1,0 +1,98 @@
+name: CI
+
+# Runs on every push to main and on every pull request targeting main.
+# Four jobs run in parallel — total time = slowest job, not the sum.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Lint ────────────────────────────────────────────────────────────────────
+  # ruff replaces flake8 + black + isort in a single, fast tool.
+  # `ruff check` enforces code rules; `ruff format --check` verifies formatting
+  # without modifying files (CI should never silently rewrite your code).
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v2
+
+      # Cache uv downloads keyed by pyproject.toml and uv.lock hash.
+      # First run: downloads from PyPI and saves to GitHub's cache (~30s).
+      # Subsequent runs: restores from cache if dependencies unchanged (~2s).
+      # Cache automatically invalidates when you add or update a dependency.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  # ── Type checking ────────────────────────────────────────────────────────────
+  # mypy analyses type annotations statically and catches type errors before
+  # the code ever runs. `ignore_missing_imports` is set in pyproject.toml
+  # because letterboxdpy ships no type stubs.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v2
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+
+      - run: uv sync
+      - run: uv run mypy main.py modules/
+
+  # ── Security scanning ────────────────────────────────────────────────────────
+  # bandit scans Python source for common security issues (hardcoded secrets,
+  # shell injection, unsafe deserialization, etc.).
+  # `-ll` means "report medium and high severity only" — low-severity noise skipped.
+  # `--exclude .venv` avoids scanning third-party packages.
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v2
+
+      - run: uv run bandit -r main.py modules/ -ll
+
+  # ── Tests ────────────────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v2
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+
+      - run: uv sync
+      - run: uv run pytest tests/

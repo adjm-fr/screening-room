@@ -1,0 +1,57 @@
+[project]
+name = "movies-management"
+version = "1.1.1"
+description = "A Python application that aggregates and enriches your Letterboxd movie data by combining user ratings and watchlist information with comprehensive movie metadata from the Letterboxd API."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "click==8.4.1",
+    "httpx>=0.28.1",
+    "letterboxdpy==6.5.7",
+    "pandas==3.0.3",
+    "pyarrow==24.0.0",
+    "pydantic-settings>=2.14.1",
+    "python-dotenv==1.2.2",
+    "tenacity>=9.1.2",
+]
+
+# ruff, mypy, and pytest all read from here — no more scattered .flake8 / mypy.ini / pytest.ini.
+
+[tool.ruff]
+line-length = 130
+target-version = "py313"
+
+[tool.ruff.lint]
+# E/W = pycodestyle errors and warnings
+# F   = pyflakes (unused imports, undefined names, etc.)
+# I   = isort (import ordering)
+# UP  = pyupgrade (modernise syntax for the target Python version)
+select = ["E", "W", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.13"
+# letterboxdpy ships no type stubs, so mypy would error on every import without this.
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
+# "auto" treats every `async def test_*` as an asyncio test — no per-test decorator needed.
+asyncio_mode = "auto"
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:pandas",
+]
+
+[dependency-groups]
+dev = [
+    "bandit>=1.9.4",
+    "ipykernel>=7.2.0",
+    "mypy>=2.1.0",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.2.0",
+    "pytest-mock>=3.15.1",
+    "respx>=0.22.0",
+    "ruff>=0.15.16",
+]

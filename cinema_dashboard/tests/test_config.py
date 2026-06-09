@@ -7,7 +7,7 @@ from modules.config import Settings
 
 _SETTINGS_ENV_VARS = (
     "LOG_LEVEL",
-    "MOVIES_OUTPUT_PATH",
+    "OUTPUT_PATH",
     "ALLOCINE_OUTPUT_PATH",
     "ALLOCINE_INPUT_PATH",
     "ALLOCINE_DIR",
@@ -45,7 +45,7 @@ def test_all_paths_default_to_none(tmp_path):
 
 
 def test_paths_set_via_env(tmp_path, monkeypatch):
-    monkeypatch.setenv("MOVIES_OUTPUT_PATH", str(tmp_path / "movies"))
+    monkeypatch.setenv("OUTPUT_PATH", str(tmp_path / "movies"))
     monkeypatch.setenv("ALLOCINE_OUTPUT_PATH", str(tmp_path / "allocine_out"))
     monkeypatch.setenv("ALLOCINE_INPUT_PATH", str(tmp_path / "theaters.csv"))
     s = _settings(tmp_path)

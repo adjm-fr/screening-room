@@ -129,10 +129,10 @@ def main() -> None:
 
     movies_path, showtimes_path, theaters_csv = get_paths()
     if not movies_path:
-        st.error("**MOVIES_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
+        st.error("**OUTPUT_PATH** is not set in the workspace-root `.env`.")
         return
     if not showtimes_path:
-        st.error("**ALLOCINE_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
+        st.error("**ALLOCINE_OUTPUT_PATH** is not set in the workspace-root `.env`.")
         return
     if not (movies_path / "watchlist_with_letterboxd.parquet").exists() or not showtimes_path.exists():
         render_empty_state(

@@ -24,7 +24,7 @@ The "available on streaming platforms" rail is drawn from the full watchlist (no
 
 When `STREAMING_SERVICES` is configured, every card also shows a small badge row indicating which of your subscribed streaming services currently carries the film in France (filled chip).
 
-**Requires**: `MOVIES_OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH`
+**Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH`
 
 ### Showtimes (🎟️)
 
@@ -33,7 +33,7 @@ Top chip-filter bar (theaters, genres, runtime buckets `<90` / `90–120` / `>12
 - **Map** — pydeck map of theaters with marker size ∝ today's showtime count
 - **Table** — raw dataframe with poster + Letterboxd link columns
 
-**Requires**: `ALLOCINE_OUTPUT_PATH` (+ `MOVIES_OUTPUT_PATH` for posters, `ALLOCINE_INPUT_PATH` for the map)
+**Requires**: `ALLOCINE_OUTPUT_PATH` (+ `OUTPUT_PATH` for posters, `ALLOCINE_INPUT_PATH` for the map)
 
 ### Movies Database (📊)
 
@@ -42,7 +42,7 @@ Three calmer tabs in place of the old chart wall:
 - **Discover** — chip filters (genre, director multiselect with live search, min-rating slider) over a poster rail of matching films
 - **Tables** — raw dataframes with poster, IMDB, TMDB, and Letterboxd link columns. When `STREAMING_SERVICES` is set, a "Streaming on" column lists the subscribed services currently carrying each film.
 
-**Requires**: `MOVIES_OUTPUT_PATH`
+**Requires**: `OUTPUT_PATH`
 
 ### Watchlist Showtimes (📅)
 
@@ -51,7 +51,7 @@ Inner-joins your watchlist with current showtimes. Top chip-filter bar (theaters
 - **Calendar** — ICS and CSV export for your filtered screenings (Google / Apple / Outlook compatible)
 - **Map** — pydeck map of theaters with screenings in the current filter; marker size ∝ # screenings
 
-**Requires**: `MOVIES_OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` (+ `ALLOCINE_INPUT_PATH` for the map)
+**Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` (+ `ALLOCINE_INPUT_PATH` for the map)
 
 ### Streaming (📺)
 
@@ -59,7 +59,7 @@ One horizontal poster rail per FR streaming provider, populated from the TMDB wa
 
 When `STREAMING_SERVICES` is set, only rails for your subscribed providers appear. When unset, every provider returned by TMDB for your watchlist gets a rail. The page is explicitly FR-scoped — availability comes from TMDB's France region.
 
-**Requires**: `MOVIES_OUTPUT_PATH` (+ `TMDB_API_KEY` set when running `orchestrate.py` so the cache is populated)
+**Requires**: `OUTPUT_PATH` (+ `TMDB_API_KEY` set when running `orchestrate.py` so the cache is populated)
 
 ### Recommendations (🤖)
 
@@ -82,7 +82,7 @@ If you mention a theater that isn't already tracked, the model automatically sea
 
 The page also backfills missing addresses for existing CSV entries on first load, using the Allocine API cache.
 
-**Requires**: `MOVIES_OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` + `ALLOCINE_INPUT_PATH` + `GEMINI_API_KEY`
+**Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` + `ALLOCINE_INPUT_PATH` + `GEMINI_API_KEY`
 
 ## Architecture
 
@@ -150,8 +150,9 @@ cinema_dashboard/
 │       ├── metrics.py            # FilmSetMembership + StreamingClaim DeepEval metrics
 │       ├── test_metrics.py       # Unit tests for the metric regex (no Gemini calls)
 │       └── test_chat_evals.py    # Parameterized harness (hits live Gemini API)
-└── .env                          # Local environment variables (not committed)
 ```
+
+> Environment variables live in a single shared `.env` at the **workspace root**, not in this folder. See [Configuration](#configuration).
 
 All pages share `utils/data_loader.py` for parquet I/O and the watchlist↔showtimes join. Centralising the loaders means Streamlit's `@st.cache_data` keys on a single qualified function name, so each parquet is read once across all pages within the cache TTL — navigating between pages is a cache hit.
 
@@ -188,15 +189,15 @@ pip install -e ../Allocine-Showtimes-Scraping
 
 ### Configuration
 
-Copy `.env.example` to `.env` and fill in the paths:
+All members share one `.env` at the **workspace root**. Copy the template there and fill in the paths:
 
 ```bash
-cp .env.example .env
+cp ../.env.example ../.env   # from cinema_dashboard/, or run `cp .env.example .env` at the repo root
 ```
 
 | Variable | Description |
 |----------|-------------|
-| `MOVIES_OUTPUT_PATH` | Directory containing the three `*_letterboxd.parquet` files from `movies_management` |
+| `OUTPUT_PATH` | Directory containing the three `*_letterboxd.parquet` files from `movies_management` |
 | `ALLOCINE_OUTPUT_PATH` | Path to `showtimes.parquet` written by `Allocine-Showtimes-Scraping` |
 | `ALLOCINE_INPUT_PATH` | Path to the theaters CSV read by `Allocine-Showtimes-Scraping` — also written to when adding a theater via the Recommendations chat |
 | `GEMINI_API_KEY` | Gemini API key (free tier: 15 RPM, 250K TPM) — required for the Recommendations page. Create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
@@ -237,7 +238,7 @@ python orchestrate.py --reset-db # pass --reset_database to movies_management
 - `showtimes.parquet` — stale if last written before the most recent Tuesday (French cinemas publish the new week's programme on Tuesdays), **or** if the theaters CSV (`ALLOCINE_INPUT_PATH`) has been modified since the parquet was last written (a theater was added/removed, so the showtimes no longer cover the current set). Adding a theater via the Recommendations chat therefore triggers a re-scrape on the next run, even mid-week.
 - `watchlist_with_letterboxd.parquet` — stale if older than 7 days
 
-After the Allocine scrape succeeds, the orchestrator automatically runs a third step that expands `data_letterboxd.parquet` with Letterboxd metadata for every film found in the fresh `showtimes.parquet` — not only the user's watchlist and ratings. Films that cannot be resolved to a Letterboxd slug are written to `{MOVIES_OUTPUT_PATH}/unresolved_allocine.parquet`.
+After the Allocine scrape succeeds, the orchestrator automatically runs a third step that expands `data_letterboxd.parquet` with Letterboxd metadata for every film found in the fresh `showtimes.parquet` — not only the user's watchlist and ratings. Films that cannot be resolved to a Letterboxd slug are written to `{OUTPUT_PATH}/unresolved_allocine.parquet`.
 
 Output is timestamped and labelled per scraper:
 ```
@@ -294,7 +295,7 @@ Requires `GEMINI_API_KEY`; the suite skips itself when unset. To add a new failu
 
 ## Troubleshooting
 
-**"MOVIES_OUTPUT_PATH is not set"** — add it to `cinema_dashboard/.env`.
+**"OUTPUT_PATH is not set"** — add it to the workspace-root `.env`.
 
 **"Watchlist data not found"** — run `python main.py` in `movies_management`.
 
@@ -308,7 +309,7 @@ Requires `GEMINI_API_KEY`; the suite skips itself when unset. To add a new failu
 
 **Theme looks broken / fonts not loading** — `assets/styles.css` imports Inter and Playfair Display from Google Fonts. Browsers without internet access render the dashboard with system fallbacks; the layout still works.
 
-**"GEMINI_API_KEY is not set"** — add your Gemini API key to `cinema_dashboard/.env`. Create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+**"GEMINI_API_KEY is not set"** — add your Gemini API key to the workspace-root `.env`. Create one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
 
 **"No upcoming showtimes for your watchlist"** (Recommendations page) — either no watchlist movies are currently showing, or the showtimes data is stale. Re-run both scrapers to refresh.
 

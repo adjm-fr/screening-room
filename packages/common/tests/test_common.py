@@ -13,12 +13,33 @@ from common.parquet_io import (
     read_parquet_validated,
     write_parquet_validated,
 )
+from common.settings import find_workspace_root
 
 
 def test_make_settings_config_points_at_env(tmp_path: Path) -> None:
     cfg = make_settings_config(tmp_path)
     assert cfg["env_file"] == tmp_path / ".env"
     assert cfg["extra"] == "ignore"
+
+
+def test_find_workspace_root_locates_uv_workspace(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    nested = root / "packages" / "common" / "src" / "common"
+    nested.mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[tool.uv.workspace]\nmembers = []\n", encoding="utf-8")
+    # An intermediate member pyproject without [tool.uv.workspace] must be skipped.
+    (root / "packages" / "common" / "pyproject.toml").write_text("[project]\nname = 'common'\n", encoding="utf-8")
+    assert find_workspace_root(nested / "settings.py") == root
+
+
+def test_find_workspace_root_raises_when_absent(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="workspace root"):
+        find_workspace_root(tmp_path / "deep" / "file.py")
+
+
+def test_make_settings_config_defaults_to_workspace_root() -> None:
+    # No argument → the real workspace root's .env (the one this test runs inside).
+    assert make_settings_config()["env_file"] == find_workspace_root() / ".env"
 
 
 def test_app_settings_subclass_reads_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

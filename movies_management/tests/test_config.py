@@ -35,10 +35,10 @@ def test_days_to_update_override(tmp_path, monkeypatch):
     assert s.letterboxd_days_to_update == 180
 
 
-def test_refresh_limit_defaults_to_none(tmp_path, monkeypatch):
+def test_refresh_limit_defaults_to_1000(tmp_path, monkeypatch):
     monkeypatch.setenv("OUTPUT_PATH", str(tmp_path / "output"))
     s = _settings(tmp_path)
-    assert s.letterboxd_refresh_limit is None
+    assert s.letterboxd_refresh_limit == 1000
 
 
 def test_refresh_limit_set(tmp_path, monkeypatch):

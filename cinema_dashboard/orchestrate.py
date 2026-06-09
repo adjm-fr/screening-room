@@ -107,9 +107,9 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
     movies_dir = settings.movies_dir
 
     if not settings.allocine_output_path:
-        raise click.ClickException("ALLOCINE_OUTPUT_PATH is not set in cinema_dashboard/.env")
+        raise click.ClickException("ALLOCINE_OUTPUT_PATH is not set in the workspace-root .env")
     if not settings.movies_output_path:
-        raise click.ClickException("MOVIES_OUTPUT_PATH is not set in cinema_dashboard/.env")
+        raise click.ClickException("OUTPUT_PATH is not set in the workspace-root .env")
 
     showtimes_path = settings.allocine_output_path
     theaters_path = settings.allocine_input_path  # theaters.csv — re-scrape if it changed
@@ -138,7 +138,7 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
         reason = "forced" if force else f"stale (>{WATCHLIST_MAX_AGE_DAYS} days old)"
         logger.info("Letterboxd data:    %s", reason)
         if not settings.letterboxd_username:
-            raise click.ClickException("LETTERBOXD_USERNAME is not set in cinema_dashboard/.env")
+            raise click.ClickException("LETTERBOXD_USERNAME is not set in the workspace-root .env")
         tasks.append(("letterboxd", letterboxd_command(settings.letterboxd_username, reset_db), movies_dir))
     else:
         mtime = _mtime(watchlist_path)

@@ -80,7 +80,7 @@ def main() -> None:
         render_empty_state(
             "⚙️",
             "Configure your data paths",
-            "Set MOVIES_OUTPUT_PATH and ALLOCINE_OUTPUT_PATH in .env to populate the dashboard.",
+            "Set OUTPUT_PATH and ALLOCINE_OUTPUT_PATH in .env to populate the dashboard.",
         )
         return
     if not (movies_path / "watchlist_with_letterboxd.parquet").exists() or not showtimes_path.exists():

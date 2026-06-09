@@ -77,7 +77,8 @@ See `pyproject.toml` for pinned versions.
 
 ## Configuration
 
-Create a `.env` file in the project root with the following variables:
+All members share one `.env` at the **workspace root** (copy `.env.example` to `.env` there). The keys this
+member reads:
 
 ```env
 # Required
@@ -93,7 +94,7 @@ LETTERBOXD_DAYS_TO_UPDATE=365
 |----------|----------|---------|-------------|
 | `OUTPUT_PATH` | Yes | — | Directory path where parquet files will be saved |
 | `LETTERBOXD_DAYS_TO_UPDATE` | No | `365` | Number of days before cached movie metadata is refreshed |
-| `LETTERBOXD_REFRESH_LIMIT` | No | — | Max stale movies to refresh per run (unlimited if unset) |
+| `LETTERBOXD_REFRESH_LIMIT` | No | `1000` | Max stale movies to refresh per run (raise to lift the cap) |
 | `TMDB_API_KEY` | No | — | TMDB API key for French title enrichment (`french_title` column). Pipeline runs without it; French title stays `null` |
 
 ## Usage
@@ -237,8 +238,9 @@ movies_management/
 │   ├── utils.py                      # Data transformation helpers
 │   ├── get_letterboxd_data.py        # Letterboxd API interactions and caching
 │   └── allocine_enrichment.py        # Allocine → Letterboxd slug resolution and cache expansion
-└── .env                              # Configuration file
 ```
+
+> Environment variables live in a single shared `.env` at the **workspace root**, not in this folder. See [Configuration](#configuration).
 
 ### Data Flow
 

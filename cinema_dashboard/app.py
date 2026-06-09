@@ -5,25 +5,14 @@ Run with:
     streamlit run app.py
 """
 
-import logging
-
 import plotly.io as pio
 import streamlit as st
-
+from common import configure_logging
 from modules.config import settings
 from utils.cmdk import mount_cmdk
 from utils.ui import inject_css
 
-logging.basicConfig(
-    level=settings.log_level.upper(),
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%H:%M:%S",
-)
-# Silence noisy third-party loggers
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("google_genai").setLevel(logging.WARNING)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
+configure_logging(settings.log_level, quiet=("httpx", "httpcore", "google_genai", "urllib3"))
 
 st.set_page_config(
     page_title="Cinema Dashboard",

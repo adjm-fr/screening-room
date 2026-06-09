@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-
 from modules.config import Settings
 
 _SETTINGS_ENV_VARS = (
@@ -57,9 +56,11 @@ def test_paths_set_via_env(tmp_path, monkeypatch):
 
 def test_scraper_dir_defaults(tmp_path):
     s = _settings(tmp_path)
-    root = Path(__file__).parent.parent
-    assert s.allocine_dir == root.parent / "Allocine-Showtimes-Scraping"
+    root = Path(__file__).resolve().parents[1]  # cinema_dashboard/
+    # movies_management is now an in-repo workspace sibling; Allocine stays a
+    # standalone repo *outside* the monorepo, one level further up.
     assert s.movies_dir == root.parent / "movies_management"
+    assert s.allocine_dir == root.parent.parent / "Allocine-Showtimes-Scraping"
 
 
 def test_letterboxd_defaults(tmp_path):

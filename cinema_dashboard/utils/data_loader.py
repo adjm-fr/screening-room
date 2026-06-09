@@ -25,8 +25,10 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-
+from common.parquet_io import read_parquet_validated
+from contracts import SHOWTIMES
 from modules.config import settings
+
 from utils.streaming import load_streaming_providers
 
 log = logging.getLogger(__name__)
@@ -122,7 +124,7 @@ def load_showtimes(showtimes_path: str) -> pd.DataFrame:  # pragma: no cover
     :func:`future_showtimes`.
     """
     log.debug("Loading showtimes from %s", showtimes_path)
-    df = pd.read_parquet(showtimes_path)
+    df = read_parquet_validated(showtimes_path, required_columns=SHOWTIMES.required_columns, label="showtimes")
     n_theaters = df["theater_name"].nunique() if "theater_name" in df.columns else 0
     log.info("Showtimes loaded: %d rows, %d theaters", len(df), n_theaters)
     return df

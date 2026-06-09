@@ -6,17 +6,21 @@ import time; optional fields default to None or a sensible value.
 
 Paths are typed as ``Path | None`` so page code can test ``if not path``
 and render a user-friendly Streamlit error rather than crashing the app.
+
+Kept cheap to import (stdlib + pydantic-settings only, via ``common``); the
+parquet/pandas helpers live in ``common.parquet_io`` and are imported by data
+loaders, not here, so this very-hot import path stays light.
 """
 
 from pathlib import Path
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from common import AppSettings, make_settings_config
 
-_ROOT = Path(__file__).parent.parent
+_ROOT = Path(__file__).resolve().parents[1]
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=_ROOT / ".env", env_file_encoding="utf-8", extra="ignore")
+class Settings(AppSettings):
+    model_config = make_settings_config(_ROOT)
 
     # Logging verbosity for the entry points (app.py, orchestrate.py). Defaults to
     # INFO so the served app doesn't emit per-rerun debug spam; set LOG_LEVEL=DEBUG
@@ -28,8 +32,11 @@ class Settings(BaseSettings):
     allocine_output_path: Path | None = None
     allocine_input_path: Path | None = None
 
-    # Scraper repo locations (used by orchestrate.py and pipeline/definitions.py)
-    allocine_dir: Path = _ROOT.parent / "Allocine-Showtimes-Scraping"
+    # Scraper repo locations (used by orchestrate.py and pipeline/definitions.py).
+    # movies_management is now an in-repo workspace sibling. Allocine stays a
+    # standalone repo *outside* this monorepo, so its default location is one level
+    # further up; override with the ALLOCINE_DIR env var.
+    allocine_dir: Path = _ROOT.parent.parent / "Allocine-Showtimes-Scraping"
     movies_dir: Path = _ROOT.parent / "movies_management"
 
     # Letterboxd config (mirrors movies_management/.env)

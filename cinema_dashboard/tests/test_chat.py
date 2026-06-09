@@ -8,7 +8,6 @@ covered by manual verification, not unit tests.
 from __future__ import annotations
 
 import pandas as pd
-
 from utils.chat import _streaming_context
 
 

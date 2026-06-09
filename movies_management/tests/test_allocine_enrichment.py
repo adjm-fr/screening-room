@@ -4,7 +4,6 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pandas as pd
-
 from modules.allocine_enrichment import (
     _search_letterboxd_slug,
     enrich_cache_from_showtimes,

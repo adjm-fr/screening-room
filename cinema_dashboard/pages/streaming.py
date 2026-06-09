@@ -10,7 +10,6 @@ operates on display names (``Canal+``, ``MUBI``…), not raw slugs.
 from __future__ import annotations
 
 import streamlit as st
-
 from modules.config import settings
 from utils.data_loader import attach_streaming, get_paths, load_watchlist
 from utils.streaming import display_name, load_display_names_catalog

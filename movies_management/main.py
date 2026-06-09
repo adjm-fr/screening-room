@@ -29,10 +29,10 @@ from datetime import datetime
 from pathlib import Path
 
 import click
-import pandas as pd
-from letterboxdpy.user import User
-
 import modules.get_letterboxd_data as ldm
+import pandas as pd
+from common import configure_logging
+from letterboxdpy.user import User
 from modules.allocine_enrichment import enrich_cache_from_showtimes
 from modules.config import Settings
 from modules.utils import (
@@ -44,12 +44,8 @@ from modules.utils import (
     save_parquet,
 )
 
-# Configure structured logging with timestamps and level indicators
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# Structured logging with timestamps and level indicators (shared helper).
+configure_logging("INFO")
 logger = logging.getLogger(__name__)
 
 settings = Settings()  # type: ignore[call-arg]

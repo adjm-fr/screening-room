@@ -21,7 +21,6 @@ import re
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-
 from modules.config import settings
 from utils.data_loader import (
     attach_streaming,

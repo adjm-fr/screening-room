@@ -16,7 +16,6 @@ across them.
 from __future__ import annotations
 
 import streamlit as st
-
 from utils.chat import build_chat_context, render_chat
 
 

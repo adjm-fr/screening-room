@@ -15,20 +15,24 @@ loaders, not here, so this very-hot import path stays light.
 from pathlib import Path
 
 from common import AppSettings, make_settings_config
+from pydantic import Field
 
 _ROOT = Path(__file__).resolve().parents[1]
 
 
 class Settings(AppSettings):
-    model_config = make_settings_config(_ROOT)
+    model_config = make_settings_config()
 
     # Logging verbosity for the entry points (app.py, orchestrate.py). Defaults to
     # INFO so the served app doesn't emit per-rerun debug spam; set LOG_LEVEL=DEBUG
     # to trace the render/join hot paths during development.
     log_level: str = "INFO"
 
-    # Data paths — optional so individual pages degrade gracefully when unset
-    movies_output_path: Path | None = None
+    # Data paths — optional so individual pages degrade gracefully when unset.
+    # movies_output_path reads OUTPUT_PATH: the single shared key that
+    # movies_management writes its parquets to (one source of truth in the
+    # workspace .env — this dir holds the three *_letterboxd.parquet files).
+    movies_output_path: Path | None = Field(default=None, validation_alias="OUTPUT_PATH")
     allocine_output_path: Path | None = None
     allocine_input_path: Path | None = None
 

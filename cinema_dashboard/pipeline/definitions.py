@@ -8,7 +8,7 @@ Required env vars (same as orchestrate.py + .env):
     ALLOCINE_DIR            path to the Allocine-Showtimes-Scraping repo
     MOVIES_DIR              path to the movies_management repo
     ALLOCINE_OUTPUT_PATH    path to the output showtimes parquet file
-    MOVIES_OUTPUT_PATH      directory that contains the watchlist parquet files
+    OUTPUT_PATH             directory that contains the watchlist parquet files
 """
 
 from dagster import Definitions, define_asset_job, load_assets_from_modules

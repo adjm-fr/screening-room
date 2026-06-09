@@ -109,7 +109,7 @@ def _gemini_key_configured() -> bool:
     The Streamlit error is rendered here so both chat surfaces share one message.
     """
     if not settings.gemini_api_key:
-        st.error("**GEMINI_API_KEY** is not set in `cinema_dashboard/.env`.")
+        st.error("**GEMINI_API_KEY** is not set in the workspace-root `.env`.")
         return False
     return True
 
@@ -180,10 +180,10 @@ def build_chat_context() -> ChatContext | None:
     if not _gemini_key_configured():
         return None
     if not movies_path:
-        st.error("**MOVIES_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
+        st.error("**OUTPUT_PATH** is not set in the workspace-root `.env`.")
         return None
     if not showtimes_path:
-        st.error("**ALLOCINE_OUTPUT_PATH** is not set in `cinema_dashboard/.env`.")
+        st.error("**ALLOCINE_OUTPUT_PATH** is not set in the workspace-root `.env`.")
         return None
 
     if theaters_csv and "theaters_backfilled" not in st.session_state:

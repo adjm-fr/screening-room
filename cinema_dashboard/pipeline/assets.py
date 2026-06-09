@@ -83,7 +83,7 @@ def letterboxd_cache_enriched(context: AssetExecutionContext, scraper_config: Sc
 )
 def watchlist(context: AssetExecutionContext, config: WatchlistConfig, scraper_config: ScraperConfig) -> MaterializeResult:
     if not scraper_config.letterboxd_username:
-        raise RuntimeError("LETTERBOXD_USERNAME is not set in cinema_dashboard/.env")
+        raise RuntimeError("LETTERBOXD_USERNAME is not set in the workspace-root .env")
 
     _run(
         context,

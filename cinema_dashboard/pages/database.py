@@ -169,7 +169,7 @@ def main() -> None:
 
     output_path, _, _ = get_paths()
     if not output_path:
-        st.error("**MOVIES_OUTPUT_PATH** is not set. Add it to `cinema_dashboard/.env` and restart.")
+        st.error("**OUTPUT_PATH** is not set. Add it to the workspace-root `.env` and restart.")
         return
 
     required = ("data_letterboxd.parquet", "ratings_with_letterboxd.parquet", "watchlist_with_letterboxd.parquet")

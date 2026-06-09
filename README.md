@@ -25,8 +25,15 @@ Requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/).
 uv sync --all-packages        # one shared .venv for the whole workspace
 ```
 
-Each member reads its own `.env` (see each member's README). The dashboard locates the standalone Allocine
-checkout via the `ALLOCINE_DIR` env var (defaults to a sibling of this repo).
+All members share a single `.env` at the workspace root — copy `.env.example` to `.env` and fill it in:
+
+```bash
+cp .env.example .env
+```
+
+Each member reads only the keys it declares and ignores the rest, so the one file holds the union of every
+member's variables. The dashboard locates the standalone Allocine checkout via the `ALLOCINE_DIR` env var
+(defaults to a sibling of this repo).
 
 ## Run
 

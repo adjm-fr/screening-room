@@ -1,0 +1,18 @@
+[project]
+name = "common"
+version = "0.1.0"
+description = "Shared library for the cinema monorepo: pydantic-settings base, logging setup, validated parquet IO."
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic-settings>=2.14.1",
+    "pandas>=3.0.3",
+    "pyarrow>=24.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error", "ignore::DeprecationWarning:pandas"]

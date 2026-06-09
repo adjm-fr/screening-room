@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# uv / venv — single workspace venv at root (uv.lock IS committed: reproducible builds)
+.venv/
+
+# Secrets & local config
+.env
+CLAUDE.md
+
+# Data caches / outputs
+*.parquet
+data/
+tmp/

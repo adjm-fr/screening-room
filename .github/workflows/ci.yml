@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# One workflow for the whole workspace — replaces the near-identical lint/
+# typecheck/security/test jobs that were duplicated across the two former repos.
+# ruff/mypy config and dev tooling versions are single-sourced (root pyproject +
+# uv.lock), so every job here uses exactly the same toolchain.
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-packages
+      - run: uv run --no-sync mypy packages/common/src/common packages/contracts/src/contracts
+      - run: uv run --no-sync --directory movies_management mypy main.py modules/
+      - run: uv run --no-sync --directory cinema_dashboard mypy app.py pages/ utils/ modules/ pipeline/ orchestrate.py
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-packages
+      - name: bandit (source)
+        run: >
+          uv run --no-sync bandit -r -ll
+          packages/common/src packages/contracts/src
+          movies_management/main.py movies_management/modules
+          cinema_dashboard/app.py cinema_dashboard/orchestrate.py
+          cinema_dashboard/modules cinema_dashboard/pages cinema_dashboard/pipeline cinema_dashboard/utils
+      - name: pip-audit (shipped runtime deps only)
+        # Scan what actually ships/runs. The dev-only eval tooling
+        # (deepeval -> llama-index -> pypdf) carries advisories that don't affect
+        # the scrapers or dashboard at runtime, so it is excluded via --no-dev.
+        run: |
+          uv export --all-packages --no-dev --no-emit-workspace --format requirements-txt -o /tmp/runtime-req.txt
+          uv run --no-sync pip-audit -r /tmp/runtime-req.txt
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --all-packages
+      - name: packages
+        run: |
+          uv run --no-sync --directory packages/common pytest --cov=common --cov-report=term-missing --cov-fail-under=90
+          uv run --no-sync --directory packages/contracts pytest
+      - name: movies_management
+        run: uv run --no-sync --directory movies_management pytest --cov --cov-report=term-missing --cov-fail-under=90
+      - name: cinema_dashboard
+        run: uv run --no-sync --directory cinema_dashboard pytest --cov --cov-report=term-missing --cov-fail-under=75

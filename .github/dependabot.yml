@@ -1,0 +1,14 @@
+version: 2
+
+updates:
+  # Single workspace lockfile (uv.lock at the root) — one Dependabot config for
+  # the whole monorepo, replacing the per-repo configs the two members used to
+  # carry. Weekly, grouped into one PR so there's one CI run and one merge.
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      dependencies:
+        patterns:
+          - "*"

@@ -1,7 +1,7 @@
 [project]
-name = "cinema-monorepo"
+name = "screening-room"
 version = "0.0.0"
-description = "Workspace for the local cinema pipeline: Letterboxd fetcher + Streamlit dashboard, sharing a common library and parquet contracts."
+description = "Workspace for a personal cinema pipeline: Letterboxd watchlist fetcher + showtimes-aware Streamlit dashboard, sharing a common library and parquet contracts."
 requires-python = ">=3.13"
 
 [tool.uv.workspace]

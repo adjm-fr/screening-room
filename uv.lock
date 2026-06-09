@@ -16,10 +16,10 @@ resolution-markers = [
 [manifest]
 members = [
     "cinema-dashboard",
-    "cinema-monorepo",
     "common",
     "contracts",
     "movies-management",
+    "screening-room",
 ]
 
 [[package]]
@@ -536,41 +536,6 @@ dev = [
     { name = "deepeval", specifier = ">=4.0.5,<5" },
     { name = "langchain", specifier = ">=0.3,<1" },
     { name = "llama-index", specifier = ">=0.10,<0.13" },
-]
-
-[[package]]
-name = "cinema-monorepo"
-version = "0.0.0"
-source = { virtual = "." }
-
-[package.dev-dependencies]
-dev = [
-    { name = "bandit" },
-    { name = "ipykernel" },
-    { name = "mypy" },
-    { name = "pip-audit" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-    { name = "respx" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "bandit", specifier = "==1.9.4" },
-    { name = "ipykernel", specifier = ">=7.2.0" },
-    { name = "mypy", specifier = ">=2.1.0" },
-    { name = "pip-audit", specifier = "==2.10.0" },
-    { name = "pytest", specifier = ">=9.0.3" },
-    { name = "pytest-asyncio", specifier = ">=1.4.0" },
-    { name = "pytest-cov", specifier = ">=7.1.0" },
-    { name = "pytest-mock", specifier = ">=3.15.1" },
-    { name = "respx", specifier = ">=0.23.1" },
-    { name = "ruff", specifier = "==0.15.16" },
 ]
 
 [[package]]
@@ -3856,6 +3821,41 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/74/0d/f2cd247ad32633a5c36e97141a2c21b11c6279f7957bc2ff360b1e08fddd/ruff-0.15.16-py3-none-win32.whl", hash = "sha256:580378f7bd4aa25f72e74aa54948a9622f142b1e509521dd10902e886681cc1e", size = 10735541, upload-time = "2026-06-04T16:32:30.145Z" },
     { url = "https://files.pythonhosted.org/packages/8b/9e/02e845ef151b1dee585e55c4739f8e1734ae1d9f1221dff65761c162208b/ruff-0.15.16-py3-none-win_amd64.whl", hash = "sha256:408256017284eddf98fff77b29aa4fb30f586042d535b2d9befc6512f400aaec", size = 11843403, upload-time = "2026-06-04T16:32:39.76Z" },
     { url = "https://files.pythonhosted.org/packages/15/19/016553f86f207450aebebc2b2b5088d086b901cc8186c02ac4284db3bd88/ruff-0.15.16-py3-none-win_arm64.whl", hash = "sha256:8cd61783afb39638a7133ef0d2dfb1e91277593962f81b5a8423eb0b888a6121", size = 11134555, upload-time = "2026-06-04T16:33:00.136Z" },
+]
+
+[[package]]
+name = "screening-room"
+version = "0.0.0"
+source = { virtual = "." }
+
+[package.dev-dependencies]
+dev = [
+    { name = "bandit" },
+    { name = "ipykernel" },
+    { name = "mypy" },
+    { name = "pip-audit" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "pytest-mock" },
+    { name = "respx" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "bandit", specifier = "==1.9.4" },
+    { name = "ipykernel", specifier = ">=7.2.0" },
+    { name = "mypy", specifier = ">=2.1.0" },
+    { name = "pip-audit", specifier = "==2.10.0" },
+    { name = "pytest", specifier = ">=9.0.3" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-mock", specifier = ">=3.15.1" },
+    { name = "respx", specifier = ">=0.23.1" },
+    { name = "ruff", specifier = "==0.15.16" },
 ]
 
 [[package]]

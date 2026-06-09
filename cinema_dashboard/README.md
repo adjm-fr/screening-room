@@ -2,6 +2,10 @@
 
 A Streamlit dashboard that merges Letterboxd watchlist data with French cinema showtimes.
 
+> **Part of the [`screening-room`](../README.md) workspace.** Install and run from the workspace root —
+> see the root README for setup. Commands below assume you're at the workspace root and use
+> `uv run --no-sync --directory cinema_dashboard …` to target this member.
+
 ## Overview
 
 Cinema Dashboard is the orchestration layer for a three-project pipeline:
@@ -10,7 +14,7 @@ Cinema Dashboard is the orchestration layer for a three-project pipeline:
 |---------|------|
 | `movies_management` | Fetches and caches Letterboxd ratings + watchlist as parquet files |
 | `Allocine-Showtimes-Scraping` | Scrapes French cinema showtimes to `showtimes.parquet` |
-| `cinema_dashboard` *(this repo)* | Reads both parquets and visualises the combined data |
+| `cinema_dashboard` *(this member)* | Reads both parquets and visualises the combined data |
 
 The dashboard is mostly read-only — it reads parquet files written by the other two projects. The one exception is the Recommendations page, which can append new theaters to the theaters CSV (`ALLOCINE_INPUT_PATH`) when the user confirms adding one via the chat.
 
@@ -160,40 +164,21 @@ All pages are read-only with respect to parquet data. The only file the dashboar
 
 ## Setup
 
-### Requirements
-
-- Python 3.11+
-- The two companion repos cloned as siblings: `../movies_management/` and `../Allocine-Showtimes-Scraping/`
-
-### Installation
-
-Using [uv](https://docs.astral.sh/uv/) (recommended):
+Setup is workspace-wide — install the whole workspace once from the **workspace root** rather than this
+folder. See the [root README](../README.md) for details. In short:
 
 ```bash
-uv venv
-source .venv/bin/activate
-make install
+uv sync --all-packages   # one shared .venv for every member (run at the workspace root)
 ```
 
-Alternatively with pip:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-pip install -e ../movies_management
-pip install -e ../Allocine-Showtimes-Scraping
-```
-
-`make install` installs dependencies from `pyproject.toml` for this project and both companion projects.
+The dashboard reaches its data sources through the workspace: `movies_management` is a sibling member,
+and the standalone `Allocine-Showtimes-Scraping` repo is located via the `ALLOCINE_DIR` env var (default:
+a sibling of the workspace root).
 
 ### Configuration
 
-All members share one `.env` at the **workspace root**. Copy the template there and fill in the paths:
-
-```bash
-cp ../.env.example ../.env   # from cinema_dashboard/, or run `cp .env.example .env` at the repo root
-```
+All members share one `.env` at the **workspace root** (`cp .env.example .env` there). Each member reads
+only the keys it declares. The keys this member uses:
 
 | Variable | Description |
 |----------|-------------|
@@ -214,24 +199,24 @@ cp ../.env.example ../.env   # from cinema_dashboard/, or run `cp .env.example .
 
 ### Running
 
+From the workspace root:
+
 ```bash
-streamlit run app.py
-# or
-make run
+uv run --no-sync --directory cinema_dashboard streamlit run app.py
 ```
 
 ## Data refresh
 
 ### Option 1 — CLI (lightweight)
 
-Use `orchestrate.py` to refresh all data in one command. It runs both scrapers in parallel and only re-runs a scraper if its data is stale:
+Use `orchestrate.py` to refresh all data in one command. It runs both scrapers in parallel and only re-runs a scraper if its data is stale (run from the workspace root):
 
 ```bash
-python orchestrate.py            # refresh stale data only
-python orchestrate.py --force    # always re-run both scrapers
-python orchestrate.py --days 7   # scrape 7 days of showtimes instead of 14
-python orchestrate.py --reset    # pass --reset to Allocine scraper (clears tmp cache)
-python orchestrate.py --reset-db # pass --reset_database to movies_management
+uv run --no-sync --directory cinema_dashboard python orchestrate.py            # refresh stale data only
+uv run --no-sync --directory cinema_dashboard python orchestrate.py --force    # always re-run both scrapers
+uv run --no-sync --directory cinema_dashboard python orchestrate.py --days 7   # scrape 7 days of showtimes instead of 14
+uv run --no-sync --directory cinema_dashboard python orchestrate.py --reset    # pass --reset to Allocine scraper (clears tmp cache)
+uv run --no-sync --directory cinema_dashboard python orchestrate.py --reset-db # pass --reset_database to movies_management
 ```
 
 **Staleness rules:**
@@ -251,11 +236,10 @@ Output is timestamped and labelled per scraper:
 
 ### Option 2 — Dagster UI
 
-The `pipeline/` folder contains a Dagster pipeline with the same two scrapers as software-defined assets, manual jobs, and automatic cron-based materialisation.
+The `pipeline/` folder contains a Dagster pipeline with the same two scrapers as software-defined assets, manual jobs, and automatic cron-based materialisation. `dagster` and `dagster-webserver` ship as dashboard dependencies, so `uv sync --all-packages` already installs them — no extra install step. Launch the UI from the workspace root:
 
 ```bash
-pip install dagster dagster-webserver   # first time only
-dagster dev -m pipeline.definitions    # opens UI at localhost:3000
+uv run --no-sync --directory cinema_dashboard dagster dev -m pipeline.definitions   # opens UI at localhost:3000
 ```
 
 Three jobs are available in the UI:
@@ -265,10 +249,10 @@ Three jobs are available in the UI:
 
 Assets are also configured with `AutomationCondition` for automatic scheduling (showtimes: Tuesday 06:00, watchlist: Monday 06:00) when the Dagster daemon is running. The `letterboxd_cache_enriched` asset has `deps=["showtimes"]` and runs automatically after each showtimes materialisation.
 
-You can also run each scraper manually:
+You can also run each scraper manually. `movies_management` is a workspace member; the Allocine scraper is the standalone sibling repo (located via `ALLOCINE_DIR`):
 ```bash
-cd ../movies_management && python main.py
-cd ../Allocine-Showtimes-Scraping && python main.py
+uv run --no-sync --directory movies_management python main.py --username <letterboxd-user>
+uv run --directory ../Allocine-Showtimes-Scraping python main.py
 ```
 
 Streamlit cache TTL is **5 minutes**, shared across all pages (`DATA_TTL_SECONDS` in [`utils/data_loader.py`](utils/data_loader.py)). Conversation history on the Recommendations page is session-scoped and not affected by the cache.
@@ -287,8 +271,8 @@ The system prompt also enforces a **refusal flow**: when the user asks about a f
 The suite is deselected from the default `pytest` run (every file is tagged `pytest.mark.evals` and `pyproject.toml` uses `addopts = "-m 'not evals'"`) because each case hits the live Gemini API.
 
 ```bash
-uv run pytest tests/evals/ -m evals                          # full suite
-uv run pytest tests/evals/ -m evals -k outside_film_bait     # one golden
+uv run --no-sync --directory cinema_dashboard pytest tests/evals/ -m evals                       # full suite
+uv run --no-sync --directory cinema_dashboard pytest tests/evals/ -m evals -k outside_film_bait  # one golden
 ```
 
 Requires `GEMINI_API_KEY`; the suite skips itself when unset. To add a new failure mode, append a `Golden(...)` entry to `tests/evals/goldens.py` — keep the dataset tight and curated rather than sprawling.
@@ -297,9 +281,9 @@ Requires `GEMINI_API_KEY`; the suite skips itself when unset. To add a new failu
 
 **"OUTPUT_PATH is not set"** — add it to the workspace-root `.env`.
 
-**"Watchlist data not found"** — run `python main.py` in `movies_management`.
+**"Watchlist data not found"** — run `uv run --no-sync --directory movies_management python main.py --username <user>` from the workspace root.
 
-**"Showtimes data not found"** — run `python main.py` in `Allocine-Showtimes-Scraping`.
+**"Showtimes data not found"** — run the Allocine scraper: `uv run --directory ../Allocine-Showtimes-Scraping python main.py`.
 
 **"No upcoming showtimes for your watchlist"** — either your watchlist is empty, no watchlist movies are currently showing, or the showtimes data is stale (re-run the scraper).
 

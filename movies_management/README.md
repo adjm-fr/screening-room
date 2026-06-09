@@ -2,6 +2,10 @@
 
 A Python application that aggregates and enriches your Letterboxd movie data by combining user ratings and watchlist information with comprehensive movie metadata from the Letterboxd API.
 
+> **Part of the [`screening-room`](../README.md) workspace.** Install and run from the workspace root —
+> see the root README for setup. Commands below assume you're at the workspace root and use
+> `uv run --no-sync --directory movies_management …` to target this member.
+
 ## Overview
 
 This system addresses the limitation that Letterboxd's API doesn't provide complete movie metadata in its user endpoints. The application:
@@ -26,43 +30,14 @@ All data is stored locally in parquet format for efficient storage and analysis.
 
 ## Installation
 
-### Requirements
-- Python 3.8+
-- pip
+This member is installed as part of the workspace — there's no per-member install. From the
+**workspace root** (requires Python 3.13+ and [`uv`](https://docs.astral.sh/uv/)):
 
-### Setup
+```bash
+uv sync --all-packages   # one shared .venv for every member
+```
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/yourusername/movies_management.git
-   cd movies_management
-   ```
-
-2. **Create a virtual environment**
-
-   Using [uv](https://docs.astral.sh/uv/) (recommended):
-   ```bash
-   uv venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
-   
-   Or with pip:
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
-
-3. **Install dependencies**
-
-   Using uv:
-   ```bash
-   uv sync
-   ```
-   
-   Or with pip:
-   ```bash
-   pip install -e .
-   ```
+See the [root README](../README.md) for full workspace setup.
 
 ### Dependencies
 
@@ -101,10 +76,10 @@ LETTERBOXD_DAYS_TO_UPDATE=365
 
 ### Basic Run
 
-Run the full pipeline:
+Run the full pipeline (from the workspace root):
 
 ```bash
-python main.py --username your_letterboxd_username
+uv run --no-sync --directory movies_management python main.py --username your_letterboxd_username
 ```
 
 This will:
@@ -119,7 +94,7 @@ This will:
 To delete the metadata cache and rebuild it from scratch:
 
 ```bash
-python main.py --username your_letterboxd_username --reset_database
+uv run --no-sync --directory movies_management python main.py --username your_letterboxd_username --reset_database
 ```
 
 ### Expand the cache from Allocine showtimes
@@ -127,7 +102,7 @@ python main.py --username your_letterboxd_username --reset_database
 After the Allocine scraper has run, expand `data_letterboxd.parquet` to include metadata for **every film currently playing in Paris**, not only the films you have rated or watchlisted:
 
 ```bash
-python main.py --enrich-from-allocine /path/to/showtimes.parquet
+uv run --no-sync --directory movies_management python main.py --enrich-from-allocine /path/to/showtimes.parquet
 ```
 
 This mode can be run standalone (no `--username` needed) or combined with `--username` in one call. The enrichment:
@@ -282,8 +257,10 @@ Split by source → Output files (ratings + watchlist)
 
 ### Running Tests
 
+From the workspace root:
+
 ```bash
-pytest tests/
+uv run --no-sync --directory movies_management pytest --cov --cov-fail-under=90
 ```
 
 ### Logging
@@ -296,14 +273,14 @@ Format: `YYYY-MM-DD HH:MM:SS [LEVEL] module_name — message`
 
 - Initial run: ~5-10 seconds per 100 movies (depends on API rate limits)
 - Subsequent runs: <1 second (all cached)
-- Full refresh with `--get_letterboxd`: ~5-10 seconds per 100 movies
+- Full rebuild with `--reset_database`: ~5-10 seconds per 100 movies
 
 Cache is stored as parquet for fast I/O and can handle thousands of movies efficiently.
 
 ## Troubleshooting
 
 ### "Missing option '--username'"
-Pass your Letterboxd username as a CLI argument: `python main.py --username your_username`.
+Pass your Letterboxd username as a CLI argument: `uv run --no-sync --directory movies_management python main.py --username your_username`.
 
 ### "Duplicate slugs found across ratings and watchlist"
 A movie appears in both your ratings and watchlist, which Letterboxd normally prevents. Check the listed slugs and clean up your Letterboxd profile.

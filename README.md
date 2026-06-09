@@ -44,6 +44,27 @@ uv run --no-sync --directory cinema_dashboard  streamlit run app.py
 
 `--no-sync` reuses the shared venv from `uv sync --all-packages` without re-resolving to a single member.
 
+> **Shortcut:** a root `Makefile` wraps these everyday commands — `make install`, `make run`,
+> `make orchestrate`, and `make update` (pull this monorepo + the external Allocine repo). Run `make` on its
+> own for the full list. The quality gates below are deliberately left out of it; CI owns them.
+
+### Refresh the data
+
+The dashboard reads parquets produced by the scrapers. `cinema_dashboard/orchestrate.py` refreshes them all in
+one command — it runs the Letterboxd fetcher and the Allocine scraper in parallel and only re-runs a scraper
+when its data is stale:
+
+```bash
+uv run --no-sync --directory cinema_dashboard python orchestrate.py            # refresh stale data only
+uv run --no-sync --directory cinema_dashboard python orchestrate.py --force    # always re-run both scrapers
+uv run --no-sync --directory cinema_dashboard python orchestrate.py --days 7   # scrape 7 days of showtimes (default 14)
+uv run --no-sync --directory cinema_dashboard python orchestrate.py --reset    # pass --reset to the Allocine scraper
+uv run --no-sync --directory cinema_dashboard python orchestrate.py --reset-db # pass --reset_database to movies_management
+```
+
+A Dagster-based equivalent lives in `cinema_dashboard/pipeline/` — see
+[`cinema_dashboard/README.md`](cinema_dashboard/README.md) for running it via `dagster dev`.
+
 ## Quality gates (what CI runs)
 
 ```bash

@@ -20,6 +20,7 @@
   "filmboxplus": "FilmBox+",
   "filmotv": "FilmoTV",
   "francetv": "france.tv",
+  "francetvamazonchannel": "France TV Amazon Channel",
   "gaumontamazonchannel": "Gaumont (Prime Channel)",
   "hbomax": "HBO Max",
   "hbomaxamazonchannel": "HBO Max (Prime Channel)",
@@ -45,5 +46,6 @@
   "shadowzamazonchannel": "Shadowz (Prime Channel)",
   "sooner": "Sooner",
   "tf1plus": "TF1+",
+  "tfoumaxamazonchannel": "TFOU Max Amazon Channel",
   "universcine": "UniversCiné"
 }

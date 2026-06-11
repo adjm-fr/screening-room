@@ -14,7 +14,7 @@ Public API:
     load_ratings(path)         -> Letterboxd ratings DataFrame
     load_letterboxd_cache(p)   -> full Letterboxd metadata cache
     build_watchlist_showtimes  -> join of watchlist and showtimes
-    build_taste_profile(df)    -> compact taste summary string (top genres + directors by avg rating)
+    build_taste_profile(df)    -> compact taste summary string (affinity-ranked, see utils.taste)
     attach_streaming(df, …)    -> left-join FR streaming-providers cache by ``tmdb_id``
     future_showtimes(df)       -> rows with ``showtimes >= now`` in Europe/Paris (uncached)
 """
@@ -30,6 +30,7 @@ from contracts import SHOWTIMES
 from modules.config import settings
 
 from utils.streaming import load_streaming_providers
+from utils.taste import build_affinity, format_taste_profile
 
 log = logging.getLogger(__name__)
 
@@ -239,46 +240,17 @@ def build_watchlist_showtimes(
 
 @st.cache_data(ttl=DATA_TTL_SECONDS)
 def build_taste_profile(ratings_df: pd.DataFrame) -> str:
-    """Derive a compact taste summary from Letterboxd ratings.
+    """Derive a compact taste summary string from Letterboxd ratings.
 
-    Computes top genres and directors by average user rating. Cached so the
-    groupby/explode runs once regardless of which page loads it first.
+    Thin formatter over the affinity profile in :mod:`utils.taste` — favourite
+    (and least favourite) genres, themes, directors, and eras ranked by signed,
+    shrunk affinity rather than raw mean rating. The string feeds the LLM
+    system prompt via :func:`utils.chat.build_chat_context`.
     """
     if ratings_df.empty or "user_rating" not in ratings_df.columns:
         log.warning("Ratings DataFrame empty or missing user_rating — taste profile unavailable")
         return "No rating history available."
-
-    avg = ratings_df["user_rating"].mean()
-    lines = [f"Average rating given: {avg:.1f}/5"]
-
-    if "genres" in ratings_df.columns:
-        exploded = (
-            ratings_df[["genres", "user_rating"]].dropna().assign(genre=lambda d: d["genres"].str.split(", ")).explode("genre")
-        )
-        top_genres = exploded.groupby("genre")["user_rating"].mean().sort_values(ascending=False).head(5).index.tolist()
-        lines.append(f"Favourite genres: {', '.join(top_genres)}")
-
-    if "directors" in ratings_df.columns:
-        exploded_dir = (
-            ratings_df[["directors", "user_rating"]]
-            .dropna()
-            .assign(director=lambda d: d["directors"].str.split(", "))
-            .explode("director")
-        )
-        top_dirs = (
-            exploded_dir.groupby("director")["user_rating"]
-            .agg(["mean", "count"])
-            .query("count >= 2")
-            .sort_values("mean", ascending=False)
-            .head(5)
-            .index.tolist()
-        )
-        if top_dirs:
-            lines.append(f"Favourite directors (≥2 films rated): {', '.join(top_dirs)}")
-
-    profile = "\n".join(lines)
-    log.debug("Taste profile:\n%s", profile)
-    return profile
+    return format_taste_profile(build_affinity(ratings_df))
 
 
 def attach_streaming(df: pd.DataFrame, movies_output: str) -> pd.DataFrame:

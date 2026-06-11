@@ -26,6 +26,7 @@ import streamlit as st
 
 from utils.data_loader import coerce_str_list
 from utils.streaming import display_name, load_display_names_catalog
+from utils.taste import TasteProfile, explain
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +142,25 @@ def _streaming_badges_html(
     return f'<div class="streaming-row">{"".join(chips)}</div>'
 
 
+def match_chips_html(row: pd.Series, profile: TasteProfile) -> str:
+    """Render the taste-match row for a card: ``◎ {n}% match`` badge + why-chips.
+
+    The badge background reuses the amber rating heatmap (:func:`rating_to_hsl`,
+    0-10 domain) and always pairs color with the numeric label + icon so the
+    information never rides on color alone (WCAG 1.4.1). Up to two strictly
+    positive contributors from :func:`utils.taste.explain` follow as
+    ``✓ {label}`` chips. Returns ``""`` when the row has no ``match`` value,
+    so callers can interpolate unconditionally.
+    """
+    match = row.get("match")
+    if not isinstance(match, (int, float)) or pd.isna(match):
+        return ""
+    pct = int(round(float(match)))
+    badge = f'<span class="chip chip--match" style="background:{rating_to_hsl(float(match) / 10.0)}">◎ {pct}% match</span>'
+    why = "".join(f'<span class="chip chip--why">✓ {html.escape(label)}</span>' for label, _ in explain(row, profile, top_k=2))
+    return f'<div class="match-row">{badge}{why}</div>'
+
+
 def _rating_chip_html(rating: float | None) -> str:
     if rating is None or (isinstance(rating, float) and pd.isna(rating)):
         return ""
@@ -221,13 +241,21 @@ def render_poster_rail(
     empty_title: str = "Nothing here yet",
     empty_hint: str = "Check back when new screenings are scraped.",
     subscribed: set[str] | frozenset[str] | None = None,
+    extra_html_fn: Callable[[pd.Series], str] | None = None,
 ) -> None:
-    """Render a horizontal scroll rail of movie cards. Falls back to an empty state."""
+    """Render a horizontal scroll rail of movie cards. Falls back to an empty state.
+
+    ``extra_html_fn`` is called per row and its result injected at the bottom
+    of each card's meta block (e.g. :func:`match_chips_html` for taste badges).
+    """
     if rows.empty:
         render_empty_state(empty_icon, empty_title, empty_hint)
         return
 
-    cards_html = "".join(_movie_card_html(row, subscribed=subscribed) for _, row in rows.iterrows())
+    cards_html = "".join(
+        _movie_card_html(row, subscribed=subscribed, extra_html=extra_html_fn(row) if extra_html_fn else "")
+        for _, row in rows.iterrows()
+    )
     st.markdown(
         f'<div class="poster-rail-wrap">'
         f'<div class="poster-rail-title">{html.escape(title)}</div>'

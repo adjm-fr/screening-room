@@ -189,6 +189,19 @@ html, body, .stMarkdown, .stText {
   background: rgba(56, 178, 172, 0.18);
   border-color: rgba(56, 178, 172, 0.45);
 }
+.chip--match {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #1a1a1a;
+  border: none;
+}
+.chip--why {
+  background: rgba(46, 125, 50, 0.1);
+  border-color: rgba(46, 125, 50, 0.3);
+}
+.match-row {
+  margin-top: 0.35rem;
+}
 .streaming-row {
   margin-top: 0.35rem;
   display: flex;

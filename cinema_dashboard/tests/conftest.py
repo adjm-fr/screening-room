@@ -29,6 +29,16 @@ def make_watchlist():
 
 
 @pytest.fixture
+def make_ratings():
+    defaults = {"user_rating": 3.0, "genres": "Drama", "directors": "Alice", "release_year": 2000}
+
+    def _factory(rows: list[dict]) -> pd.DataFrame:
+        return pd.DataFrame([{**defaults, **r} for r in rows])
+
+    return _factory
+
+
+@pytest.fixture
 def make_events_df():
     def _factory(rows: list[dict]) -> pd.DataFrame:
         return pd.DataFrame(rows)

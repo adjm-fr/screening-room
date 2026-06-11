@@ -22,9 +22,11 @@ The dashboard is mostly read-only — it reads parquet files written by the othe
 
 ### Home (🏠)
 
-Lead-with-the-answer overview hub: a hero card for tonight's next watchlist screening, horizontal poster rails ("screening next on your watchlist", "available on streaming platforms", "because you like {top director}", discover by genre), and a small KPI strip at the bottom. Uses the cinema theme + Inter/Playfair editorial typography. Renders a designed empty state with CTA when no upcoming watchlist screenings exist.
+Lead-with-the-answer overview hub: a hero card for tonight's next watchlist screening, horizontal poster rails ("screening next on your watchlist", "available on streaming platforms", "top matches this week"), and a small KPI strip at the bottom. Uses the cinema theme + Inter/Playfair editorial typography. Renders a designed empty state with CTA when no upcoming watchlist screenings exist.
 
-The "available on streaming platforms" rail is drawn from the full watchlist (not the cinema join), sorted by Letterboxd rating, and filtered to the providers in `STREAMING_SERVICES` when set — when unset it falls back to any provider so the rail is still useful before subscriptions are configured.
+The "top matches this week" rail ranks this week's watchlist screenings against a taste profile induced from your ratings history (`utils/taste.py`): each rated director, genre, theme, and decade gets a signed, shrunk affinity centered on *your* average rating; candidate films blend those affinities through fixed weights plus a small Letterboxd-rating prior, mapped to a stable 0–100 match value. Cards show a "◎ {n}% match" badge (amber heatmap) and up to two "✓ because" chips naming the strongest positive contributors.
+
+The "available on streaming platforms" rail is drawn from the full watchlist (not the cinema join), ranked by taste match (Letterboxd rating as tie-break, and as fallback before any films are rated) and filtered to the providers in `STREAMING_SERVICES` when set — when unset it falls back to any provider so the rail is still useful before subscriptions are configured.
 
 When `STREAMING_SERVICES` is configured, every card also shows a small badge row indicating which of your subscribed streaming services currently carries the film in France (filled chip).
 
@@ -78,7 +80,7 @@ Power-user surface: prompt-suggestion chips, streaming spinner with transparent 
 
 The same assistant is reachable from any page via the global **`Cmd+K`** command palette (or the "✦ Ask AI" sidebar button). Both surfaces share a single `st.session_state['chat']` (a `ChatState` dataclass) so the conversation persists across them.
 
-The page derives a taste profile from your Letterboxd ratings (top genres and directors by average rating) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted. When the FR streaming-providers cache is populated, per-film flatrate availability is injected into the system prompt, and the model is rule-bound to only reference providers from that list (no hallucinated availability).
+The page derives a taste profile from your Letterboxd ratings (favourite *and least favourite* genres, themes, directors, and eras, ranked by the signed affinities in `utils/taste.py`) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted. When the FR streaming-providers cache is populated, per-film flatrate availability is injected into the system prompt, and the model is rule-bound to only reference providers from that list (no hallucinated availability).
 
 #### Auto-adding theaters
 
@@ -139,6 +141,7 @@ cinema_dashboard/
 │   └── recommendations.py        # Recommendations chat page (calls utils/chat.render_chat)
 ├── utils/
 │   ├── data_loader.py            # Cached parquet readers + watchlist↔showtimes join + attach_streaming
+│   ├── taste.py                  # Taste ranker — affinity profile, 0–100 match scorer, "because" explanations
 │   ├── streaming.py              # TMDB FR watch-providers cache + display-name catalogue loader/updater
 │   ├── ui.py                     # Shared rendering helpers (movie cards, rails, hero card, KPIs, chips, ICS, runtime/rating formatting)
 │   ├── geo.py                    # Theater geocoding (Nominatim + RateLimiter, cached parquet) + pydeck map renderer
@@ -148,7 +151,7 @@ cinema_dashboard/
 │   └── theater_manager.py        # Reads/appends to the theaters CSV
 ├── tests/
 │   ├── conftest.py               # Shared fixtures + @st.cache_data no-op patch
-│   ├── test_*.py                 # Unit tests for data_loader, ui, chat, streaming, geo, scrapers, config, allocine_search
+│   ├── test_*.py                 # Unit tests for data_loader, taste, ui, chat, streaming, geo, scrapers, config, allocine_search
 │   └── evals/                    # LLM hallucination evals (opt-in via `-m evals`)
 │       ├── goldens.py            # Bait prompts + allowed film/provider sets
 │       ├── metrics.py            # FilmSetMembership + StreamingClaim DeepEval metrics

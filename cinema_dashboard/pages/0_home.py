@@ -2,9 +2,9 @@
 Home — overview hub for the cinema dashboard.
 
 Leads with the answer ("what to watch tonight") rather than KPIs. Built
-around three poster rails (next-up, taste-driven, by-genre chips) and a
-small KPI strip at the bottom for quick reference. Falls back to a designed
-empty state when no upcoming watchlist screenings exist.
+around three poster rails (next-up, streaming, taste-ranked top matches)
+and a small KPI strip at the bottom for quick reference. Falls back to a
+designed empty state when no upcoming watchlist screenings exist.
 """
 
 from __future__ import annotations
@@ -21,7 +21,9 @@ from utils.data_loader import (
     load_showtimes,
     load_watchlist,
 )
+from utils.taste import attach_match, build_affinity
 from utils.ui import (
+    match_chips_html,
     render_empty_state,
     render_freshness_banner,
     render_hero_card,
@@ -38,32 +40,6 @@ def _eyebrow_for(when: pd.Timestamp) -> str:
     if when.date() == (now + pd.Timedelta(days=1)).date():
         return f"Tomorrow · {when.strftime('%H:%M')}"
     return when.strftime("%A %d %b · %H:%M")
-
-
-def _top_director(ratings_df: pd.DataFrame) -> str | None:
-    if "directors" not in ratings_df.columns or "user_rating" not in ratings_df.columns:
-        return None
-    exploded = (
-        ratings_df[["directors", "user_rating"]]
-        .dropna()
-        .assign(director=lambda d: d["directors"].str.split(", "))
-        .explode("director")
-    )
-    if exploded.empty:
-        return None
-    top = (
-        exploded.groupby("director")["user_rating"]
-        .agg(["mean", "count"])
-        .query("count >= 2")
-        .sort_values("mean", ascending=False)
-    )
-    return str(top.index[0]) if not top.empty else None
-
-
-def _films_by_director(wl_shows: pd.DataFrame, director: str) -> pd.DataFrame:
-    if "directors" not in wl_shows.columns:
-        return wl_shows.iloc[0:0]
-    return wl_shows[wl_shows["directors"].fillna("").str.contains(director, case=False, regex=False)]
 
 
 def main() -> None:
@@ -105,6 +81,7 @@ def main() -> None:
     wl_shows = build_watchlist_showtimes(showtimes_df, watchlist_df).sort_values("showtimes").reset_index(drop=True)
     wl_shows = attach_streaming(wl_shows, str(movies_path))
     subscribed = settings.streaming_service_slugs
+    profile = build_affinity(ratings_df) if not ratings_df.empty else None
 
     if wl_shows.empty:
         render_empty_state(
@@ -136,21 +113,35 @@ def main() -> None:
     else:
         wl_streaming = wl_streaming[wl_streaming["flatrate"].apply(lambda f: len(f) > 0)]
     if not wl_streaming.empty:
-        wl_streaming = (
-            wl_streaming.sort_values("letterboxd_avg_rating", ascending=False, na_position="last")
-            .drop_duplicates(subset=["tmdb_id"])
-            .head(8)
-        )
+        # Rank by taste match when a profile exists; community rating breaks
+        # ties and is the fallback ordering before any films are rated.
+        if profile is not None and not profile.is_empty:
+            wl_streaming = attach_match(wl_streaming, watchlist_df, profile)
+            wl_streaming = wl_streaming.sort_values(["match", "letterboxd_avg_rating"], ascending=False, na_position="last")
+        else:
+            wl_streaming = wl_streaming.sort_values("letterboxd_avg_rating", ascending=False, na_position="last")
+        wl_streaming = wl_streaming.drop_duplicates(subset=["tmdb_id"]).head(8)
         render_poster_rail(wl_streaming, title="Available on streaming platforms", subscribed=subscribed)
 
-    # ── Because you liked X ──────────────────────────────────────────────────
-    if not ratings_df.empty:
-        top_director = _top_director(ratings_df)
-        if top_director:
-            director_films = _films_by_director(wl_shows, top_director)
-            if not director_films.empty:
-                deduped = director_films.drop_duplicates(subset=["letterboxd_title"]).head(6)
-                render_poster_rail(deduped, title=f"Because you like {top_director}", subscribed=subscribed)
+    # ── Top matches this week ────────────────────────────────────────────────
+    # Taste-ranked rail over this week's watchlist screenings (see utils.taste):
+    # % badge + "because" chips name the actual contributors, so the rail has
+    # content every week — unlike a single-director coincidence gate.
+    if profile is not None and not profile.is_empty:
+        top = attach_match(wl_shows, watchlist_df, profile)
+        top = (
+            top.dropna(subset=["match"])
+            .sort_values("match", ascending=False)
+            .drop_duplicates(subset=["letterboxd_title"])
+            .head(8)
+        )
+        if not top.empty:
+            render_poster_rail(
+                top,
+                title="Top matches this week",
+                subscribed=subscribed,
+                extra_html_fn=lambda r: match_chips_html(r, profile),
+            )
 
     # ── KPI strip at the bottom ──────────────────────────────────────────────
     st.divider()

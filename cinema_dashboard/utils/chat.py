@@ -47,6 +47,7 @@ from utils.data_loader import (
     load_watchlist,
 )
 from utils.theater_manager import append_theater, backfill_addresses, load_theater_ids, load_theaters
+from utils.ui import render_movie_card
 
 log = logging.getLogger(__name__)
 
@@ -544,12 +545,12 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
                 st.caption("Pinned recommendations will appear here.")
             else:
                 for pinned in state.pinned_recs:
-                    poster_url = pinned.get("poster_url")
-                    title = pinned.get("letterboxd_title") or pinned.get("french_title") or pinned.get("title") or "Untitled"
-                    if poster_url and isinstance(poster_url, str):
-                        st.image(poster_url, use_container_width=True, caption=str(title))
-                    else:
-                        st.caption(str(title))
+                    render_movie_card(pd.Series(pinned), size="sm")
+                    showtime = pinned.get("showtimes")
+                    theater = pinned.get("theater_name")
+                    if showtime is not None and not pd.isna(showtime):
+                        when = pd.to_datetime(showtime).strftime("%a %d %b · %H:%M")
+                        st.caption(f"🎟 {when}{f' — {theater}' if isinstance(theater, str) and theater else ''}")
                 if st.button("Clear pins", key="clear_pins", use_container_width=True):
                     state.pinned_recs = []
                     st.rerun()

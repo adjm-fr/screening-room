@@ -122,8 +122,10 @@ def main() -> None:
     st.write("")
 
     # ── Screening next rail ──────────────────────────────────────────────────
-    up_next = wl_shows.iloc[1:9]
-    render_poster_rail(up_next, title="Screening next on your watchlist", subscribed=subscribed)
+    # One card per film (earliest screening wins — wl_shows is sorted by
+    # showtime), and no streaming badges: this rail is purely about showtimes.
+    up_next = wl_shows.drop_duplicates(subset=["letterboxd_title"]).iloc[1:9]
+    render_poster_rail(up_next, title="Screening next on your watchlist")
 
     # ── Available on streaming platforms ─────────────────────────────────────
     # When STREAMING_SERVICES is unset, fall back to "any provider" so the rail

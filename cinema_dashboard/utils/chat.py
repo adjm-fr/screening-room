@@ -92,11 +92,23 @@ SEARCH_THEATER_TOOL = types.Tool(
             name="search_theater",
             description=(
                 "Search Allocine for Paris cinemas matching a name. "
-                "Call this when the user asks about a theater that is not in the current showtimes data."
+                "Call this whenever the user names or asks about any theater that is NOT in the known "
+                "theaters list — including plain membership questions like 'is X in the list?', 'do you "
+                "know the X cinema?', or 'what about X?'. Always call the tool instead of answering from "
+                "the known list; never tell the user the theater is unknown or ask whether to search — "
+                "just search."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
-                properties={"query": types.Schema(type=types.Type.STRING, description="Theater name to search for")},
+                properties={
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "The theater's distinctive name only, e.g. 'Brady' — strip generic words "
+                            "like 'cinema', 'theater', 'the', so it substring-matches the Allocine name."
+                        ),
+                    )
+                },
                 required=["query"],
             ),
         )
@@ -299,6 +311,14 @@ def build_system_message(ctx: ChatContext) -> dict:
             "list instead?').\n"
             "3. Do NOT list watchlist films, showtimes, or streaming options in this refusal. "
             "Wait for the user to confirm before producing recommendations.\n\n"
+            "THEATER LOOKUP — the ONE exception to the refusal flow above, handled with a TOOL "
+            "instead of a refusal. When the user names or asks about ANY theater that is not in the "
+            "'Known theaters' list below — including pure membership questions such as 'is Brady in "
+            "the theater list?', 'do you know the Brady cinema?', or 'what about the Brady?' — you "
+            "MUST call the search_theater tool with that theater name BEFORE writing any reply. Do "
+            "NOT answer from the known list, do NOT say the theater is unknown or has no data, and "
+            "do NOT ask the user whether they'd like you to search — just call search_theater. The "
+            "refusal flow does NOT apply to theaters.\n\n"
             f"User taste profile (from their Letterboxd ratings history):\n{ctx.taste}\n\n"
             f"These are the watchlist movies currently showing at their theaters:\n{ctx.showtimes_md}\n"
             f"{streaming_block}\n"
@@ -309,8 +329,8 @@ def build_system_message(ctx: ChatContext) -> dict:
             "- The taste profile describes the user's preferences (genres, directors, themes) for "
             "STYLE matching only. Use it to pick which provided films to suggest — NEVER as a source "
             "of titles, director filmographies, or 'similar films' from outside the provided lists.\n"
-            "- If the user mentions a theater that is NOT in the known theaters list above, "
-            "you MUST call search_theater before responding — do not say the theater has no data."
+            "- For any theater not in the known theaters list, follow the THEATER LOOKUP rule above "
+            "(call search_theater); never say the theater has no data."
         ),
     }
 

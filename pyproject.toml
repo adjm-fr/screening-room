@@ -15,16 +15,16 @@ contracts = { workspace = true }
 # Shared dev toolchain — defined once here instead of triplicated across members.
 [dependency-groups]
 dev = [
-    "ruff==0.15.16",
+    "ruff==0.15.17",
     "mypy>=2.1.0",
     "bandit==1.9.4",
-    "pytest>=9.0.3",
+    "pytest>=9.1.0",
     "pytest-mock>=3.15.1",
     "pytest-cov>=7.1.0",
     "pytest-asyncio>=1.4.0",
     "respx>=0.23.1",
-    "pip-audit==2.10.0",
-    "ipykernel>=7.2.0",
+    "pip-audit==2.10.1",
+    "ipykernel>=7.3.0",
 ]
 
 # Single source of truth for ruff + mypy across the whole workspace.

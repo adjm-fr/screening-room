@@ -26,6 +26,11 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+      # Fail fast if uv.lock is out of sync with the pyproject constraints. The
+      # other jobs use `uv sync` (not `--frozen`), which silently re-resolves a
+      # stale lock and can mask a bad dependency bump — e.g. a Dependabot update
+      # that pins a version forbidden by our deepeval ceilings.
+      - run: uv lock --check
       - run: uv run ruff check .
       - run: uv run ruff format --check .
 

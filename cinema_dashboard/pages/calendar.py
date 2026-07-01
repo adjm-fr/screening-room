@@ -10,14 +10,19 @@ displays upcoming screenings across three surfaces:
 - **Map** — pydeck map of theaters carrying screenings in the current
   filter; marker size ∝ # of watchlist screenings.
 
-Top chip-filter bar holds theaters, genres, runtime buckets, weekend toggle,
-and a text search; the sidebar carries only the heavy date-range picker.
+Top filter bar holds a theater multi-select dropdown (a growing theater list
+made chip-toggles unwieldy), runtime buckets, a showtime time-of-day range,
+weekend toggle, and a text search; the sidebar carries only the heavy
+date-range picker. All of these filters (including the time-of-day range)
+narrow the same ``filtered`` frame that both the day rails and the ICS/CSV
+export read from, so exports always match what's on screen.
 ICS export is the primary download (universally accepted by Google Calendar /
 Apple Calendar / Outlook); CSV is kept behind an expander for legacy use.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import html as _html
 
 import pandas as pd
@@ -165,19 +170,22 @@ def main() -> None:
     wl_shows = wl_shows.copy()
     wl_shows["_runtime_bucket"] = wl_shows[runtime_col].apply(_runtime_bucket) if runtime_col else "Unknown"
 
-    # ── Filter bar row 1: chips ──────────────────────────────────────────────
+    # ── Filter bar row 1: theater dropdown + runtime chips + time range ─────
     fc1, fc2, fc3 = st.columns([2, 2, 2])
     with fc1:
         theaters = sorted(wl_shows["theater_name"].dropna().unique().tolist()) if "theater_name" in wl_shows.columns else []
-        sel_theaters = render_chip_filter("Theaters", theaters, key="cal_theaters", default=theaters)
+        sel_theaters = st.multiselect("Theaters", theaters, default=theaters, key="cal_theaters")
     with fc2:
-        genres_set: set[str] = set()
-        if "genres" in wl_shows.columns:
-            for g in wl_shows["genres"].dropna():
-                genres_set.update(p.strip() for p in str(g).split(",") if p.strip())
-        sel_genres = render_chip_filter("Genres", sorted(genres_set), key="cal_genres")
-    with fc3:
         sel_runtime = render_chip_filter("Runtime", ["<90", "90–120", ">120"], key="cal_runtime")
+    with fc3:
+        sel_time_range = st.slider(
+            "Showtime between",
+            min_value=dt.time(0, 0),
+            max_value=dt.time(23, 59),
+            value=(dt.time(0, 0), dt.time(23, 59)),
+            step=dt.timedelta(minutes=15),
+            key="cal_timerange",
+        )
 
     # ── Filter bar row 2: toggle + search ───────────────────────────────────
     fr1, fr2 = st.columns([1, 3])
@@ -201,11 +209,12 @@ def main() -> None:
     filtered = wl_shows.copy()
     if sel_theaters:
         filtered = filtered[filtered["theater_name"].isin(sel_theaters)]
-    if sel_genres and "genres" in filtered.columns:
-        pattern = "|".join(g.replace("|", r"\|") for g in sel_genres)
-        filtered = filtered[filtered["genres"].fillna("").str.contains(pattern, case=False, regex=True)]
     if sel_runtime:
         filtered = filtered[filtered["_runtime_bucket"].isin(sel_runtime)]
+    if sel_time_range and sel_time_range != (dt.time(0, 0), dt.time(23, 59)):
+        start_t, end_t = sel_time_range
+        showtime_of_day = pd.to_datetime(filtered["showtimes"]).dt.time
+        filtered = filtered[(showtime_of_day >= start_t) & (showtime_of_day <= end_t)]
     if weekend_only:
         filtered = filtered[pd.to_datetime(filtered["showtimes"]).dt.dayofweek >= 5]
     if search:

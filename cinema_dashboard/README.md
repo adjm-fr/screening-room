@@ -32,15 +32,6 @@ When `STREAMING_SERVICES` is configured, every card also shows a small badge row
 
 **Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH`
 
-### Showtimes (🎟️)
-
-Top chip-filter bar (theaters, genres, runtime buckets `<90` / `90–120` / `>120`, weekend toggle, free-text search) over three tabs:
-- **By day** — horizontal poster rails grouped by date, with posters resolved via a left-join to the watchlist
-- **Map** — pydeck map of theaters with marker size ∝ today's showtime count
-- **Table** — raw dataframe with poster + Letterboxd link columns
-
-**Requires**: `ALLOCINE_OUTPUT_PATH` (+ `OUTPUT_PATH` for posters, `ALLOCINE_INPUT_PATH` for the map)
-
 ### Movies Database (📊)
 
 Three calmer tabs in place of the old chart wall:
@@ -52,9 +43,9 @@ Three calmer tabs in place of the old chart wall:
 
 ### Watchlist Showtimes (📅)
 
-Inner-joins your watchlist with current showtimes. The join matches on normalized French title and then **confirms each match by director**, so a recurring or remade title (e.g. *Nosferatu*) can't attach the wrong film's screenings. Director confirmation uses token-subset containment — one director name's tokens being wholly contained in the other's — so name-form drift between Allocine and TMDB (`Kirk Jones (II)` vs `Kirk Jones`, `Akinola Davies` vs `Akinola Davies Jr.`, `Ringo Lam` vs `Ringo Lam Ling-Tung`) still matches while genuinely different directors are still rejected. Top chip-filter bar (theaters, genres, runtime buckets, weekend toggle, free-text search) + sidebar date range over three tabs:
+Inner-joins your watchlist with current showtimes. The join matches on normalized French title and then **confirms each match by director**, so a recurring or remade title (e.g. *Nosferatu*) can't attach the wrong film's screenings. Director confirmation uses token-subset containment — one director name's tokens being wholly contained in the other's — so name-form drift between Allocine and TMDB (`Kirk Jones (II)` vs `Kirk Jones`, `Akinola Davies` vs `Akinola Davies Jr.`, `Ringo Lam` vs `Ringo Lam Ling-Tung`) still matches while genuinely different directors are still rejected. Top filter bar (theater multi-select dropdown, runtime buckets, a "showtime between" time-of-day range slider, weekend toggle, free-text search) + sidebar date range over three tabs:
 - **By day** — horizontal poster rails grouped by date; one card per movie with all showtimes for that day listed below (time + theater), sorted by earliest showtime. When `STREAMING_SERVICES` is set, the rails split into **"Cinema-only this week"** (worth leaving the house for) followed by **"Also streaming on your services"** (you can stay in). The map and any aggregate counts still use the full set so pins aren't dropped.
-- **Calendar** — ICS and CSV export for your filtered screenings (Google / Apple / Outlook compatible)
+- **Calendar** — ICS and CSV export for your filtered screenings (Google / Apple / Outlook compatible); the export always reflects every filter applied above, including the time-of-day range
 - **Map** — pydeck map of theaters with screenings in the current filter; marker size ∝ # screenings
 
 **Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` (+ `ALLOCINE_INPUT_PATH` for the map)
@@ -136,7 +127,7 @@ cinema_dashboard/
 ├── pages/
 │   ├── 0_home.py                 # Home — hero "tonight" card, poster rails, KPI strip
 │   ├── database.py               # Movies Database page (Overview / Discover / Tables)
-│   ├── calendar.py               # Watchlist Showtimes page (chip filters, day rails, map, ICS export)
+│   ├── calendar.py               # Watchlist Showtimes page (theater dropdown, runtime/time-of-day/weekend/search filters, day rails, map, ICS export)
 │   ├── streaming.py              # Streaming page — one poster rail per FR provider
 │   └── recommendations.py        # Recommendations chat page (calls utils/chat.render_chat)
 ├── utils/

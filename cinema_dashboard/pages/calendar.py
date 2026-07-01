@@ -27,11 +27,8 @@ import html as _html
 
 import pandas as pd
 import streamlit as st
-from modules.config import settings
 from utils.data_loader import (
-    attach_streaming,
     build_watchlist_showtimes,
-    coerce_str_list,
     future_showtimes,
     get_paths,
     load_showtimes,
@@ -50,13 +47,8 @@ def _render_day_rails(
     rows: pd.DataFrame,
     *,
     title_col: str,
-    subscribed: set[str] | frozenset[str] | None,
 ) -> None:
-    """Render the by-day poster rails for a (pre-sorted) subset of screenings.
-
-    Extracted so the cinema-only / also-streaming partitions on the calendar
-    page share the same grouping + per-card showtime-badge logic.
-    """
+    """Render the by-day poster rails for a (pre-sorted) subset of screenings."""
     for day, day_group in rows.groupby("_day", sort=True):
         day_label = pd.Timestamp(str(day)).strftime("%A %d %B")
         cards_html = ""
@@ -70,7 +62,7 @@ def _render_day_rails(
                 if theater:
                     line += f" · {_html.escape(theater)}"
                 showtimes_lines += f'<div class="showtime-badge">{line}</div>'
-            cards_html += _movie_card_html(rep, extra_html=showtimes_lines, subscribed=subscribed)
+            cards_html += _movie_card_html(rep, extra_html=showtimes_lines)
         st.markdown(
             f'<div class="poster-rail-wrap">'
             f'<div class="poster-rail-title">{_html.escape(day_label)}</div>'
@@ -156,8 +148,6 @@ def main() -> None:
 
     showtimes_df = future_showtimes(showtimes_df)
     wl_shows = build_watchlist_showtimes(showtimes_df, watchlist_df)
-    wl_shows = attach_streaming(wl_shows, str(movies_path))
-    subscribed = settings.streaming_service_slugs
     if wl_shows.empty:
         render_empty_state(
             "🍿",
@@ -253,28 +243,9 @@ def main() -> None:
         filtered_sorted = filtered_sorted.join(earliest, on=[title_col, "_day"])
         filtered_sorted = filtered_sorted.sort_values(["_day", "_earliest", "_dt"])
 
-        # Partition into "cinema-only" vs "also streaming" using the per-row
-        # flatrate ∩ subscribed-services intersection. When the user has no
-        # subscriptions configured (or no streaming cache) every row falls into
-        # "cinema-only" and the second section silently disappears.
-        def _is_also_streaming(flat: object) -> bool:
-            if not subscribed:
-                return False
-            return bool(set(coerce_str_list(flat)) & subscribed)
-
-        filtered_sorted["_also_streaming"] = filtered_sorted["flatrate"].apply(_is_also_streaming)
-        cinema_only = filtered_sorted[~filtered_sorted["_also_streaming"]]
-        also_streaming = filtered_sorted[filtered_sorted["_also_streaming"]]
-
-        if not cinema_only.empty:
-            st.markdown("### Cinema-only this week")
-            st.caption("Watchlist films screening in Paris that aren't on your subscribed streaming services.")
-            _render_day_rails(cinema_only, title_col=title_col, subscribed=subscribed)
-
-        if not also_streaming.empty:
-            st.markdown("### Also streaming on your services")
-            st.caption("Screening in Paris **and** available on a streaming service you subscribe to — feel free to stay in.")
-            _render_day_rails(also_streaming, title_col=title_col, subscribed=subscribed)
+        st.markdown("### Cinema-only this week")
+        st.caption("Showtimes for your watchlist films screening in Paris.")
+        _render_day_rails(filtered_sorted, title_col=title_col)
 
     with tab_cal:
         st.subheader("Export")

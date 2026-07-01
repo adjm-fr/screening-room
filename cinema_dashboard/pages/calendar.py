@@ -10,12 +10,18 @@ displays upcoming screenings across three surfaces:
 - **Map** — pydeck map of theaters carrying screenings in the current
   filter; marker size ∝ # of watchlist screenings.
 
-Top filter bar holds a theater multi-select dropdown (a growing theater list
-made chip-toggles unwieldy), runtime buckets, a showtime time-of-day range,
-weekend toggle, and a text search; the sidebar carries only the heavy
-date-range picker. All of these filters (including the time-of-day range)
-narrow the same ``filtered`` frame that both the day rails and the ICS/CSV
-export read from, so exports always match what's on screen.
+The page top carries a single control: the "Only times I'm free" toggle
+(which replaced the old "Weekends only" one). It keeps a screening when it
+falls on a weekend, a French public holiday, a user-marked day off, or a
+weekday at/after an editable cutoff (default 19:00) — minus any dates marked
+unavailable (away), which override everything (see ``utils.availability``);
+its cutoff + days-off/unavailable pickers appear inline when it's on. Every
+other filter lives in the sidebar: date range, a theater multi-select whose
+options stay hidden inside the dropdown (empty selection = all theaters),
+runtime buckets, a showtime time-of-day range, text search, and min rating.
+All of these filters narrow the same ``filtered`` frame that both the day
+rails and the ICS/CSV export read from, so exports always match what's on
+screen.
 ICS export is the primary download (universally accepted by Google Calendar /
 Apple Calendar / Outlook); CSV is kept behind an expander for legacy use.
 """
@@ -27,6 +33,7 @@ import html as _html
 
 import pandas as pd
 import streamlit as st
+from utils.availability import free_time_mask
 from utils.data_loader import (
     build_watchlist_showtimes,
     future_showtimes,
@@ -160,14 +167,49 @@ def main() -> None:
     wl_shows = wl_shows.copy()
     wl_shows["_runtime_bucket"] = wl_shows[runtime_col].apply(_runtime_bucket) if runtime_col else "Unknown"
 
-    # ── Filter bar row 1: theater dropdown + runtime chips + time range ─────
-    fc1, fc2, fc3 = st.columns([2, 2, 2])
-    with fc1:
+    # ── On-page: only the free-time toggle (+ its pickers when on) ──────────
+    only_free = st.toggle(
+        "Only times I'm free",
+        value=False,
+        key="cal_free",
+        help=(
+            "Weekends, French public holidays, your days off, or weekday screenings "
+            "at/after the cutoff — minus any days you've marked unavailable."
+        ),
+    )
+    free_cutoff, sel_days_off, sel_unavail = dt.time(19, 0), [], []
+    if only_free:
+        upcoming = sorted(pd.to_datetime(wl_shows["showtimes"]).dt.date.dropna().unique())
+        fa1, fa2, fa3 = st.columns([1, 2, 2])
+        with fa1:
+            free_cutoff = st.time_input(
+                "Free from (weekdays)", value=dt.time(19, 0), step=dt.timedelta(minutes=15), key="cal_cutoff"
+            )
+        with fa2:
+            sel_days_off = st.multiselect(
+                "Days off (free all day)", upcoming, key="cal_daysoff", format_func=lambda d: d.strftime("%a %d %b")
+            )
+        with fa3:
+            sel_unavail = st.multiselect(
+                "Unavailable (away)", upcoming, key="cal_unavail", format_func=lambda d: d.strftime("%a %d %b")
+            )
+
+    # ── Sidebar: every other filter ─────────────────────────────────────────
+    min_dt = pd.to_datetime(wl_shows["showtimes"]).min()
+    max_dt = pd.to_datetime(wl_shows["showtimes"]).max()
+    with st.sidebar:
+        st.header("Filters")
+        date_range = st.date_input(
+            "Show screenings between",
+            value=(min_dt.date(), max_dt.date()),
+            min_value=min_dt.date(),
+            max_value=max_dt.date(),
+        )
         theaters = sorted(wl_shows["theater_name"].dropna().unique().tolist()) if "theater_name" in wl_shows.columns else []
-        sel_theaters = st.multiselect("Theaters", theaters, default=theaters, key="cal_theaters")
-    with fc2:
+        # No default: empty selection means "all theaters", so the (long) list
+        # stays hidden inside the dropdown instead of rendering as tags.
+        sel_theaters = st.multiselect("Theaters", theaters, key="cal_theaters", placeholder="All theaters")
         sel_runtime = render_chip_filter("Runtime", ["<90", "90–120", ">120"], key="cal_runtime")
-    with fc3:
         sel_time_range = st.slider(
             "Showtime between",
             min_value=dt.time(0, 0),
@@ -176,25 +218,8 @@ def main() -> None:
             step=dt.timedelta(minutes=15),
             key="cal_timerange",
         )
-
-    # ── Filter bar row 2: toggle + search ───────────────────────────────────
-    fr1, fr2 = st.columns([1, 3])
-    with fr1:
-        weekend_only = st.toggle("Weekends only", value=False, key="cal_weekend")
-    with fr2:
         search = st.text_input("Search title or director", key="cal_search", placeholder="e.g. Bong Joon-ho")
-
-    # ── Sidebar: date range + min rating ────────────────────────────────────
-    st.sidebar.header("Filters")
-    min_dt = pd.to_datetime(wl_shows["showtimes"]).min()
-    max_dt = pd.to_datetime(wl_shows["showtimes"]).max()
-    date_range = st.sidebar.date_input(
-        "Show screenings between",
-        value=(min_dt.date(), max_dt.date()),
-        min_value=min_dt.date(),
-        max_value=max_dt.date(),
-    )
-    min_rating = st.sidebar.slider("Min Letterboxd rating", 0.0, 5.0, 0.0, 0.5, key="cal_minrating")
+        min_rating = st.slider("Min Letterboxd rating", 0.0, 5.0, 0.0, 0.5, key="cal_minrating")
 
     filtered = wl_shows.copy()
     if sel_theaters:
@@ -205,8 +230,10 @@ def main() -> None:
         start_t, end_t = sel_time_range
         showtime_of_day = pd.to_datetime(filtered["showtimes"]).dt.time
         filtered = filtered[(showtime_of_day >= start_t) & (showtime_of_day <= end_t)]
-    if weekend_only:
-        filtered = filtered[pd.to_datetime(filtered["showtimes"]).dt.dayofweek >= 5]
+    if only_free:
+        filtered = filtered[
+            free_time_mask(filtered["showtimes"], cutoff=free_cutoff, days_off=sel_days_off, unavailable=sel_unavail)
+        ]
     if search:
         s_norm = search.lower().strip()
         title_col = "french_title" if "french_title" in filtered.columns else "movie"

@@ -43,9 +43,11 @@ Three calmer tabs in place of the old chart wall:
 
 ### Watchlist Showtimes (📅)
 
-Inner-joins your watchlist with current showtimes. The join matches on normalized French title and then **confirms each match by director**, so a recurring or remade title (e.g. *Nosferatu*) can't attach the wrong film's screenings. Director confirmation uses token-subset containment — one director name's tokens being wholly contained in the other's — so name-form drift between Allocine and TMDB (`Kirk Jones (II)` vs `Kirk Jones`, `Akinola Davies` vs `Akinola Davies Jr.`, `Ringo Lam` vs `Ringo Lam Ling-Tung`) still matches while genuinely different directors are still rejected. Top filter bar (theater multi-select dropdown, runtime buckets, a "showtime between" time-of-day range slider, weekend toggle, free-text search) + sidebar date range over three tabs:
+Inner-joins your watchlist with current showtimes. The join matches on normalized French title and then **confirms each match by director**, so a recurring or remade title (e.g. *Nosferatu*) can't attach the wrong film's screenings. Director confirmation uses token-subset containment — one director name's tokens being wholly contained in the other's — so name-form drift between Allocine and TMDB (`Kirk Jones (II)` vs `Kirk Jones`, `Akinola Davies` vs `Akinola Davies Jr.`, `Ringo Lam` vs `Ringo Lam Ling-Tung`) still matches while genuinely different directors are still rejected. The page top carries a single control — the **"Only times I'm free"** toggle — while every other filter (date range, theater multi-select dropdown, runtime buckets, "showtime between" time-of-day range slider, free-text search, min rating) lives in the sidebar. The theater options stay hidden inside the dropdown: an empty selection means *all theaters*.
+
+The free-time toggle (which replaced the old weekend toggle) narrows to screenings you can actually attend: weekends, French public holidays (via the `holidays` library), days you mark off, or weekdays at/after an editable cutoff (default 19:00). Turning it on reveals the cutoff time picker plus two date multi-selects over the upcoming showtime dates — **Days off (free all day)**, which includes that day's daytime screenings, and **Unavailable (away)**, which excludes the whole day and overrides everything else (even a weekend or holiday). The three tabs:
 - **By day** — horizontal poster rails grouped by date under **"Cinema-only this week"**; one card per movie with all showtimes for that day listed below (time + theater), sorted by earliest showtime. Streaming availability isn't shown here — see the dedicated Streaming page.
-- **Calendar** — ICS and CSV export for your filtered screenings (Google / Apple / Outlook compatible); the export always reflects every filter applied above, including the time-of-day range
+- **Calendar** — ICS and CSV export for your filtered screenings (Google / Apple / Outlook compatible); the export always reflects every filter applied above, including the time-of-day range and the free-time toggle
 - **Map** — pydeck map of theaters with screenings in the current filter; marker size ∝ # screenings
 
 **Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` (+ `ALLOCINE_INPUT_PATH` for the map)
@@ -127,7 +129,7 @@ cinema_dashboard/
 ├── pages/
 │   ├── 0_home.py                 # Home — hero "tonight" card, poster rails, KPI strip
 │   ├── database.py               # Movies Database page (Overview / Discover / Tables)
-│   ├── calendar.py               # Watchlist Showtimes page (theater dropdown, runtime/time-of-day/weekend/search filters, day rails, map, ICS export)
+│   ├── calendar.py               # Watchlist Showtimes page (theater dropdown, runtime/time-of-day/free-time/search filters, day rails, map, ICS export)
 │   ├── streaming.py              # Streaming page — one poster rail per FR provider
 │   └── recommendations.py        # Recommendations chat page (calls utils/chat.render_chat)
 ├── utils/
@@ -135,6 +137,7 @@ cinema_dashboard/
 │   ├── taste.py                  # Taste ranker — affinity profile, 0–100 match scorer, "because" explanations
 │   ├── streaming.py              # TMDB FR watch-providers cache + display-name catalogue loader/updater
 │   ├── ui.py                     # Shared rendering helpers (movie cards, rails, hero card, KPIs, chips, ICS, runtime/rating formatting)
+│   ├── availability.py           # Free-time mask (weekend/holiday/day-off/after-cutoff, minus unavailable days)
 │   ├── geo.py                    # Theater geocoding (Nominatim + RateLimiter, cached parquet) + pydeck map renderer
 │   ├── chat.py                   # Reusable Gemini chat assistant (build_chat_context + render_chat) shared by the page and Cmd+K dialog
 │   ├── cmdk.py                   # Global Cmd+K command palette (st.dialog + streamlit-shortcuts)

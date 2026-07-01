@@ -9,7 +9,9 @@ import pytest
 from utils.taste import TasteProfile
 from utils.ui import (
     _ics_escape,
+    _movie_card_html,
     _streaming_badges_html,
+    _user_rating_chip_html,
     format_runtime,
     match_chips_html,
     rating_to_hsl,
@@ -84,6 +86,49 @@ def test_rating_to_hsl_clamps_below_zero():
 
 def test_rating_to_hsl_invalid_string_is_transparent():
     assert rating_to_hsl("not a number") == "transparent"  # type: ignore[arg-type]
+
+
+def test_rating_to_hsl_custom_hue_and_scale():
+    # 5 on a 0-5 scale is the top of the ramp → darkest lightness (40%) at the green hue.
+    assert rating_to_hsl(5, hue=145, scale_max=5.0) == "hsl(145 80% 40%)"
+
+
+# ── _user_rating_chip_html ──────────────────────────────────────────────────
+
+
+def test_user_rating_chip_empty_for_none():
+    assert _user_rating_chip_html(None) == ""
+
+
+def test_user_rating_chip_empty_for_nan():
+    assert _user_rating_chip_html(float("nan")) == ""
+
+
+def test_user_rating_chip_is_green_and_labelled():
+    html_out = _user_rating_chip_html(4.5)
+    assert "chip--user-rating" in html_out
+    assert "hsl(145" in html_out  # green hue, not the amber default
+    assert "★ 4.5" in html_out
+    assert 'aria-label="Your rating: 4.5 out of 5"' in html_out
+
+
+def test_movie_card_renders_user_rating_chip():
+    row = pd.Series({"title": "Solaris", "user_rating": 4.0, "letterboxd_avg_rating": 3.8})
+    card = _movie_card_html(row)
+    assert "chip--user-rating" in card  # the user's green chip
+    assert "hsl(145" in card  # green user chip
+    assert "hsl(36" in card  # amber Letterboxd-average chip still present
+
+
+def test_movie_card_omits_user_rating_chip_when_absent():
+    row = pd.Series({"title": "Unrated", "letterboxd_avg_rating": 3.8})
+    assert "chip--user-rating" not in _movie_card_html(row)
+
+
+def test_rating_chip_uses_five_point_scale():
+    # A perfect 5-star Letterboxd average is the top of the ramp → darkest amber (40%).
+    row = pd.Series({"title": "Stalker", "letterboxd_avg_rating": 5.0})
+    assert "hsl(36 80% 40%)" in _movie_card_html(row)
 
 
 # ── _ics_escape ─────────────────────────────────────────────────────────────

@@ -185,6 +185,10 @@ html, body, .stMarkdown, .stText {
   color: #1a1a1a;
   border: none;
 }
+.chip--user-rating {
+  /* Letterboxd shows your own rating in green; the amber chip is the community average. */
+  font-weight: 600;
+}
 .chip--streaming {
   background: rgba(56, 178, 172, 0.18);
   border-color: rgba(56, 178, 172, 0.45);

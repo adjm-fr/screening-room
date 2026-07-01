@@ -80,7 +80,7 @@ uv run --no-sync bandit -r -ll packages/common/src packages/contracts/src \
 uv export --all-packages --no-dev --no-emit-workspace --format requirements-txt -o /tmp/req.txt
 uv run --no-sync pip-audit -r /tmp/req.txt
 uv run --no-sync --directory movies_management pytest --cov   # gate 90 (current ~98%)
-uv run --no-sync --directory cinema_dashboard  pytest --cov   # gate 75 (current ~78%)
+uv run --no-sync --directory cinema_dashboard  pytest --cov   # gate 75 (current ~82%)
 ```
 
 One root `.github/workflows/ci.yml` runs lint / typecheck / security / test for the whole workspace.

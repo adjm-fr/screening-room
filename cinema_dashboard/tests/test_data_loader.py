@@ -473,6 +473,31 @@ def test_directors_overlap_empty_string_rejected():
     assert _directors_overlap("Robert Eggers", "   ") is False
 
 
+def test_directors_overlap_disambiguator_suffix():
+    # Allocine appends a "(II)" disambiguator that TMDB omits: token
+    # containment still confirms the match (regression: "Plus fort que moi").
+    assert _directors_overlap("Kirk Jones (II)", "Kirk Jones") is True
+
+
+def test_directors_overlap_generational_suffix():
+    # "Jr." on one side only must not sink the match (regression:
+    # "Un jour avec mon père").
+    assert _directors_overlap("Akinola Davies", "Akinola Davies Jr.") is True
+
+
+def test_directors_overlap_extra_name_tokens():
+    # A fuller romanised name on one side is a superset of the shorter form
+    # (regression: "City on fire").
+    assert _directors_overlap("Ringo Lam", "Ringo Lam Ling-Tung") is True
+
+
+def test_directors_overlap_disjoint_names_still_rejected():
+    # Containment must not leak into a wrong-attach: genuinely different
+    # directors on a title collision share no token-subset relationship.
+    assert _directors_overlap("Steven Spielberg", "Byron Haskin") is False
+    assert _directors_overlap("Mark Jenkin", "Hugo Haas") is False
+
+
 # ---------------------------------------------------------------------------
 # _director_key
 # ---------------------------------------------------------------------------

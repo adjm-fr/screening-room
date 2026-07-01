@@ -57,6 +57,23 @@ def _normalize_title(raw: object) -> str:
     return " ".join(s.split())
 
 
+def _director_tokens(name: str) -> frozenset[str]:
+    """Return the set of normalised name tokens for a single director.
+
+    NFKD normalises accents; non-alpha chars become spaces (so hyphens,
+    parenthetical disambiguators like ``"(II)"``, and dotted initials all
+    split into tokens); everything is lower-cased. Returning an unordered
+    *set* rather than a sorted string lets :func:`_directors_overlap` test
+    token containment, which tolerates the name-form drift between sources
+    (extra middle names, ``"Jr."``/``"(II)"`` suffixes) that exact-key
+    equality could not.
+    """
+    s = unicodedata.normalize("NFKD", name)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = "".join(c if c.isalpha() else " " for c in s).lower()
+    return frozenset(s.split())
+
+
 def _director_key(name: str) -> str:
     """Return a canonical sort key for a single director name.
 
@@ -64,10 +81,7 @@ def _director_key(name: str) -> str:
     alphabetically so ``"Bong Joon-ho"`` and ``"Joon Ho Bong"`` both map to
     ``"bong ho joon"``.
     """
-    s = unicodedata.normalize("NFKD", name)
-    s = "".join(c for c in s if not unicodedata.combining(c))
-    s = "".join(c if c.isalpha() else " " for c in s).lower()
-    return " ".join(sorted(s.split()))
+    return " ".join(sorted(_director_tokens(name)))
 
 
 def _directors_overlap(allocine: str | float | None, letterboxd: str | float | None) -> bool:
@@ -81,13 +95,23 @@ def _directors_overlap(allocine: str | float | None, letterboxd: str | float | N
     watchlist (TMDB) director field is effectively never blank and Allocine
     omits the director for ~0.6% of films, so requiring positive confirmation
     closes the wrong-attach hole at no measurable recall cost. An empty or
-    whitespace-only string yields an empty key set and is rejected the same way.
+    whitespace-only string yields an empty token set and is rejected the same way.
+
+    Confirmation uses **token containment**, not exact key equality: two names
+    match when one's token set is a non-empty subset of the other's. This keeps
+    legitimately-screening films that the two sources spell slightly
+    differently — Allocine's ``"Kirk Jones (II)"`` vs TMDB's ``"Kirk Jones"``,
+    ``"Ringo Lam"`` vs ``"Ringo Lam Ling-Tung"``, ``"Akinola Davies"`` vs
+    ``"Akinola Davies Jr."`` — which the old sorted-key equality silently
+    dropped. Genuinely different directors on a title collision (Murnau vs
+    Eggers, Spielberg vs Haskin) share no containment relationship and are
+    still rejected, so precision is preserved.
     """
     if pd.isna(allocine) or pd.isna(letterboxd):
         return False
-    alloc_keys = {_director_key(n.strip()) for n in str(allocine).split(" | ") if n.strip()}
-    lb_keys = {_director_key(n.strip()) for n in str(letterboxd).split(", ") if n.strip()}
-    return bool(alloc_keys & lb_keys)
+    alloc_names = [t for n in str(allocine).split(" | ") if (t := _director_tokens(n))]
+    lb_names = [t for n in str(letterboxd).split(", ") if (t := _director_tokens(n))]
+    return any(a <= b or b <= a for a in alloc_names for b in lb_names)
 
 
 def get_paths() -> tuple[Path | None, Path | None, Path | None]:

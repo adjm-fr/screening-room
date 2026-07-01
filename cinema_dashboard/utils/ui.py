@@ -85,13 +85,15 @@ def format_runtime(minutes: int | float | str | None) -> str:
     return f"{hours}h{rem:02d}"
 
 
-def rating_to_hsl(rating: float | int | None) -> str:
-    """Convert a 0-10 rating into an ``hsl()`` color string on an amber heatmap.
+def rating_to_hsl(rating: float | int | None, *, hue: int = 36, scale_max: float = 10.0) -> str:
+    """Convert a rating into an ``hsl()`` color string on a saturation heatmap.
 
     Lightness ramps from 80% (low score) to 40% (high score) at a fixed
-    amber hue (36°) and saturation (80%). Returns ``"transparent"`` for
-    ``None`` or NaN. Always pair the resulting color with a numeric label
-    in the UI to satisfy WCAG 1.4.1 (information not by color alone).
+    ``hue`` (default 36° amber) and saturation (80%). ``scale_max`` is the top
+    of the rating scale (10 for Letterboxd averages, 5 for the user's own
+    star rating). Returns ``"transparent"`` for ``None`` or NaN. Always pair the
+    resulting color with a numeric label in the UI to satisfy WCAG 1.4.1
+    (information not conveyed by color alone).
     """
     if rating is None:
         return "transparent"
@@ -101,9 +103,9 @@ def rating_to_hsl(rating: float | int | None) -> str:
         return "transparent"
     if pd.isna(r):
         return "transparent"
-    r_clamped = max(0.0, min(10.0, r))
-    lightness = round(80.0 - r_clamped * 4.0)
-    return f"hsl(36 80% {lightness}%)"
+    r_clamped = max(0.0, min(scale_max, r))
+    lightness = round(80.0 - (r_clamped / scale_max) * 40.0)
+    return f"hsl({hue} 80% {lightness}%)"
 
 
 # ── Movie card / hero / rail ────────────────────────────────────────────────
@@ -164,8 +166,25 @@ def match_chips_html(row: pd.Series, profile: TasteProfile) -> str:
 def _rating_chip_html(rating: float | None) -> str:
     if rating is None or (isinstance(rating, float) and pd.isna(rating)):
         return ""
-    color = rating_to_hsl(rating)
-    return f'<span class="chip chip--rating" style="background:{color}">★ {float(rating):.1f}</span>'
+    # Letterboxd averages are on the same 0-5 star scale as the user's own rating.
+    color = rating_to_hsl(rating, scale_max=5.0)
+    return f'<span class="chip chip--rating" title="Letterboxd average" style="background:{color}">★ {float(rating):.1f}</span>'
+
+
+def _user_rating_chip_html(rating: float | None) -> str:
+    """Green chip for the user's own star rating (Letterboxd shows your rating in green).
+
+    Uses a green heatmap on the 0-5 star scale; paired with an ``aria-label`` so
+    it reads distinctly from the amber Letterboxd-average chip for screen readers
+    and colorblind users (WCAG 1.4.1)."""
+    if rating is None or (isinstance(rating, float) and pd.isna(rating)):
+        return ""
+    color = rating_to_hsl(rating, hue=145, scale_max=5.0)
+    return (
+        f'<span class="chip chip--rating chip--user-rating" title="Your rating" '
+        f'aria-label="Your rating: {float(rating):.1f} out of 5" '
+        f'style="background:{color}">★ {float(rating):.1f}</span>'
+    )
 
 
 def _movie_card_html(
@@ -190,6 +209,7 @@ def _movie_card_html(
         runtime = row.get("runtime")
     poster_url = row.get("poster_url")
     rating = row.get("letterboxd_avg_rating")
+    user_rating = row.get("user_rating")
     genres = row.get("genres")
 
     poster_html = (
@@ -199,6 +219,7 @@ def _movie_card_html(
     )
     runtime_chip = f'<span class="chip">{html.escape(format_runtime(runtime))}</span>' if format_runtime(runtime) != "—" else ""
     rating_chip = _rating_chip_html(rating if isinstance(rating, (int, float)) else None)
+    user_rating_chip = _user_rating_chip_html(user_rating if isinstance(user_rating, (int, float)) else None)
     genre_chips = _genre_chips_html(genres if isinstance(genres, str) else None)
     streaming_chips = _streaming_badges_html(row.get("flatrate"), subscribed)
     sub = html.escape(directors) if directors else ""
@@ -209,7 +230,7 @@ def _movie_card_html(
         f'<div class="meta">'
         f'<div class="title">{html.escape(title)}</div>'
         f"{f'<div class="sub">{sub}</div>' if sub else ''}"
-        f"<div>{rating_chip}{runtime_chip}</div>"
+        f"<div>{user_rating_chip}{rating_chip}{runtime_chip}</div>"
         f"<div>{genre_chips}</div>"
         f"{streaming_chips}"
         f"{extra_html}"

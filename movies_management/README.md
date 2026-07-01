@@ -138,7 +138,7 @@ The application generates three parquet files in your `OUTPUT_PATH`:
 - `runtime` - Duration in minutes
 - `tagline` - Movie tagline/slogan
 - `description` - Full plot description
-- `letterboxd_avg_rating` - Letterboxd community average rating (0-10)
+- `letterboxd_avg_rating` - Letterboxd community weighted-average rating (0-5)
 
 **Media:**
 - `poster_url` - URL to movie poster image
@@ -179,7 +179,7 @@ The application generates three parquet files in your `OUTPUT_PATH`:
 **Enriched user ratings** combining your ratings with full metadata.
 
 **User Data Columns:**
-- `user_rating` - Your rating (0-10 or null if unrated)
+- `user_rating` - Your star rating (0.5-5 in half-star steps, or null if unrated)
 - `liked` - Whether you marked as liked (boolean)
 
 **All movie metadata columns** from `data_letterboxd.parquet` (see above), including:

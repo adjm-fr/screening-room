@@ -36,7 +36,7 @@ When `STREAMING_SERVICES` is configured, every card also shows a small badge row
 
 Three calmer tabs in place of the old chart wall:
 - **Overview** — Genre × avg rating chart (rated films only) + micro-card insights (runtime distribution sparkline, top directors chip cloud, top themes chip cloud). A caption below the title clarifies the stats are based on your rated films count.
-- **Discover** — chip filters (genre, director multiselect with live search, min-rating slider) over a poster rail of matching films
+- **Discover** — chip filters (genre, director multiselect with live search, min-rating slider) over a poster rail of matching films. Each card shows your own star rating as a green chip (Letterboxd convention) next to the amber Letterboxd community average; both ratings are on the same 0–5 scale.
 - **Tables** — raw dataframes with poster, IMDB, TMDB, and Letterboxd link columns. When `STREAMING_SERVICES` is set, a "Streaming on" column lists the subscribed services currently carrying each film.
 
 **Requires**: `OUTPUT_PATH`
@@ -187,7 +187,7 @@ only the keys it declares. The keys this member uses:
 | `GEMINI_TEMPERATURE` | Sampling temperature; lower = more deterministic (default: 0.2) |
 | `GEMINI_TOP_P` | Nucleus sampling cutoff; lower = less creative drift (default: 0.8) |
 | `TMDB_API_KEY` | *(optional)* TMDB v3 API key. Enables the FR streaming-availability cache (`data/streaming_providers.parquet`) refreshed by `orchestrate.py`. Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
-| `STREAMING_SERVICES` | *(optional)* Comma-separated provider slugs you subscribe to (e.g. `mubi,netflix,canalplus,arte`). Enables streaming badges on movie cards (Home, Calendar), the Calendar cinema-only / also-streaming partition, the Database "Streaming on" column, and the Recommendations chat's awareness of FR availability. When unset, every streaming surface silently no-ops. |
+| `STREAMING_SERVICES` | *(optional)* Comma-separated provider slugs you subscribe to (e.g. `mubi,netflix,canalplus,arte`). Enables streaming badges on the Home page's movie cards, the Database "Streaming on" column, and the Recommendations chat's awareness of FR availability. When unset, every streaming surface silently no-ops. |
 | `ALLOCINE_DIR` | *(optional)* Absolute path to the `Allocine-Showtimes-Scraping` repo. Defaults to `../Allocine-Showtimes-Scraping` relative to this repo. |
 | `MOVIES_DIR` | *(optional)* Absolute path to the `movies_management` repo. Defaults to `../movies_management` relative to this repo. |
 

@@ -238,7 +238,7 @@ def main() -> None:
         with f2:
             sel_directors = st.multiselect("Director", options=all_directors, placeholder="Search directors…", key="db_director")
         with f3:
-            min_rating = st.slider("Min Letterboxd rating", 0.0, 10.0, 0.0, 0.5, key="db_minrating")
+            min_rating = st.slider("Min Letterboxd rating", 0.0, 5.0, 0.0, 0.5, key="db_minrating")
 
         pool = pd.concat([watchlist_df, ratings_df], ignore_index=True).drop_duplicates(subset=["slug"])
         if sel_genres and "genres" in pool.columns:

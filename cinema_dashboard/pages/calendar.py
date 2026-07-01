@@ -194,7 +194,7 @@ def main() -> None:
         min_value=min_dt.date(),
         max_value=max_dt.date(),
     )
-    min_rating = st.sidebar.slider("Min Letterboxd rating", 0.0, 10.0, 0.0, 0.5, key="cal_minrating")
+    min_rating = st.sidebar.slider("Min Letterboxd rating", 0.0, 5.0, 0.0, 0.5, key="cal_minrating")
 
     filtered = wl_shows.copy()
     if sel_theaters:

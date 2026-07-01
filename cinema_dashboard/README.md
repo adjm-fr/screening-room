@@ -52,7 +52,7 @@ Three calmer tabs in place of the old chart wall:
 
 ### Watchlist Showtimes (📅)
 
-Inner-joins your watchlist with current showtimes. Top chip-filter bar (theaters, genres, runtime buckets, weekend toggle, free-text search) + sidebar date range over three tabs:
+Inner-joins your watchlist with current showtimes. The join matches on normalized French title and then **confirms each match by director**, so a recurring or remade title (e.g. *Nosferatu*) can't attach the wrong film's screenings. Director confirmation uses token-subset containment — one director name's tokens being wholly contained in the other's — so name-form drift between Allocine and TMDB (`Kirk Jones (II)` vs `Kirk Jones`, `Akinola Davies` vs `Akinola Davies Jr.`, `Ringo Lam` vs `Ringo Lam Ling-Tung`) still matches while genuinely different directors are still rejected. Top chip-filter bar (theaters, genres, runtime buckets, weekend toggle, free-text search) + sidebar date range over three tabs:
 - **By day** — horizontal poster rails grouped by date; one card per movie with all showtimes for that day listed below (time + theater), sorted by earliest showtime. When `STREAMING_SERVICES` is set, the rails split into **"Cinema-only this week"** (worth leaving the house for) followed by **"Also streaming on your services"** (you can stay in). The map and any aggregate counts still use the full set so pins aren't dropped.
 - **Calendar** — ICS and CSV export for your filtered screenings (Google / Apple / Outlook compatible)
 - **Map** — pydeck map of theaters with screenings in the current filter; marker size ∝ # screenings

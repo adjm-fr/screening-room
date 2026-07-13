@@ -1,4 +1,4 @@
-"""Tests for the Phase 2 TMDB streaming-providers data layer."""
+"""Tests for the TMDB streaming-providers data layer."""
 
 import json
 from datetime import UTC, datetime, timedelta
@@ -10,6 +10,7 @@ import pytest
 import respx
 from utils.streaming import (
     TMDB_PROVIDERS_URL,
+    _fr_provider_name_pairs,
     _parse_fr,
     _slugify,
     _update_display_names_catalog,
@@ -90,6 +91,7 @@ def test_parse_fr_full_payload():
             {
                 "link": "https://www.themoviedb.org/movie/1/watch?locale=FR",
                 "flatrate": [{"provider_name": "MUBI"}, {"provider_name": "Netflix"}],
+                "free": [{"provider_name": "Arte"}],
                 "rent": [{"provider_name": "Apple TV"}],
                 "buy": [{"provider_name": "Canal+"}],
             }
@@ -97,18 +99,64 @@ def test_parse_fr_full_payload():
     )
     assert parsed == {
         "flatrate": ["mubi", "netflix"],
+        "free": ["arte"],
         "tmdb_link": "https://www.themoviedb.org/movie/1/watch?locale=FR",
     }
 
 
+def test_parse_fr_free_only():
+    # No flatrate block at all — only a free-to-watch platform.
+    parsed = _parse_fr(_payload({"free": [{"provider_name": "France TV"}]}))
+    assert parsed == {"flatrate": [], "free": ["francetv"], "tmdb_link": ""}
+
+
 def test_parse_fr_missing_fr_key_yields_empties():
     parsed = _parse_fr(_payload(None))
-    assert parsed == {"flatrate": [], "tmdb_link": ""}
+    assert parsed == {"flatrate": [], "free": [], "tmdb_link": ""}
 
 
 def test_parse_fr_skips_providers_without_name():
     parsed = _parse_fr(_payload({"flatrate": [{"provider_id": 8}, {"provider_name": "MUBI"}]}))
     assert parsed["flatrate"] == ["mubi"]
+
+
+def test_parse_fr_ignores_rent_buy_ads_blocks():
+    # rent/buy/ads are intentionally not tracked — only flatrate + free.
+    parsed = _parse_fr(
+        _payload(
+            {
+                "rent": [{"provider_name": "Apple TV"}],
+                "buy": [{"provider_name": "Canal+"}],
+                "ads": [{"provider_name": "Tubi"}],
+            }
+        )
+    )
+    assert parsed == {"flatrate": [], "free": [], "tmdb_link": ""}
+
+
+# ── _fr_provider_name_pairs ─────────────────────────────────────────────────
+
+
+def test_fr_provider_name_pairs_harvests_both_blocks():
+    pairs = _fr_provider_name_pairs(
+        _payload(
+            {
+                "flatrate": [{"provider_name": "MUBI"}],
+                "free": [{"provider_name": "Arte"}],
+            }
+        )
+    )
+    assert pairs == {"mubi": "MUBI", "arte": "Arte"}
+
+
+def test_fr_provider_name_pairs_free_only():
+    pairs = _fr_provider_name_pairs(_payload({"free": [{"provider_name": "France TV"}]}))
+    assert pairs == {"francetv": "France TV"}
+
+
+def test_fr_provider_name_pairs_skips_providers_without_name():
+    pairs = _fr_provider_name_pairs(_payload({"free": [{"provider_id": 8}, {"provider_name": "Arte"}]}))
+    assert pairs == {"arte": "Arte"}
 
 
 # ── refresh_streaming_providers ───────────────────────────────────────────────
@@ -148,17 +196,21 @@ def test_no_api_key_is_a_noop(movies_output, cache_path):
 
 @respx.mock
 def test_refresh_writes_expected_schema_and_rows(movies_output, cache_path):
-    _route(respx, "101", fr={"flatrate": [{"provider_name": "MUBI"}], "link": "L"})
+    _route(respx, "101", fr={"flatrate": [{"provider_name": "MUBI"}], "free": [{"provider_name": "Arte"}], "link": "L"})
     _route(respx, "202", fr={"flatrate": [{"provider_name": "MUBI"}], "link": "L"})
 
     summary = refresh_streaming_providers(movies_output=movies_output, tmdb_api_key="key", cache_path=cache_path)
 
-    assert summary == {"fetched": 2, "skipped_fresh": 0, "errors": 0, "new_provider_names": 1}
+    assert summary == {"fetched": 2, "skipped_fresh": 0, "errors": 0, "new_provider_names": 2}
     assert respx.calls.call_count == 2  # only the two non-empty tmdb_ids
     df = pd.read_parquet(cache_path)
-    assert set(df.columns) == {"tmdb_id", "flatrate", "tmdb_link", "fetched_at"}
+    assert set(df.columns) == {"tmdb_id", "flatrate", "free", "tmdb_link", "fetched_at"}
     assert sorted(df["tmdb_id"]) == ["101", "202"]
-    assert df.iloc[0]["flatrate"].tolist() == ["mubi"]
+    row_101 = df[df["tmdb_id"] == "101"].iloc[0]
+    row_202 = df[df["tmdb_id"] == "202"].iloc[0]
+    assert row_101["flatrate"].tolist() == ["mubi"]
+    assert row_101["free"].tolist() == ["arte"]
+    assert row_202["free"].tolist() == []
 
 
 @respx.mock
@@ -223,4 +275,4 @@ def test_load_returns_empty_typed_frame_when_cache_missing(mocker):
     mocker.patch("utils.streaming.STREAMING_CACHE_PATH", Path("/nonexistent/streaming.parquet"))
     df = load_streaming_providers("ignored")
     assert df.empty
-    assert list(df.columns) == ["tmdb_id", "flatrate", "tmdb_link", "fetched_at"]
+    assert list(df.columns) == ["tmdb_id", "flatrate", "free", "tmdb_link", "fetched_at"]

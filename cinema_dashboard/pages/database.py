@@ -40,31 +40,45 @@ from utils.ui import (
 )
 
 
+def _streaming_label(row: pd.Series) -> str:
+    """Build the ``streaming_on`` label for one row, e.g. ``netflix, arte-tv (free)``.
+
+    ``row`` is expected to carry ``flatrate`` (already filtered by the caller
+    to the user's subscribed set — see :func:`_with_streaming_column`) and
+    ``free`` (unfiltered: free providers are watchable by everyone regardless
+    of subscription). Flatrate names render unadorned; free providers are
+    suffixed ``" (free)"`` so the distinction is legible in this plain-text
+    column, which has no color or separate column to lean on.
+    """
+    flat = row.get("flatrate")
+    free = row.get("free")
+    flat_names = flat if isinstance(flat, list) else []
+    free_names = free if isinstance(free, list) else []
+    return ", ".join([*sorted(flat_names), *(f"{p} (free)" for p in sorted(free_names))])
+
+
 def _with_streaming_column(
     df: pd.DataFrame,
     movies_output: str,
     subscribed: set[str] | frozenset[str],
 ) -> pd.DataFrame:
-    """Append a ``streaming_on`` column listing subscribed services that carry each film.
+    """Append a ``streaming_on`` column: subscribed flatrate services plus every free platform, per film.
 
-    Returns the df unchanged (sans column) when the user has no subscriptions
-    configured or the df lacks ``tmdb_id`` — the link table still renders.
-    The column is a comma-separated string (empty for unmatched rows) to avoid
-    the ``float('nan') → "nan"`` rendering pitfall called out in ``CLAUDE.md``.
+    Returns the df unchanged (sans column) when it lacks ``tmdb_id`` — the
+    link table still renders. Free providers (Arte.tv, France.tv, …) appear
+    regardless of ``subscribed`` (see :func:`_streaming_label`); flatrate
+    providers are filtered down to the user's subscriptions first. The column
+    is a comma-separated string (empty for unmatched rows) to avoid the
+    ``float('nan') → "nan"`` rendering pitfall called out in ``CLAUDE.md``.
     """
-    if not subscribed or "tmdb_id" not in df.columns:
+    if "tmdb_id" not in df.columns:
         return df
-    enriched = attach_streaming(df, movies_output)
-
-    def _label(flat: object) -> str:
-        if not isinstance(flat, list):
-            return ""
-        hits = [p for p in flat if p in subscribed]
-        return ", ".join(sorted(hits))
-
-    enriched = enriched.copy()
-    enriched["streaming_on"] = enriched["flatrate"].apply(_label)
-    return enriched.drop(columns=["flatrate"], errors="ignore")
+    enriched = attach_streaming(df, movies_output).copy()
+    enriched["flatrate"] = enriched["flatrate"].apply(
+        lambda flat: [p for p in flat if p in subscribed] if isinstance(flat, list) else []
+    )
+    enriched["streaming_on"] = enriched.apply(_streaming_label, axis=1)
+    return enriched.drop(columns=["flatrate", "free"], errors="ignore")
 
 
 def _explode_tags(series: pd.Series, separator: str = ", ") -> pd.Series:

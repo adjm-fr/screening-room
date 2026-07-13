@@ -2,18 +2,21 @@
 TMDB watch-providers (France) data layer.
 
 For every film on the watchlist we ask TMDB where it is streamable in France
-right now (subscription only) and persist the answer to a local cache
-parquet, exactly mirroring the geocoding-cache pattern in ``utils/geo.py``:
-fetch once, persist on disk, incremental-refresh on subsequent runs.
+right now — subscription (``flatrate``) and no-cost (``free``) platforms —
+and persist the answer to a local cache parquet, exactly mirroring the
+geocoding-cache pattern in ``utils/geo.py``: fetch once, persist on disk,
+incremental-refresh on subsequent runs.
 
-This module is **backend only** (Phase 2). It is filled by the data pipeline
+This module is the backend data layer. It is filled by the data pipeline
 (``orchestrate.py`` and the optional Dagster ``streaming_providers`` asset).
-``load_streaming_providers`` is the read-only loader Phase 3 will join onto the
+``load_streaming_providers`` is the read-only loader consumed by
+:func:`utils.data_loader.attach_streaming`, which joins the cache onto the
 watchlist by ``tmdb_id`` to surface availability in the UI.
 
 Public API:
     refresh_streaming_providers(*, movies_output, tmdb_api_key, ...) -> dict
     load_streaming_providers(movies_output) -> DataFrame
+    STREAMING_COLUMNS: tuple[str, ...] -- the list-columns joined by attach_streaming
 
 Cache file: ``data/streaming_providers.parquet`` — gitignored via the existing
 ``data/`` + ``*.parquet`` rules (same as ``data/theaters_geo.parquet``).
@@ -41,7 +44,14 @@ REQUEST_TIMEOUT = 10
 # TMDB allows ~50 rps. 20 in-flight requests keeps us well under that while
 # letting a multi-thousand-film watchlist finish in a sensible wall time.
 MAX_CONCURRENCY = 20
-_CACHE_COLUMNS = ["tmdb_id", "flatrate", "tmdb_link", "fetched_at"]
+_CACHE_COLUMNS = ["tmdb_id", "flatrate", "free", "tmdb_link", "fetched_at"]
+
+# Single source of truth for the TMDB watch-provider list-columns the rest of
+# the app joins on (attach_streaming, the badge renderer, the database export
+# label). Free providers (Arte.tv, France.tv, …) are watchable by everyone
+# regardless of STREAMING_SERVICES; flatrate providers require a matching
+# subscription. rent/buy/ads are intentionally not tracked — see _parse_fr.
+STREAMING_COLUMNS: tuple[str, ...] = ("flatrate", "free")
 
 # Persistent slug -> human-readable provider name catalogue. The JSON file is
 # the single source of truth across the app (page rails, card badges, chip
@@ -118,8 +128,9 @@ def _slugify(name: str) -> str:
     ``"Canal+" -> "canalplus"``, ``"Disney Plus" -> "disneyplus"``,
     ``"Amazon Prime Video" -> "amazonprimevideo"``. ``+`` maps to ``plus`` so
     ``"Canal+"`` and ``"Canal Plus"`` collapse to the same slug. Deliberately
-    table-free; a curated alias map is deferred to Phase 3 if TMDB naming
-    drift bites.
+    table-free; the shipped alias catalogue at
+    ``assets/provider_display_names.json`` handles TMDB naming drift instead
+    (see :func:`display_name`).
     """
     return re.sub(r"[^a-z0-9]", "", name.lower().replace("+", "plus"))
 
@@ -128,8 +139,12 @@ def _parse_fr(payload: dict) -> dict:
     """Extract the France block from a TMDB watch/providers payload.
 
     The endpoint returns ``results`` keyed by ISO country code. Returns
-    slugified provider-name list for ``flatrate`` plus the FR JustWatch deep
-    link. A missing ``FR`` key yields an empty list/link.
+    slugified provider-name lists for ``flatrate`` (subscription) and
+    ``free`` (no-cost, e.g. Arte.tv / France.tv) plus the FR JustWatch deep
+    link. We deliberately do not surface ``rent``/``buy``/``ads`` — those
+    require a per-title purchase or ad-supported viewing rather than being
+    "available" in the sense this dashboard cares about. A missing ``FR``
+    key yields empty lists/link.
     """
     fr = payload.get("results", {}).get("FR", {})
 
@@ -138,12 +153,13 @@ def _parse_fr(payload: dict) -> dict:
 
     return {
         "flatrate": _slugs("flatrate"),
+        "free": _slugs("free"),
         "tmdb_link": str(fr.get("link", "")),
     }
 
 
-def _fr_flatrate_name_pairs(payload: dict) -> dict[str, str]:
-    """Extract `{slug: original_provider_name}` for the FR flatrate block.
+def _fr_provider_name_pairs(payload: dict) -> dict[str, str]:
+    """Extract `{slug: original_provider_name}` for the FR flatrate + free blocks.
 
     Used by `refresh_streaming_providers` to grow the display-names catalogue
     with whatever TMDB returned, so newly-seen providers get a sensible label
@@ -151,10 +167,11 @@ def _fr_flatrate_name_pairs(payload: dict) -> dict[str, str]:
     """
     fr = payload.get("results", {}).get("FR", {})
     pairs: dict[str, str] = {}
-    for p in fr.get("flatrate", []):
-        name = p.get("provider_name")
-        if name:
-            pairs[_slugify(name)] = name
+    for key in STREAMING_COLUMNS:
+        for p in fr.get(key, []):
+            name = p.get("provider_name")
+            if name:
+                pairs[_slugify(name)] = name
     return pairs
 
 
@@ -162,7 +179,9 @@ def _read_cache(cache_path: Path) -> pd.DataFrame:
     """Read the streaming cache; return an empty typed frame if it's missing."""
     if cache_path.exists():
         return pd.read_parquet(cache_path)
-    return pd.DataFrame(columns=_CACHE_COLUMNS).astype({"tmdb_id": "string", "flatrate": "object", "tmdb_link": "string"})
+    return pd.DataFrame(columns=_CACHE_COLUMNS).astype(
+        {"tmdb_id": "string", "flatrate": "object", "free": "object", "tmdb_link": "string"}
+    )
 
 
 def _write_cache(df: pd.DataFrame, cache_path: Path) -> None:
@@ -268,7 +287,7 @@ def refresh_streaming_providers(
             errors += 1
             continue  # keep any stale row rather than dropping the film
         rows[tmdb_id] = {"tmdb_id": tmdb_id, **_parse_fr(payload), "fetched_at": now}
-        name_pairs.update(_fr_flatrate_name_pairs(payload))
+        name_pairs.update(_fr_provider_name_pairs(payload))
         fetched += 1
 
     out = pd.DataFrame(list(rows.values()), columns=_CACHE_COLUMNS) if rows else _read_cache(cache_path)
@@ -288,13 +307,16 @@ def refresh_streaming_providers(
 
 @st.cache_data(ttl=86400)
 def load_streaming_providers(movies_output: str) -> pd.DataFrame:  # pragma: no cover
-    """Read the FR streaming-providers cache (Phase 3 consumption point).
+    """Read the FR streaming-providers cache.
 
     Read-only, cached 24h. Takes ``str`` (not ``Path``) so the cache key
     stays stable across call sites, matching ``utils/data_loader.py``. The
     ``movies_output`` argument is accepted for call-site symmetry with the
     other loaders even though the cache lives in the dashboard's own
     ``data/`` dir. Returns an empty typed frame when the cache is absent.
+    Consumed by :func:`utils.data_loader.attach_streaming`, which joins the
+    ``STREAMING_COLUMNS`` (``flatrate``, ``free``) onto the watchlist by
+    ``tmdb_id``.
     """
     log.debug("Loading streaming providers cache (movies_output=%s)", movies_output)
     df = _read_cache(STREAMING_CACHE_PATH)

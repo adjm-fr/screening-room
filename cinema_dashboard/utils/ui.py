@@ -120,27 +120,37 @@ def _genre_chips_html(genres_str: str | None) -> str:
 
 def _streaming_badges_html(
     flatrate: object,
+    free: object,
     subscribed: set[str] | frozenset[str] | None,
 ) -> str:
     """Render streaming-availability chips for a single film.
 
     Subscribed services where the film is on flatrate render as filled chips
-    (``.chip--streaming``). Returns ``""`` when no chips would render, so
-    callers can safely interpolate the result unconditionally.
+    (``.chip--streaming``). Free-to-watch providers (Arte.tv, France.tv, …)
+    render as ``.chip--streaming-free`` chips regardless of subscription —
+    they're watchable by everyone — with the word "free" baked into the chip
+    text itself (not just the color) so the distinction holds for colorblind
+    users and screen readers (WCAG 1.4.1). Returns ``""`` when no chips would
+    render, so callers can safely interpolate the result unconditionally.
 
-    ``flatrate`` accepts lists, numpy arrays, ``None``, or ``NaN`` (parquet
-    object columns surface as any of these depending on the engine);
+    ``flatrate``/``free`` accept lists, numpy arrays, ``None``, or ``NaN``
+    (parquet object columns surface as any of these depending on the engine);
     everything else is treated as empty.
     """
     sub: frozenset[str] = frozenset(subscribed or ())
     flat = coerce_str_list(flatrate)
     subscribed_flat = [p for p in flat if p in sub]
-    if not subscribed_flat:
+    free_list = coerce_str_list(free)
+    if not subscribed_flat and not free_list:
         return ""
     catalogue = load_display_names_catalog()
-    chips: list[str] = []
-    for slug in subscribed_flat:
-        chips.append(f'<span class="chip chip--streaming">{html.escape(display_name(slug, catalogue))}</span>')
+    chips: list[str] = [
+        f'<span class="chip chip--streaming">{html.escape(display_name(slug, catalogue))}</span>' for slug in subscribed_flat
+    ]
+    chips.extend(
+        f'<span class="chip chip--streaming-free">{html.escape(display_name(slug, catalogue))} (free)</span>'
+        for slug in free_list
+    )
     return f'<div class="streaming-row">{"".join(chips)}</div>'
 
 
@@ -221,7 +231,7 @@ def _movie_card_html(
     rating_chip = _rating_chip_html(rating if isinstance(rating, (int, float)) else None)
     user_rating_chip = _user_rating_chip_html(user_rating if isinstance(user_rating, (int, float)) else None)
     genre_chips = _genre_chips_html(genres if isinstance(genres, str) else None)
-    streaming_chips = _streaming_badges_html(row.get("flatrate"), subscribed)
+    streaming_chips = _streaming_badges_html(row.get("flatrate"), row.get("free"), subscribed)
     sub = html.escape(directors) if directors else ""
 
     return (
@@ -322,7 +332,7 @@ def render_hero_card(
     eyebrow_str = f"{eyebrow_base} · {theater}" if theater else eyebrow_base
     meta_html = html.escape(directors) if directors else ""
     rating_chip = _rating_chip_html(rating if isinstance(rating, (int, float)) else None)
-    streaming_chips = _streaming_badges_html(row.get("flatrate"), subscribed)
+    streaming_chips = _streaming_badges_html(row.get("flatrate"), row.get("free"), subscribed)
     rating_html = f'<div style="margin-top: 0.75rem;">{rating_chip}</div>' if rating_chip else ""
     meta_block = f'<div class="hero-meta">{meta_html}</div>' if meta_html else ""
 

@@ -106,12 +106,16 @@ def main() -> None:
 
     # ── Available on streaming platforms ─────────────────────────────────────
     # When STREAMING_SERVICES is unset, fall back to "any provider" so the rail
-    # is still useful before the user configures their subscriptions.
+    # is still useful before the user configures their subscriptions. Free
+    # providers (Arte.tv, France.tv, …) always count as "available" regardless
+    # of STREAMING_SERVICES — they're watchable by everyone.
     wl_streaming = attach_streaming(watchlist_df, str(movies_path))
     if subscribed:
-        wl_streaming = wl_streaming[wl_streaming["flatrate"].apply(lambda f: bool(set(f) & subscribed))]
+        wl_streaming = wl_streaming[
+            wl_streaming.apply(lambda r: bool(set(r["flatrate"]) & subscribed) or bool(r["free"]), axis=1)
+        ]
     else:
-        wl_streaming = wl_streaming[wl_streaming["flatrate"].apply(lambda f: len(f) > 0)]
+        wl_streaming = wl_streaming[wl_streaming.apply(lambda r: bool(r["flatrate"]) or bool(r["free"]), axis=1)]
     if not wl_streaming.empty:
         # Rank by taste match when a profile exists; community rating breaks
         # ties and is the fallback ordering before any films are rated.

@@ -193,6 +193,10 @@ html, body, .stMarkdown, .stText {
   background: rgba(56, 178, 172, 0.18);
   border-color: rgba(56, 178, 172, 0.45);
 }
+.chip--streaming-free {
+  background: rgba(94, 114, 228, 0.16);
+  border: 1px dashed rgba(94, 114, 228, 0.5);
+}
 .chip--match {
   font-variant-numeric: tabular-nums;
   font-weight: 600;

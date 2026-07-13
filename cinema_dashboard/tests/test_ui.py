@@ -240,17 +240,18 @@ def test_to_ics_omits_optional_fields_when_missing():
 
 
 def test_streaming_badges_empty_when_no_data():
-    assert _streaming_badges_html([], {"mubi"}) == ""
-    assert _streaming_badges_html(None, {"mubi"}) == ""
+    assert _streaming_badges_html([], [], {"mubi"}) == ""
+    assert _streaming_badges_html(None, None, {"mubi"}) == ""
 
 
 def test_streaming_badges_empty_when_no_subscription_match():
-    # flatrate present but subscriber owns none of those services → hide.
-    assert _streaming_badges_html(["netflix"], {"mubi"}) == ""
+    # flatrate present but subscriber owns none of those services, and no free
+    # providers either → hide.
+    assert _streaming_badges_html(["netflix"], [], {"mubi"}) == ""
 
 
 def test_streaming_badges_subscribed_filled_first():
-    out = _streaming_badges_html(["mubi", "netflix"], {"mubi"})
+    out = _streaming_badges_html(["mubi", "netflix"], [], {"mubi"})
     assert 'class="chip chip--streaming"' in out
     # Only subscribed service shows up filled; non-subscribed flatrate is hidden.
     # Badges render the human-readable display name, not the raw slug.
@@ -261,7 +262,22 @@ def test_streaming_badges_subscribed_filled_first():
 def test_streaming_badges_tolerates_nan_inputs():
     import math
 
-    assert _streaming_badges_html(math.nan, {"mubi"}) == ""
+    assert _streaming_badges_html(math.nan, math.nan, {"mubi"}) == ""
+
+
+def test_streaming_badges_free_renders_regardless_of_subscription():
+    # Free providers show up even with no matching (or no) subscription.
+    out = _streaming_badges_html([], ["arte"], set())
+    assert 'class="chip chip--streaming-free"' in out
+    assert "ARTE (free)" in out
+
+
+def test_streaming_badges_free_and_subscribed_flatrate_both_render():
+    out = _streaming_badges_html(["mubi"], ["arte"], {"mubi"})
+    assert 'class="chip chip--streaming"' in out
+    assert 'class="chip chip--streaming-free"' in out
+    assert ">MUBI<" in out
+    assert "ARTE (free)" in out
 
 
 # ── match_chips_html / render_poster_rail extra_html_fn ────────────────────

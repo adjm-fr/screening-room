@@ -1,10 +1,14 @@
 """
-Streaming — watchlist films currently available on subscription streaming (France).
+Streaming — watchlist films currently available on streaming (France).
 
-One horizontal poster rail per provider. When ``STREAMING_SERVICES`` is set,
-rails are limited to those subscribed providers; otherwise every provider
-returned by TMDB for the watchlist gets a rail. The chip filter at the top
-operates on display names (``Canal+``, ``MUBI``…), not raw slugs.
+One horizontal poster rail per provider. Rails cover two kinds of
+availability: subscription (``flatrate``) providers, limited to the ones the
+user subscribes to via ``STREAMING_SERVICES`` (or every flatrate provider
+TMDB returns when that's unset), and no-cost ``free`` providers (e.g.
+Arte.tv, France.tv), which always get a rail regardless of
+``STREAMING_SERVICES`` — they're watchable by everyone. The chip filter at
+the top operates on display names (``Canal+``, ``MUBI``…) over the union of
+both, not raw slugs.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ def main() -> None:
         "</h1>",
         unsafe_allow_html=True,
     )
-    st.caption("Watchlist films currently available on subscription streaming in France. Source: TMDB FR.")
+    st.caption("Watchlist films currently available on subscription or free streaming in France. Source: TMDB FR.")
 
     if not movies_path:
         render_empty_state(
@@ -57,7 +61,7 @@ def main() -> None:
         watchlist_df = watchlist_df.rename(columns={"title": "letterboxd_title"})
 
     df = attach_streaming(watchlist_df, str(movies_path))
-    df = df[df["flatrate"].apply(lambda f: len(f) > 0)]
+    df = df[df.apply(lambda r: bool(r["flatrate"]) or bool(r["free"]), axis=1)]
 
     if df.empty:
         render_empty_state(
@@ -68,17 +72,23 @@ def main() -> None:
         return
 
     subscribed = settings.streaming_service_slugs
-    providers_present: set[str] = set()
-    for flat in df["flatrate"]:
-        providers_present.update(flat)
+    flatrate_present: set[str] = set()
+    free_present: set[str] = set()
+    for flat, free in zip(df["flatrate"], df["free"], strict=True):
+        flatrate_present.update(flat)
+        free_present.update(free)
 
-    providers_to_show = (subscribed & providers_present) if subscribed else providers_present
+    # Subscribed (or, when unset, every) flatrate provider, plus every free
+    # provider unconditionally — free platforms are watchable by everyone
+    # regardless of STREAMING_SERVICES.
+    flatrate_to_show = (subscribed & flatrate_present) if subscribed else flatrate_present
+    providers_to_show = flatrate_to_show | free_present
 
     if not providers_to_show:
         render_empty_state(
             "📺",
             "No matching streaming providers",
-            "None of your subscribed services currently carry watchlist films in France.",
+            "None of your subscribed services or free platforms currently carry watchlist films in France.",
         )
         return
 
@@ -126,7 +136,7 @@ def main() -> None:
         selected_slugs = {display_to_slug[d] for d in picked if d in display_to_slug}
 
     for slug in sorted(selected_slugs, key=lambda s: display_name(s, catalogue).lower()):
-        rows = df[df["flatrate"].apply(lambda flat, s=slug: s in flat)]
+        rows = df[df.apply(lambda r, s=slug: s in r["flatrate"] or s in r["free"], axis=1)]
         if rows.empty:
             continue
         rows = (

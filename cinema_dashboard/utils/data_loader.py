@@ -29,7 +29,7 @@ from common.parquet_io import read_parquet_validated
 from contracts import SHOWTIMES
 from modules.config import settings
 
-from utils.streaming import load_streaming_providers
+from utils.streaming import STREAMING_COLUMNS, load_streaming_providers
 from utils.taste import build_affinity, format_taste_profile
 
 log = logging.getLogger(__name__)
@@ -280,10 +280,11 @@ def build_taste_profile(ratings_df: pd.DataFrame) -> str:
 def attach_streaming(df: pd.DataFrame, movies_output: str) -> pd.DataFrame:
     """Left-join the FR streaming-providers cache onto ``df`` by ``tmdb_id``.
 
-    Adds ``flatrate`` column (``list[str]`` of slugified provider
-    names; empty lists for unmatched rows). Returns ``df`` with the columns
-    present and empty when the cache is missing/empty or the input lacks
-    ``tmdb_id`` — pages can render unchanged in either case (graceful no-op).
+    Adds one column per :data:`utils.streaming.STREAMING_COLUMNS` entry
+    (``flatrate``, ``free`` — each ``list[str]`` of slugified provider names;
+    empty lists for unmatched rows). Returns ``df`` with the columns present
+    and empty when the cache is missing/empty or the input lacks ``tmdb_id``
+    — pages can render unchanged in either case (graceful no-op).
 
     Not ``@st.cache_data``-decorated: the underlying
     :func:`utils.streaming.load_streaming_providers` already caches the read
@@ -292,19 +293,22 @@ def attach_streaming(df: pd.DataFrame, movies_output: str) -> pd.DataFrame:
     """
     out = df.copy()
     if "tmdb_id" not in out.columns or out.empty:
-        out["flatrate"] = [[] for _ in range(len(out))]
+        for col in STREAMING_COLUMNS:
+            out[col] = [[] for _ in range(len(out))]
         return out
 
     cache = load_streaming_providers(movies_output)
     if cache.empty:
-        out["flatrate"] = [[] for _ in range(len(out))]
+        for col in STREAMING_COLUMNS:
+            out[col] = [[] for _ in range(len(out))]
         return out
 
-    keep = cache[["tmdb_id", "flatrate"]].copy()
+    keep = cache[["tmdb_id", *STREAMING_COLUMNS]].copy()
     keep["tmdb_id"] = keep["tmdb_id"].astype(str)
     out["tmdb_id"] = out["tmdb_id"].astype(str)
     out = out.merge(keep, on="tmdb_id", how="left")
-    out["flatrate"] = out["flatrate"].apply(coerce_str_list)
+    for col in STREAMING_COLUMNS:
+        out[col] = out[col].apply(coerce_str_list)
     return out
 
 

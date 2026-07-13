@@ -26,9 +26,9 @@ Lead-with-the-answer overview hub: a hero card for tonight's next watchlist scre
 
 The "top matches this week" rail ranks this week's watchlist screenings against a taste profile induced from your ratings history (`utils/taste.py`): each rated director, genre, theme, and decade gets a signed, shrunk affinity centered on *your* average rating; candidate films blend those affinities through fixed weights plus a small Letterboxd-rating prior, mapped to a stable 0–100 match value. Cards show a "◎ {n}% match" badge (amber heatmap) and up to two "✓ because" chips naming the strongest positive contributors.
 
-The "available on streaming platforms" rail is drawn from the full watchlist (not the cinema join), ranked by taste match (Letterboxd rating as tie-break, and as fallback before any films are rated) and filtered to the providers in `STREAMING_SERVICES` when set — when unset it falls back to any provider so the rail is still useful before subscriptions are configured.
+The "available on streaming platforms" rail is drawn from the full watchlist (not the cinema join), ranked by taste match (Letterboxd rating as tie-break, and as fallback before any films are rated). A film counts as "available" when it's on a subscribed provider in `STREAMING_SERVICES` (or on any provider when that's unset) **or** on a no-cost provider (Arte.tv, France.tv, …) — free platforms always count, regardless of `STREAMING_SERVICES`.
 
-When `STREAMING_SERVICES` is configured, every card also shows a small badge row indicating which of your subscribed streaming services currently carries the film in France (filled chip).
+Every card shows a small badge row: subscribed services carrying the film (filled `chip--streaming`) when `STREAMING_SERVICES` is configured, plus a distinct dashed `chip--streaming-free` badge — labelled with the word "free" so the distinction isn't color-only — for any no-cost provider, unconditionally.
 
 **Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH`
 
@@ -37,7 +37,7 @@ When `STREAMING_SERVICES` is configured, every card also shows a small badge row
 Three calmer tabs in place of the old chart wall:
 - **Overview** — Genre × avg rating chart (rated films only) + micro-card insights (runtime distribution sparkline, top directors chip cloud, top themes chip cloud). A caption below the title clarifies the stats are based on your rated films count.
 - **Discover** — chip filters (genre, director multiselect with live search, min-rating slider) over a poster rail of matching films. Each card shows your own star rating as a green chip (Letterboxd convention) next to the amber Letterboxd community average; both ratings are on the same 0–5 scale.
-- **Tables** — raw dataframes with poster, IMDB, TMDB, and Letterboxd link columns. When `STREAMING_SERVICES` is set, a "Streaming on" column lists the subscribed services currently carrying each film.
+- **Tables** — raw dataframes with poster, IMDB, TMDB, and Letterboxd link columns. A "Streaming on" column lists, per film, the subscribed services currently carrying it (when `STREAMING_SERVICES` is set) plus every no-cost provider suffixed `(free)` (e.g. `netflix, arte-tv (free)`) — free platforms always show, subscription-gated ones don't.
 
 **Requires**: `OUTPUT_PATH`
 
@@ -56,7 +56,7 @@ The free-time toggle (which replaced the old weekend toggle) narrows to screenin
 
 One horizontal poster rail per FR streaming provider, populated from the TMDB watch-providers cache. Films are taken from your full watchlist (not only those with upcoming showtimes), sorted by Letterboxd average rating per rail. A multi-select chip filter at the top (with an inclusive *All* sentinel) lets you focus on one or more providers using human-readable provider names (e.g. *Canal+*, *MUBI*). The slug → pretty-name map is persisted at `assets/provider_display_names.json` and auto-grows every time `orchestrate.py` refreshes the cache and TMDB returns a new provider.
 
-When `STREAMING_SERVICES` is set, only rails for your subscribed providers appear. When unset, every provider returned by TMDB for your watchlist gets a rail. The page is explicitly FR-scoped — availability comes from TMDB's France region.
+Rails cover two kinds of availability: subscription (`flatrate`) providers, limited to your `STREAMING_SERVICES` when set (every flatrate provider TMDB returns when it's unset), and no-cost `free` providers (e.g. Arte.tv, France.tv) — free platforms always get a rail, regardless of `STREAMING_SERVICES`, since they're watchable by everyone. The chip filter operates over the union of both. The page is explicitly FR-scoped — availability comes from TMDB's France region, and only `flatrate`/`free` are tracked (rent/buy/ads listings are intentionally not surfaced).
 
 **Requires**: `OUTPUT_PATH` (+ `TMDB_API_KEY` set when running `orchestrate.py` so the cache is populated)
 
@@ -73,7 +73,7 @@ Power-user surface: prompt-suggestion chips, streaming spinner with transparent 
 
 The same assistant is reachable from any page via the global **`Cmd+K`** command palette (or the "✦ Ask AI" sidebar button). Both surfaces share a single `st.session_state['chat']` (a `ChatState` dataclass) so the conversation persists across them.
 
-The page derives a taste profile from your Letterboxd ratings (favourite *and least favourite* genres, themes, directors, and eras, ranked by the signed affinities in `utils/taste.py`) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted. When the FR streaming-providers cache is populated, per-film flatrate availability is injected into the system prompt, and the model is rule-bound to only reference providers from that list (no hallucinated availability).
+The page derives a taste profile from your Letterboxd ratings (favourite *and least favourite* genres, themes, directors, and eras, ranked by the signed affinities in `utils/taste.py`) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted. When the FR streaming-providers cache is populated, per-film availability is injected into the system prompt as `flatrate={a, b}` (subscription providers) plus, when the film also has one, `; free={c}` (no-cost providers) — and the model is rule-bound to only reference providers from those lists (no hallucinated availability).
 
 #### Auto-adding theaters
 
@@ -145,7 +145,7 @@ cinema_dashboard/
 │   └── theater_manager.py        # Reads/appends to the theaters CSV
 ├── tests/
 │   ├── conftest.py               # Shared fixtures + @st.cache_data no-op patch
-│   ├── test_*.py                 # Unit tests for data_loader, taste, ui, chat, streaming, geo, scrapers, config, allocine_search
+│   ├── test_*.py                 # Unit tests for data_loader, taste, ui, chat, streaming, database, geo, scrapers, config, allocine_search
 │   └── evals/                    # LLM hallucination evals (opt-in via `-m evals`)
 │       ├── goldens.py            # Bait prompts + allowed film/provider sets
 │       ├── metrics.py            # FilmSetMembership + StreamingClaim DeepEval metrics
@@ -189,8 +189,8 @@ only the keys it declares. The keys this member uses:
 | `GEMINI_MAX_TOKENS` | Max output tokens for model responses (default: 1024) |
 | `GEMINI_TEMPERATURE` | Sampling temperature; lower = more deterministic (default: 0.2) |
 | `GEMINI_TOP_P` | Nucleus sampling cutoff; lower = less creative drift (default: 0.8) |
-| `TMDB_API_KEY` | *(optional)* TMDB v3 API key. Enables the FR streaming-availability cache (`data/streaming_providers.parquet`) refreshed by `orchestrate.py`. Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
-| `STREAMING_SERVICES` | *(optional)* Comma-separated provider slugs you subscribe to (e.g. `mubi,netflix,canalplus,arte`). Enables streaming badges on the Home page's movie cards, the Database "Streaming on" column, and the Recommendations chat's awareness of FR availability. When unset, every streaming surface silently no-ops. |
+| `TMDB_API_KEY` | *(optional)* TMDB v3 API key. Enables the FR streaming-availability cache (`data/streaming_providers.parquet`, both `flatrate` and no-cost `free` providers) refreshed by `orchestrate.py`. Free at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api) |
+| `STREAMING_SERVICES` | *(optional)* Comma-separated **subscription** provider slugs you pay for (e.g. `mubi,netflix,canalplus`). Gates which `flatrate` providers show as streaming badges on the Home page's movie cards, the Database "Streaming on" column, and the Recommendations chat's awareness of FR availability. No-cost providers (Arte.tv, France.tv, …) always surface regardless of this setting — they're watchable by everyone. When unset, flatrate surfaces fall back to "any provider"; free surfaces are unaffected either way. |
 | `ALLOCINE_DIR` | *(optional)* Absolute path to the `Allocine-Showtimes-Scraping` repo. Defaults to `../Allocine-Showtimes-Scraping` relative to this repo. |
 | `MOVIES_DIR` | *(optional)* Absolute path to the `movies_management` repo. Defaults to `../movies_management` relative to this repo. |
 

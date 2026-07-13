@@ -552,23 +552,25 @@ def test_normalize_title_preserves_digits():
 
 
 def test_attach_streaming_no_tmdb_id_column(mocker):
-    """Input without ``tmdb_id`` gets an empty list column, no merge attempted."""
+    """Input without ``tmdb_id`` gets empty list columns for both channels, no merge attempted."""
     df = pd.DataFrame({"title": ["A"]})
     load = mocker.patch("utils.data_loader.load_streaming_providers")
     out = attach_streaming(df, "/tmp/movies")
     load.assert_not_called()
     assert out["flatrate"].tolist() == [[]]
+    assert out["free"].tolist() == [[]]
 
 
 def test_attach_streaming_empty_cache_returns_empty_lists(mocker):
     df = pd.DataFrame({"tmdb_id": ["1", "2"], "title": ["A", "B"]})
     mocker.patch(
         "utils.data_loader.load_streaming_providers",
-        return_value=pd.DataFrame(columns=["tmdb_id", "flatrate", "tmdb_link", "fetched_at"]),
+        return_value=pd.DataFrame(columns=["tmdb_id", "flatrate", "free", "tmdb_link", "fetched_at"]),
     )
     out = attach_streaming(df, "/tmp/movies")
     assert len(out) == 2
     assert all(v == [] for v in out["flatrate"])
+    assert all(v == [] for v in out["free"])
 
 
 def test_attach_streaming_left_join_preserves_unmatched(mocker):
@@ -577,6 +579,7 @@ def test_attach_streaming_left_join_preserves_unmatched(mocker):
         {
             "tmdb_id": ["1", "3"],
             "flatrate": [["mubi"], ["netflix", "canalplus"]],
+            "free": [[], ["arte"]],
             "tmdb_link": ["", ""],
             "fetched_at": [pd.Timestamp.now("UTC"), pd.Timestamp.now("UTC")],
         }
@@ -584,5 +587,8 @@ def test_attach_streaming_left_join_preserves_unmatched(mocker):
     mocker.patch("utils.data_loader.load_streaming_providers", return_value=cache)
     out = attach_streaming(df, "/tmp/movies").set_index("tmdb_id")
     assert out.loc["1", "flatrate"] == ["mubi"]
+    assert out.loc["1", "free"] == []
     assert out.loc["2", "flatrate"] == []  # unmatched → empty list, not NaN
+    assert out.loc["2", "free"] == []
     assert out.loc["3", "flatrate"] == ["netflix", "canalplus"]
+    assert out.loc["3", "free"] == ["arte"]

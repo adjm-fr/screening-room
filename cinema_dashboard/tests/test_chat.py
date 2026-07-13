@@ -37,3 +37,44 @@ def test_streaming_context_dedups_by_title():
         }
     )
     assert _streaming_context(df).count("Same") == 1
+
+
+def test_streaming_context_appends_free_segment_when_present():
+    df = pd.DataFrame(
+        {
+            "letterboxd_title": ["Has Free"],
+            "flatrate": [["mubi"]],
+            "free": [["arte"]],
+        }
+    )
+    out = _streaming_context(df)
+    assert "flatrate=mubi" in out
+    assert "; free=arte" in out
+
+
+def test_streaming_context_omits_free_segment_when_absent():
+    df = pd.DataFrame(
+        {
+            "letterboxd_title": ["No Free"],
+            "flatrate": [["mubi"]],
+            "free": [[]],
+        }
+    )
+    out = _streaming_context(df)
+    assert "flatrate=mubi" in out
+    assert "free=" not in out
+
+
+def test_streaming_context_includes_free_only_film():
+    # A film with no flatrate provider but a free one must still surface —
+    # free platforms are available to everyone.
+    df = pd.DataFrame(
+        {
+            "letterboxd_title": ["Free Only"],
+            "flatrate": [[]],
+            "free": [["arte"]],
+        }
+    )
+    out = _streaming_context(df)
+    assert "Free Only" in out
+    assert "; free=arte" in out

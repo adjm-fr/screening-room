@@ -147,6 +147,11 @@ def _streaming_context(wl_shows: pd.DataFrame) -> str:
     Empty string when no rows carry streaming data (cache missing or no hits).
     Caller is expected to skip the streaming block in the system prompt when
     this is empty, so the LLM doesn't get distracted by an empty section.
+
+    Line format: ``- {title} — flatrate={a, b}``. This segment is kept
+    stable — it's an eval contract (see ``tests/evals/goldens.py``). A
+    ``; free={c}`` segment is appended only when the film also has
+    free-to-watch providers (Arte.tv, France.tv, …).
     """
     if "flatrate" not in wl_shows.columns:
         return ""
@@ -158,9 +163,13 @@ def _streaming_context(wl_shows: pd.DataFrame) -> str:
         if not isinstance(title, str) or title in seen:
             continue
         flat = row.get("flatrate") if isinstance(row.get("flatrate"), list) else []
-        if not flat:
+        free = row.get("free") if isinstance(row.get("free"), list) else []
+        if not flat and not free:
             continue
-        lines.append(f"- {title} — flatrate={', '.join(flat)}")
+        line = f"- {title} — flatrate={', '.join(flat)}"
+        if free:
+            line += f"; free={', '.join(free)}"
+        lines.append(line)
         seen.add(title)
     return "\n".join(lines)
 

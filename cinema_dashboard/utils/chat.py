@@ -9,12 +9,17 @@ The chat is mounted in two places:
   column, shares the same conversation state via Streamlit ``session_state``)
 
 Both surfaces share a single ``session_state['chat']`` (a :class:`ChatState`
-dataclass) so the conversation persists across them.
+dataclass) so the conversation persists across them. The transcript and pinned
+recommendations are additionally persisted to ``data/chat_state.json``
+(:data:`CHAT_STATE_PATH`, gitignored beside the streaming/geo caches) so they
+survive app restarts — loaded on first session access, saved after each
+assistant turn and pin change, deleted by "Clear conversation".
 
 This module owns:
     build_chat_context()  -> ChatContext | None  (config + data validation)
     render_chat(ctx, ...) -> None                (the UI)
     PROMPT_SUGGESTIONS    : list[str]            (chip-row examples)
+    save_chat_state() / load_chat_state() / delete_chat_state()  (disk persistence)
 
 The Gemini API call lives in :func:`_ask_gemini` which streams the assistant
 reply and handles a single round of ``search_theater`` tool use.
@@ -23,6 +28,7 @@ reply and handles a single round of ``search_theater`` tool use.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -62,6 +68,10 @@ class ChatState:
     (``theaters_backfilled``, ``_cmdk_open``) live outside this dataclass on
     purpose. Reset the conversation by replacing the object:
     ``st.session_state['chat'] = ChatState()``.
+
+    Only ``messages`` and ``pinned_recs`` are persisted to disk
+    (:func:`save_chat_state`); the remaining fields are per-run ephemera and
+    stay session-only.
     """
 
     messages: list[dict] = dataclasses.field(default_factory=list)
@@ -72,10 +82,64 @@ class ChatState:
     pending_prompt: str | None = None
 
 
+# On-disk snapshot of the conversation (transcript + pinned recommendations),
+# stored in the gitignored ``data/`` dir beside the streaming/geo caches.
+# Module-level so tests can patch it (same pattern as
+# ``utils.streaming.PROVIDER_DISPLAY_NAMES_PATH``); the helpers below resolve
+# it at call time, not at function-definition time.
+CHAT_STATE_PATH = Path("data") / "chat_state.json"
+
+
+def save_chat_state(state: ChatState, path: Path | None = None) -> None:
+    """Persist the transcript and pinned recommendations to ``path``.
+
+    Pinned rows carry ``pd.Timestamp`` values, serialized via ``default=str``;
+    the pinned renderer re-parses them with ``pd.to_datetime``, so string
+    dates round-trip fine.
+    """
+    path = path or CHAT_STATE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump({"messages": state.messages, "pinned_recs": state.pinned_recs}, f, ensure_ascii=False, default=str)
+
+
+def load_chat_state(path: Path | None = None) -> ChatState:
+    """Return the persisted :class:`ChatState`, or a fresh one when unavailable.
+
+    An absent file (normal first run) and a corrupt/unreadable one (logged as
+    a warning) both yield a fresh state — loading never crashes the page.
+    """
+    path = path or CHAT_STATE_PATH
+    if not path.exists():
+        return ChatState()
+    try:
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"expected a JSON object, got {type(data).__name__}")
+        messages = data.get("messages") or []
+        pinned_recs = data.get("pinned_recs") or []
+        if not isinstance(messages, list) or not isinstance(pinned_recs, list):
+            raise ValueError("'messages' and 'pinned_recs' must be lists")
+        return ChatState(messages=messages, pinned_recs=pinned_recs)
+    except (OSError, ValueError) as exc:  # json.JSONDecodeError subclasses ValueError
+        log.warning("Discarding unreadable chat state at %s: %s", path, exc)
+        return ChatState()
+
+
+def delete_chat_state(path: Path | None = None) -> None:
+    """Delete the persisted chat state; a missing file is a no-op."""
+    (path or CHAT_STATE_PATH).unlink(missing_ok=True)
+
+
 def chat_state() -> ChatState:
-    """Return the shared :class:`ChatState`, creating it on first access."""
+    """Return the shared :class:`ChatState`, creating it on first access.
+
+    First access loads the persisted transcript + pins from
+    :data:`CHAT_STATE_PATH`, so the conversation survives app restarts.
+    """
     if "chat" not in st.session_state:
-        st.session_state["chat"] = ChatState()
+        st.session_state["chat"] = load_chat_state()
     return cast(ChatState, st.session_state["chat"])
 
 
@@ -524,6 +588,7 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
                         status.update(label="Done", state="complete")
 
             state.messages.append({"role": "assistant", "content": reply})
+            save_chat_state(state)
 
             pinnable = _find_pinnable_titles(reply, ctx.wl_shows)
             if pinnable:
@@ -549,6 +614,7 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
             with c2:
                 if st.button("🗑 Clear conversation", use_container_width=True):
                     st.session_state["chat"] = ChatState()
+                    delete_chat_state()
                     st.rerun()
 
     if pinned_col is not None:
@@ -563,12 +629,15 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
                 )
                 if to_pin:
                     existing = {p["letterboxd_title"] for p in state.pinned_recs}
+                    n_before = len(state.pinned_recs)
                     for title in to_pin:
                         if title in existing:
                             continue
                         match = ctx.wl_shows[ctx.wl_shows["letterboxd_title"] == title].head(1)
                         if not match.empty:
                             state.pinned_recs.append(match.iloc[0].to_dict())
+                    if len(state.pinned_recs) > n_before:
+                        save_chat_state(state)
 
             if not state.pinned_recs:
                 st.caption("Pinned recommendations will appear here.")
@@ -582,4 +651,5 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
                         st.caption(f"🎟 {when}{f' — {theater}' if isinstance(theater, str) and theater else ''}")
                 if st.button("Clear pins", key="clear_pins", use_container_width=True):
                     state.pinned_recs = []
+                    save_chat_state(state)
                     st.rerun()

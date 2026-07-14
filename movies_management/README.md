@@ -69,8 +69,8 @@ LETTERBOXD_DAYS_TO_UPDATE=365
 |----------|----------|---------|-------------|
 | `OUTPUT_PATH` | Yes | — | Directory path where parquet files will be saved |
 | `LETTERBOXD_DAYS_TO_UPDATE` | No | `365` | Number of days before cached movie metadata is refreshed |
-| `LETTERBOXD_REFRESH_LIMIT` | No | `1000` | Max stale movies to refresh per run (raise to lift the cap) |
-| `TMDB_API_KEY` | No | — | TMDB API key for French title enrichment (`french_title` column). Pipeline runs without it; French title stays `null` |
+| `LETTERBOXD_REFRESH_LIMIT` | No | `1000` | Max stale/incomplete movies to refresh per run (raise to lift the cap) |
+| `TMDB_API_KEY` | No | — | TMDB API key for French title, cast, and trailer enrichment (`french_title`, `cast`, `trailer_url` columns). Pipeline runs without it; those columns stay `null` |
 
 ## Usage
 
@@ -86,8 +86,10 @@ This will:
 1. Fetch your Letterboxd films and watchlist
 2. Identify all unique movies
 3. Build/update the movie metadata cache
-4. Refresh any cached entries older than `LETTERBOXD_DAYS_TO_UPDATE` days
+4. Refresh any cached entries older than `LETTERBOXD_DAYS_TO_UPDATE` days, plus entries missing the TMDB `cast`/`trailer_url` enrichment (see below)
 5. Export enriched datasets
+
+Cache rows written before the `cast`/`trailer_url` columns existed are backfilled gradually: each run adds missing-cast rows to the refresh batch, still bounded by `LETTERBOXD_REFRESH_LIMIT`, so a large cache converges over a few runs. `--reset_database` remains the immediate full-rebuild escape hatch.
 
 ### Force Cache Refresh
 
@@ -143,6 +145,7 @@ The application generates three parquet files in your `OUTPUT_PATH`:
 **Media:**
 - `poster_url` - URL to movie poster image
 - `banner_url` - URL to movie banner image
+- `trailer_url` - Official YouTube trailer link from TMDB (French preferred, then English, then any other language); `null` when `TMDB_API_KEY` is unset or TMDB has no matching official trailer
 
 **Genres & Themes:**
 - `genres` - Comma-separated primary genres (e.g., "Drama, Sci-Fi")
@@ -153,6 +156,7 @@ The application generates three parquet files in your `OUTPUT_PATH`:
 - `directors` - Comma-separated director names
 - `producers` - Comma-separated producer names
 - `writers` - Comma-separated writer names
+- `cast` - Top 8 billed cast names, comma-separated, from TMDB (leads only, kept short to keep the taste signal clean); `null` when `TMDB_API_KEY` is unset or TMDB has no cast data
 
 **Dynamic Details Columns:**
 - `studio` - Production studio(s)
@@ -237,7 +241,7 @@ Split by source → Output files (ratings + watchlist)
 
 1. **Caching** - Movie metadata is cached locally to minimize API calls. New movies are fetched, existing entries are reused.
 
-2. **Intelligent Refresh** - Only movies older than `days_to_update` are refreshed, reducing API load while keeping data relatively fresh.
+2. **Intelligent Refresh** - Movies older than `days_to_update` — plus rows missing the TMDB `cast`/`trailer_url` enrichment — are refreshed, reducing API load while keeping data relatively fresh; both share the per-run `LETTERBOXD_REFRESH_LIMIT` cap.
 
 3. **Parallel Fetching** - Uses thread pool (10 workers) to fetch movies concurrently, improving performance for large libraries.
 

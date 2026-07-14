@@ -98,6 +98,22 @@ def find_stale_slugs(df: pd.DataFrame, days_to_update: int, now: pd.Timestamp) -
     return df[age_days > days_to_update]["slug"].tolist()
 
 
+def find_missing_cast_slugs(df: pd.DataFrame) -> list[str]:
+    """Return slugs whose ``cast`` column is missing (column absent) or null.
+
+    Cache rows written before the ``cast``/``trailer_url`` columns existed (added after
+    the initial Letterboxd+TMDB pass) have no value for either — both are fetched together
+    from TMDB, so a null ``cast`` is a sufficient backfill signal. Used to gradually
+    refresh those rows alongside stale entries, within the normal per-run refresh limit,
+    until the whole cache converges.
+    """
+    if df.empty:
+        return []
+    if "cast" not in df.columns:
+        return df["slug"].tolist()
+    return df.loc[df["cast"].isna(), "slug"].tolist()
+
+
 def save_parquet(df: pd.DataFrame, column_order: list[str], path: str | os.PathLike) -> None:
     """Reorder columns and write df to parquet at path."""
     reorder_columns(df, column_order).to_parquet(path, index=False)

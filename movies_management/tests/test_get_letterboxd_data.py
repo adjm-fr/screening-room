@@ -14,8 +14,10 @@ import respx
 from modules.get_letterboxd_data import (
     TMDB_API_URL,
     _fetch_all,
+    _fetch_cast,
     _fetch_french_title,
     _fetch_movie,
+    _fetch_trailer,
     get_letterboxd_data,
     refresh_letterboxd_data,
 )
@@ -214,6 +216,33 @@ def test_dead_slug_is_pruned_from_cache(mocker):
     assert "slug-b" in result["slug"].values
 
 
+def test_refresh_adds_columns_missing_from_target_cache(mocker):
+    """Regression test: DataFrame.update() silently ignores columns absent from the
+    target, so a cache predating cast/trailer_url must still gain them on refresh
+    instead of the refreshed values being dropped.
+    """
+    df = pd.DataFrame([{"slug": "slug-a", "title": "Old Title"}])
+    df["integration_date"] = pd.to_datetime(date(2023, 1, 1))
+    assert "cast" not in df.columns
+    assert "trailer_url" not in df.columns
+
+    mocker.patch(
+        "modules.get_letterboxd_data._fetch_movie",
+        return_value={"slug": "slug-a", "title": "New Title", "tmdb_id": "42"},
+    )
+    mocker.patch("modules.get_letterboxd_data._fetch_french_title", return_value=None)
+    mocker.patch("modules.get_letterboxd_data._fetch_cast", return_value="Actor A, Actor B")
+    mocker.patch("modules.get_letterboxd_data._fetch_trailer", return_value="https://www.youtube.com/watch?v=abc123")
+
+    result = refresh_letterboxd_data(df, ["slug-a"], "fake-key")
+
+    assert "cast" in result.columns
+    assert "trailer_url" in result.columns
+    row = result.loc[result["slug"] == "slug-a"].iloc[0]
+    assert row["cast"] == "Actor A, Actor B"
+    assert row["trailer_url"] == "https://www.youtube.com/watch?v=abc123"
+
+
 # ── retry behaviour ───────────────────────────────────────────────────────────
 
 
@@ -268,13 +297,137 @@ async def test_fetch_french_title_returns_none_when_api_key_empty():
         assert await _fetch_french_title(client, "12345", "") is None
 
 
+# ── _fetch_cast (async, httpx + respx) ──────────────────────────────────────────
+
+
+@respx.mock
+async def test_fetch_cast_truncates_to_top_8_comma_joined():
+    cast = [{"name": f"Actor {i}", "order": i} for i in range(12)]
+    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"cast": cast}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_cast(client, "12345", "fake-key")
+    assert result == ", ".join(f"Actor {i}" for i in range(8))
+
+
+@respx.mock
+async def test_fetch_cast_joins_all_when_fewer_than_8():
+    cast = [{"name": "Actor A", "order": 0}, {"name": "Actor B", "order": 1}]
+    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"cast": cast}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_cast(client, "12345", "fake-key")
+    assert result == "Actor A, Actor B"
+
+
+async def test_fetch_cast_returns_none_when_tmdb_id_falsy():
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_cast(client, None, "fake-key") is None
+        assert await _fetch_cast(client, "", "fake-key") is None
+
+
+async def test_fetch_cast_returns_none_when_api_key_empty():
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_cast(client, "12345", "") is None
+
+
+@respx.mock
+async def test_fetch_cast_returns_none_on_http_error():
+    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(404))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_cast(client, "12345", "fake-key")
+    assert result is None
+
+
+# ── _fetch_trailer (async, httpx + respx) ───────────────────────────────────────
+
+
+def _video(key: str, lang: str | None, *, official: bool = True, site: str = "YouTube", video_type: str = "Trailer") -> dict:
+    return {"key": key, "iso_639_1": lang, "official": official, "site": site, "type": video_type}
+
+
+@respx.mock
+async def test_fetch_trailer_prefers_french_over_english():
+    videos = [_video("en-key", "en"), _video("fr-key", "fr")]
+    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": videos}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_trailer(client, "12345", "fake-key")
+    assert result == "https://www.youtube.com/watch?v=fr-key"
+
+
+@respx.mock
+async def test_fetch_trailer_falls_back_to_english_when_no_french():
+    videos = [_video("de-key", "de"), _video("en-key", "en")]
+    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": videos}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_trailer(client, "12345", "fake-key")
+    assert result == "https://www.youtube.com/watch?v=en-key"
+
+
+@respx.mock
+async def test_fetch_trailer_falls_back_to_other_language_when_no_fr_or_en():
+    videos = [_video("de-key", "de")]
+    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": videos}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_trailer(client, "12345", "fake-key")
+    assert result == "https://www.youtube.com/watch?v=de-key"
+
+
+@respx.mock
+async def test_fetch_trailer_excludes_unofficial_teaser_and_non_youtube():
+    videos = [
+        _video("unofficial-key", "fr", official=False),
+        _video("teaser-key", "fr", video_type="Teaser"),
+        _video("vimeo-key", "fr", site="Vimeo"),
+    ]
+    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": videos}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_trailer(client, "12345", "fake-key")
+    assert result is None
+
+
+@respx.mock
+async def test_fetch_trailer_returns_none_on_empty_results():
+    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": []}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_trailer(client, "12345", "fake-key")
+    assert result is None
+
+
+async def test_fetch_trailer_returns_none_when_tmdb_id_falsy():
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_trailer(client, None, "fake-key") is None
+
+
+async def test_fetch_trailer_returns_none_when_api_key_empty():
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_trailer(client, "12345", "") is None
+
+
+@respx.mock
+async def test_fetch_trailer_returns_none_on_http_error():
+    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(404))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_trailer(client, "12345", "fake-key")
+    assert result is None
+
+
+# ── _fetch_all TMDB enrichment integration ──────────────────────────────────────
+
+
 @respx.mock
 async def test_fetch_all_attaches_french_title(mocker, make_movie):
     movie_mock = make_movie()
     movie_mock.tmdb_id = "42"
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=movie_mock)
     respx.get(f"{TMDB_API_URL}/movie/42").mock(return_value=httpx.Response(200, json={"title": "Titre Français"}))
+    respx.get(f"{TMDB_API_URL}/movie/42/credits").mock(
+        return_value=httpx.Response(200, json={"cast": [{"name": "Actor A", "order": 0}]})
+    )
+    respx.get(f"{TMDB_API_URL}/movie/42/videos").mock(
+        return_value=httpx.Response(200, json={"results": [_video("fr-key", "fr")]})
+    )
 
     results = await _fetch_all(["some-slug"], api_key="fake-key")
     assert results[0] is not None
     assert results[0]["french_title"] == "Titre Français"
+    assert results[0]["cast"] == "Actor A"
+    assert results[0]["trailer_url"] == "https://www.youtube.com/watch?v=fr-key"

@@ -12,7 +12,6 @@ htmlcov/
 
 # Secrets & local config
 .env
-CLAUDE.md
 
 # Data caches / outputs
 *.parquet

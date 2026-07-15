@@ -6,7 +6,13 @@ All functions are pure (no network, no I/O) and tested directly.
 
 import pandas as pd
 import pytest
-from modules.utils import build_movies_df, find_stale_slugs, merge_letterboxd_metadata, reorder_columns
+from modules.utils import (
+    build_movies_df,
+    find_missing_cast_slugs,
+    find_stale_slugs,
+    merge_letterboxd_metadata,
+    reorder_columns,
+)
 
 # ── all_movies_df construction ────────────────────────────────────────────────
 
@@ -175,3 +181,28 @@ def test_no_stale_entries_returns_empty():
         }
     )
     assert find_stale_slugs(df, 365, now) == []
+
+
+# ── missing-cast backfill selection ─────────────────────────────────────────────
+# main.py adds these slugs to slugs_to_refresh alongside stale ones so a cache that
+# predates the cast/trailer_url columns gradually backfills them within the refresh limit.
+
+
+def test_null_cast_rows_are_flagged_for_backfill():
+    df = pd.DataFrame({"slug": ["has-cast", "missing-cast"], "cast": ["Actor A", None]})
+    assert find_missing_cast_slugs(df) == ["missing-cast"]
+
+
+def test_all_slugs_flagged_when_cast_column_absent():
+    # A cache written before the cast column existed at all — every row is a candidate.
+    df = pd.DataFrame({"slug": ["a", "b"]})
+    assert find_missing_cast_slugs(df) == ["a", "b"]
+
+
+def test_no_slugs_flagged_when_all_cast_present():
+    df = pd.DataFrame({"slug": ["a"], "cast": ["Actor A"]})
+    assert find_missing_cast_slugs(df) == []
+
+
+def test_missing_cast_slugs_empty_df_returns_empty():
+    assert find_missing_cast_slugs(pd.DataFrame()) == []

@@ -64,6 +64,105 @@ async def _fetch_french_title(client: httpx.AsyncClient, tmdb_id: str | None, ap
     return None
 
 
+@retry(
+    stop=_RETRY_STOP,
+    wait=_RETRY_WAIT,
+    reraise=True,
+    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+)
+async def _get_tmdb_credits(client: httpx.AsyncClient, tmdb_id: str, api_key: str) -> httpx.Response:
+    """GET a TMDB movie's credits, retrying on transport errors and 429/5xx responses."""
+    resp = await client.get(
+        f"{TMDB_API_URL}/movie/{tmdb_id}/credits",
+        params={"api_key": api_key},
+        timeout=10,
+    )
+    # Same contract as _get_tmdb_movie: 429/5xx are retried, other 4xx raise but aren't
+    # retried — caught by _fetch_cast and surfaced as None.
+    if resp.status_code == 429 or resp.status_code >= 500:
+        resp.raise_for_status()
+    return resp
+
+
+async def _fetch_cast(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> str | None:
+    """Fetch a film's top-8 billed cast from TMDB using an injected async client.
+
+    TMDB returns ``cast`` pre-sorted by billing ``order``, so the first 8 entries are the
+    leads — kept intentionally short to keep the taste signal clean.
+
+    Returns None when ``tmdb_id`` or ``api_key`` is falsy, on any non-200 response, or
+    when the request keeps failing after retries — never raises into the batch.
+    """
+    if not tmdb_id or not api_key:
+        return None
+    try:
+        resp = await _get_tmdb_credits(client, tmdb_id, api_key)
+        if resp.status_code == 200:
+            cast = resp.json().get("cast") or []
+            names = [member["name"] for member in cast[:8] if member.get("name")]
+            return ", ".join(names) or None
+        logger.debug("TMDB credits returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
+    except Exception as e:
+        logger.debug("TMDB credits fetch failed for tmdb_id=%s: %s", tmdb_id, e)
+    return None
+
+
+@retry(
+    stop=_RETRY_STOP,
+    wait=_RETRY_WAIT,
+    reraise=True,
+    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
+)
+async def _get_tmdb_videos(client: httpx.AsyncClient, tmdb_id: str, api_key: str) -> httpx.Response:
+    """GET a TMDB movie's videos, retrying on transport errors and 429/5xx responses."""
+    resp = await client.get(
+        f"{TMDB_API_URL}/movie/{tmdb_id}/videos",
+        params={"include_video_language": "fr,en,null", "api_key": api_key},
+        timeout=10,
+    )
+    # Same contract as _get_tmdb_movie: 429/5xx are retried, other 4xx raise but aren't
+    # retried — caught by _fetch_trailer and surfaced as None.
+    if resp.status_code == 429 or resp.status_code >= 500:
+        resp.raise_for_status()
+    return resp
+
+
+# Lower is better: French trailers are preferred over English, which are preferred over
+# anything else. Anything not in this mapping (including missing iso_639_1) sorts last.
+_TRAILER_LANGUAGE_PRIORITY = {"fr": 0, "en": 1}
+
+
+async def _fetch_trailer(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> str | None:
+    """Fetch a film's official YouTube trailer link from TMDB using an injected async client.
+
+    Filters TMDB's videos to ``site == "YouTube"``, ``type == "Trailer"``, ``official is
+    True``, then picks the best-language match: French, else English, else any other
+    language (see ``_TRAILER_LANGUAGE_PRIORITY``).
+
+    Returns None when ``tmdb_id`` or ``api_key`` is falsy, when no video matches the
+    filters, on any non-200 response, or when the request keeps failing after retries —
+    never raises into the batch.
+    """
+    if not tmdb_id or not api_key:
+        return None
+    try:
+        resp = await _get_tmdb_videos(client, tmdb_id, api_key)
+        if resp.status_code == 200:
+            videos = resp.json().get("results") or []
+            trailers = [
+                v for v in videos if v.get("site") == "YouTube" and v.get("type") == "Trailer" and v.get("official") is True
+            ]
+            if not trailers:
+                return None
+            best = min(trailers, key=lambda v: _TRAILER_LANGUAGE_PRIORITY.get(v.get("iso_639_1"), 2))
+            key = best.get("key")
+            return f"https://www.youtube.com/watch?v={key}" if key else None
+        logger.debug("TMDB videos returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
+    except Exception as e:
+        logger.debug("TMDB videos fetch failed for tmdb_id=%s: %s", tmdb_id, e)
+    return None
+
+
 @retry(stop=_RETRY_STOP, wait=_RETRY_WAIT, reraise=True)
 def _build_movie(slug: str) -> Movie:
     """Construct a letterboxdpy ``Movie`` (the blocking scrape), retrying on transient errors."""
@@ -79,11 +178,14 @@ def _fetch_movie(slug: str) -> dict | None:
 
     Returns:
         Dictionary containing movie metadata (title, year, genres, ratings, etc.) with
-        ``french_title`` left as None — it is filled in by ``_fetch_all`` via TMDB.
+        ``french_title``, ``cast``, and ``trailer_url`` left as None — they are filled in
+        by ``_fetch_all`` via TMDB.
         Returns None if fetching fails.
 
     Note:
-        - cast, trailer, and popular_reviews are excluded from the output.
+        - Letterboxd's own cast, trailer, and popular_reviews fields are excluded from this
+          output; ``cast`` (top-8 billed) and ``trailer_url`` are sourced from TMDB instead,
+          mirroring how ``french_title`` is added — see ``_fetch_cast`` / ``_fetch_trailer``.
         - genres is split into genres/themes/mini_themes based on the "type" field.
         - details are expanded into one key per type (e.g. "studio", "country", "language").
         - crew is filtered to director(s), producer(s), and writer(s) only.
@@ -127,6 +229,8 @@ def _fetch_movie(slug: str) -> dict | None:
             # Core info
             "title": movie.title,
             "french_title": None,  # filled in by _fetch_all via TMDB
+            "cast": None,  # filled in by _fetch_all via TMDB (top-8 billed)
+            "trailer_url": None,  # filled in by _fetch_all via TMDB
             "original_title": movie.original_title,
             "release_year": movie.year,
             "runtime": movie.runtime,
@@ -153,11 +257,12 @@ def _fetch_movie(slug: str) -> dict | None:
 
 
 async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20) -> list[dict | None]:
-    """Run _fetch_movie for every slug concurrently, then attach TMDB French titles.
+    """Run _fetch_movie for every slug concurrently, then attach TMDB enrichment.
 
     A single shared ``httpx.AsyncClient`` is opened for the whole batch so all TMDB
     lookups reuse pooled connections; the blocking Letterboxd scrape still runs in a
-    worker thread per slug.
+    worker thread per slug. The three TMDB lookups (french_title, cast, trailer_url)
+    for a given movie run concurrently in a nested ``asyncio.TaskGroup``.
     """
     sem = asyncio.Semaphore(concurrency)
     total = len(slugs)
@@ -169,7 +274,14 @@ async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20)
         async with sem:
             result = await asyncio.to_thread(_fetch_movie, slug)
             if result is not None:
-                result["french_title"] = await _fetch_french_title(client, result.get("tmdb_id"), api_key)
+                tmdb_id = result.get("tmdb_id")
+                async with asyncio.TaskGroup() as movie_tg:
+                    french_title = movie_tg.create_task(_fetch_french_title(client, tmdb_id, api_key))
+                    cast = movie_tg.create_task(_fetch_cast(client, tmdb_id, api_key))
+                    trailer_url = movie_tg.create_task(_fetch_trailer(client, tmdb_id, api_key))
+                result["french_title"] = french_title.result()
+                result["cast"] = cast.result()
+                result["trailer_url"] = trailer_url.result()
             results[i] = result
         done += 1
         if done % 50 == 0 or done == total:
@@ -268,6 +380,13 @@ def refresh_letterboxd_data(data_df: pd.DataFrame, slugs_to_refresh: list[str], 
         now = pd.to_datetime(datetime.now().date())
         refresh_df = pd.DataFrame(results)
         refresh_df["integration_date"] = now
+
+        # DataFrame.update() silently ignores columns absent from the target, so refreshing
+        # a cache built before a column existed (e.g. cast/trailer_url, added after earlier
+        # rows were cached) would otherwise drop that column's refreshed values instead of
+        # populating them. Pre-create any such columns (as null) so update() can fill them.
+        for col in refresh_df.columns.difference(data_df.columns):
+            data_df[col] = None
 
         # Update cache: merge refreshed data with existing, keyed by slug
         data_df = data_df.set_index("slug")

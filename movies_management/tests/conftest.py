@@ -9,7 +9,7 @@ def _instant_retries():
     its ``sleep`` makes every wait a no-op (async no-op for the AsyncRetrying case).
     """
     from modules.allocine_enrichment import _search_films
-    from modules.get_letterboxd_data import _build_movie, _get_tmdb_movie
+    from modules.get_letterboxd_data import _build_movie, _get_tmdb_credits, _get_tmdb_movie, _get_tmdb_videos
 
     async def _async_noop(*_args, **_kwargs):
         return None
@@ -17,6 +17,8 @@ def _instant_retries():
     _build_movie.retry.sleep = lambda *_a, **_k: None
     _search_films.retry.sleep = lambda *_a, **_k: None
     _get_tmdb_movie.retry.sleep = _async_noop
+    _get_tmdb_credits.retry.sleep = _async_noop
+    _get_tmdb_videos.retry.sleep = _async_noop
     yield
 
 

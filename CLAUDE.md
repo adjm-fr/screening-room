@@ -208,7 +208,10 @@ typecheck, security, test.
   why `taste.attach_match` scores the full-metadata *watchlist* and joins back onto `wl_shows` by `tmdb_id`
   (a solid key: ~0 dupes, ~2 nulls) — don't try to score `wl_shows` directly.
 - **The watchlist↔showtimes join is title-matched, director-confirmed.** `build_watchlist_showtimes` matches
-  on normalized French title, then keeps a row only when `_directors_overlap` positively confirms the director
+  the Allocine display title against **both** normalized watchlist titles — the TMDB `french_title` *and* the
+  original `title` — because repertory screenings often run under the original title (VO) even when TMDB
+  carries a French retitle (*Sudden Fear* vs *Le Masque arraché*; keying only the French form silently drops
+  those screenings). It then keeps a row only when `_directors_overlap` positively confirms the director
   — a precision-first guard so a recurring/remade title (*Nosferatu*, *Les Misérables*) can't attach a wrong
   film's screenings. Confirmation is **token-subset containment**, not exact-key equality: a match holds when
   one director name's tokens are wholly contained in the other's, so cross-source name-form drift

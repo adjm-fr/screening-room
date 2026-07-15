@@ -280,6 +280,36 @@ def test_french_title_matches_allocine_movie(make_showtimes, make_watchlist):
     assert result.iloc[0]["french_title"] == "Les Quatre Cents Coups"
 
 
+def test_original_title_matches_despite_french_retitle(make_showtimes, make_watchlist):
+    # Repertory screenings often run under the original title (VO) even when
+    # TMDB carries a French retitle. Regression: "Sudden Fear" screened as such
+    # at Reflet Medicis while the watchlist held "Le Masque arraché" — the old
+    # french_title-with-fallback key never tried the original title.
+    showtimes = make_showtimes([{"movie": "Sudden Fear", "director": "David Miller", "showtimes": "2026-07-15 12:45"}])
+    watchlist = make_watchlist([{"title": "Sudden Fear", "french_title": "Le Masque arraché", "directors": "David Miller"}])
+    result = build_watchlist_showtimes(showtimes, watchlist)
+    assert len(result) == 1
+    assert result.iloc[0]["french_title"] == "Sudden Fear"
+
+
+def test_original_title_match_still_requires_director_confirmation(make_showtimes, make_watchlist):
+    # The wider key net must not weaken precision: an original-title collision
+    # with a different director is still rejected.
+    showtimes = make_showtimes([{"movie": "Sudden Fear", "director": "Someone Else", "showtimes": "2026-07-15 12:45"}])
+    watchlist = make_watchlist([{"title": "Sudden Fear", "french_title": "Le Masque arraché", "directors": "David Miller"}])
+    result = build_watchlist_showtimes(showtimes, watchlist)
+    assert result.empty
+
+
+def test_no_duplicate_when_french_and_original_titles_equal(make_showtimes, make_watchlist):
+    # Both candidate titles normalise to the same key; the keyed watchlist
+    # frame is deduplicated so the single showtime matches exactly once.
+    showtimes = make_showtimes([{"movie": "Dune", "director": "Denis Villeneuve", "showtimes": "2025-01-01 18:00"}])
+    watchlist = make_watchlist([{"title": "Dune", "french_title": "Dune", "directors": "Denis Villeneuve"}])
+    result = build_watchlist_showtimes(showtimes, watchlist)
+    assert len(result) == 1
+
+
 def test_remake_disambiguated_by_director(make_showtimes, make_watchlist):
     # Two films share the same French title. Director filter keeps only the correct match.
     showtimes = make_showtimes(

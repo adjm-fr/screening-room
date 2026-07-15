@@ -262,7 +262,7 @@ async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20)
     A single shared ``httpx.AsyncClient`` is opened for the whole batch so all TMDB
     lookups reuse pooled connections; the blocking Letterboxd scrape still runs in a
     worker thread per slug. The three TMDB lookups (french_title, cast, trailer_url)
-    for a given movie run concurrently via ``asyncio.gather``.
+    for a given movie run concurrently in a nested ``asyncio.TaskGroup``.
     """
     sem = asyncio.Semaphore(concurrency)
     total = len(slugs)
@@ -275,14 +275,13 @@ async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20)
             result = await asyncio.to_thread(_fetch_movie, slug)
             if result is not None:
                 tmdb_id = result.get("tmdb_id")
-                french_title, cast, trailer_url = await asyncio.gather(
-                    _fetch_french_title(client, tmdb_id, api_key),
-                    _fetch_cast(client, tmdb_id, api_key),
-                    _fetch_trailer(client, tmdb_id, api_key),
-                )
-                result["french_title"] = french_title
-                result["cast"] = cast
-                result["trailer_url"] = trailer_url
+                async with asyncio.TaskGroup() as movie_tg:
+                    french_title = movie_tg.create_task(_fetch_french_title(client, tmdb_id, api_key))
+                    cast = movie_tg.create_task(_fetch_cast(client, tmdb_id, api_key))
+                    trailer_url = movie_tg.create_task(_fetch_trailer(client, tmdb_id, api_key))
+                result["french_title"] = french_title.result()
+                result["cast"] = cast.result()
+                result["trailer_url"] = trailer_url.result()
             results[i] = result
         done += 1
         if done % 50 == 0 or done == total:

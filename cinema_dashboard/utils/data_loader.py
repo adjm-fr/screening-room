@@ -183,11 +183,14 @@ def build_watchlist_showtimes(
     showtimes_df: pd.DataFrame,
     watchlist_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Join showtimes with the watchlist on French title, confirmed by director.
+    """Join showtimes with the watchlist on title, confirmed by director.
 
-    Normalises Allocine's ``movie`` (French display title) against the
-    watchlist's TMDB ``french_title`` when present, falling back to the
-    watchlist's display ``title``. Normalisation strips accents, punctuation,
+    Normalises Allocine's ``movie`` (the theater's display title) against
+    *both* of the watchlist's candidate titles — the TMDB ``french_title``
+    (when present) and the display ``title`` — because repertory screenings
+    often run under the original title (VO) even when TMDB carries a French
+    retitle (*Sudden Fear* screens as such while the watchlist holds
+    *Le Masque arraché*). Normalisation strips accents, punctuation,
     and case via :func:`_normalize_title`. Title-matched rows are then filtered
     by director overlap (:func:`_directors_overlap`): a row is kept only when
     both sides carry director data and share a common name, so an unconfirmed
@@ -220,14 +223,23 @@ def build_watchlist_showtimes(
     wl_meta = wl_meta.rename(columns={"runtime": "runtime_minutes", "slug": "letterboxd_slug", "title": "letterboxd_title"})
 
     showtimes_df["_key"] = showtimes_df["movie"].map(_normalize_title)
-    if "french_title" in wl_meta.columns:
-        wl_key = wl_meta["french_title"].fillna(wl_meta["letterboxd_title"]).map(_normalize_title)
-    else:
-        wl_key = wl_meta["letterboxd_title"].map(_normalize_title)
-    wl_meta["_key"] = wl_key
 
-    pass1 = showtimes_df.merge(wl_meta, on="_key", how="inner")
-    log.debug("Pass 1 (French title) matched %d rows (before director filter)", len(pass1))
+    # Key each watchlist row on every candidate title, not french_title-with-
+    # fallback: a repertory screening's display title can be the original (VO)
+    # even when TMDB carries a French retitle, so preferring one form loses
+    # films the other form would catch. The director filter below confirms
+    # matches on the wider net, so precision is unchanged.
+    wl_meta = wl_meta.reset_index(drop=True)
+    wl_meta["_wl_idx"] = wl_meta.index
+    key_cols = [c for c in ("french_title", "letterboxd_title") if c in wl_meta.columns]
+    wl_keyed = pd.concat([wl_meta.assign(_key=wl_meta[c].map(_normalize_title)) for c in key_cols], ignore_index=True)
+    # Most films share French and original titles — dropping duplicate
+    # (row, key) pairs and blank keys keeps one showtime from matching the
+    # same watchlist entry twice.
+    wl_keyed = wl_keyed[wl_keyed["_key"] != ""].drop_duplicates(subset=["_wl_idx", "_key"]).drop(columns=["_wl_idx"])
+
+    pass1 = showtimes_df.merge(wl_keyed, on="_key", how="inner")
+    log.debug("Pass 1 (title keys) matched %d rows (before director filter)", len(pass1))
 
     if "director" in pass1.columns and "directors" in pass1.columns and not pass1.empty:
         pass1 = pass1[pass1.apply(lambda r: _directors_overlap(r["director"], r["directors"]), axis=1)]

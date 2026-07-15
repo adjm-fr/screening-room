@@ -12,3 +12,9 @@ updates:
       dependencies:
         patterns:
           - "*"
+    ignore:
+      # pyarrow 25.0.0's bundled mimalloc segfaults on macOS (mi_thread_init on
+      # Streamlit's fresh script-runner threads). Held at 24.x — drop this entry
+      # once an upstream release is verified to run the dashboard on macOS.
+      - dependency-name: "pyarrow"
+        versions: [">=25.0.0"]

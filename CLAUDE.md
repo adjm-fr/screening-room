@@ -144,6 +144,11 @@ typecheck, security, test.
   which clashed with movies' original `click==8.4.1`. Because that's a dev group vs another member's *core*
   pin, `[tool.uv] conflicts` can't resolve it; instead `movies_management` uses `click>=8.3,<9` (settles
   8.3.3). Don't re-pin movies' click to an exact 8.4.x — it breaks the workspace lock.
+- **pyarrow is held at 24.x across the workspace.** pyarrow 25.0.0's bundled mimalloc segfaults on macOS
+  (`EXC_BAD_ACCESS` in `mi_thread_init` → `mi_heap_main`, first Arrow allocation on a fresh Streamlit
+  script-runner thread — crashed the dashboard on launch). All three member pins carry a `<25` ceiling and
+  `.github/dependabot.yml` ignores `pyarrow >=25.0.0`; lift both together only after verifying a newer
+  release actually runs the dashboard on macOS.
 - **`common.__init__` is deliberately pandas-free.** It re-exports only settings + logging (cheap), because
   `modules.config` is on a very-hot import path. The parquet helpers (which import pandas) are imported from
   `common.parquet_io` directly by data loaders, not via the package root.

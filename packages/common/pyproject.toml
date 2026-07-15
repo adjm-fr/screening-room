@@ -6,7 +6,9 @@ requires-python = ">=3.13"
 dependencies = [
     "pydantic-settings>=2.14.1",
     "pandas>=3.0.3",
-    "pyarrow>=25.0.0",
+    # pyarrow capped <25: 25.0.0's bundled mimalloc segfaults on macOS
+    # (mi_thread_init) when the app runs — see CLAUDE.md "Non-obvious behaviors".
+    "pyarrow>=24.0.0,<25",
 ]
 
 [build-system]

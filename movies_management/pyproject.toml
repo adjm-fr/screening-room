@@ -11,7 +11,9 @@ dependencies = [
     "httpx>=0.28.1",
     "letterboxdpy==6.5.7",
     "pandas==3.0.3",
-    "pyarrow==25.0.0",
+    # pyarrow held at 24: 25.0.0's bundled mimalloc segfaults on macOS
+    # (mi_thread_init) when the app runs — see CLAUDE.md "Non-obvious behaviors".
+    "pyarrow==24.0.0",
     "pydantic-settings>=2.14.1",
     "python-dotenv==1.2.2",
     "tenacity>=9.1.2",

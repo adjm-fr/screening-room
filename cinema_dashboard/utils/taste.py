@@ -309,7 +309,10 @@ def format_taste_profile(profile: TasteProfile) -> str:
 
     actors = profile.affinities.get("cast", {})
     actor_counts = profile.counts.get("cast", {})
-    eligible_actors = {v: a for v, a in actors.items() if actor_counts.get(v, 0) >= 2}
+    # Positive-affinity guard: unlike directors, actors have no "Least favourite"
+    # companion line, so a net-disliked actor's only path into the prompt would be
+    # under the "Favourite" label — filter on sign, not just evidence count.
+    eligible_actors = {v: a for v, a in actors.items() if actor_counts.get(v, 0) >= 2 and a > 0}
     if eligible_actors:
         lines.append(f"Favourite actors (≥2 films rated): {', '.join(_top_values(eligible_actors, 5))}")
 

@@ -293,12 +293,28 @@ def test_format_actors_line_with_threshold(make_ratings):
         [
             {"user_rating": 5.0, "cast": "Toshiro Mifune, Cameo Once"},
             {"user_rating": 4.5, "cast": "Toshiro Mifune"},
+            {"user_rating": 1.0, "cast": "Someone Else"},
         ]
     )
     result = format_taste_profile(build_affinity(df))
     assert "Favourite actors (≥2 films rated): Toshiro Mifune" in result
     # A single rated appearance stays below the threshold
     assert "Cameo Once" not in result
+
+
+def test_format_actors_excludes_negative_affinity(make_ratings):
+    # Two rated films is enough evidence, but a below-mean actor must never be labelled a favourite.
+    df = make_ratings(
+        [
+            {"user_rating": 1.0, "cast": "Disliked Twice"},
+            {"user_rating": 1.5, "cast": "Disliked Twice"},
+            {"user_rating": 5.0, "cast": "Loved Lead"},
+            {"user_rating": 4.5, "cast": "Loved Lead"},
+        ]
+    )
+    result = format_taste_profile(build_affinity(df))
+    assert "Favourite actors (≥2 films rated): Loved Lead" in result
+    assert "Disliked Twice" not in result
 
 
 def test_format_omits_empty_dimensions():

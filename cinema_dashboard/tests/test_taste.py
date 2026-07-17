@@ -50,6 +50,38 @@ def test_affinity_shrinkage_exact(make_ratings):
     assert profile.affinities["directors"]["Multi"] > profile.affinities["directors"]["Solo"]
 
 
+def test_affinity_cast_shrinkage_exact(make_ratings):
+    rows = [{"user_rating": 5.0, "cast": "Recurring Lead"} for _ in range(3)]
+    rows += [{"user_rating": 5.0, "cast": "One Timer"}, {"user_rating": 1.0, "cast": "Other"}]
+    profile = build_affinity(make_ratings(rows))
+    # mu = 4.2; same mean rating, but 3 films of evidence beat 1 under shrinkage
+    assert profile.affinities["cast"]["Recurring Lead"] == pytest.approx(0.8 * 3 / (3 + 5))
+    assert profile.affinities["cast"]["One Timer"] == pytest.approx(0.8 / (1 + 5))
+    assert profile.affinities["cast"]["Recurring Lead"] > profile.affinities["cast"]["One Timer"]
+
+
+def test_affinity_country_and_language_dimensions(make_ratings):
+    df = make_ratings(
+        [
+            {"user_rating": 5.0, "country": "France", "language": "French"},
+            {"user_rating": 1.0, "country": "USA", "language": "English"},
+        ]
+    )
+    profile = build_affinity(df)
+    assert profile.affinities["country"]["France"] == pytest.approx(2.0 / 6)
+    assert profile.affinities["country"]["USA"] == pytest.approx(-2.0 / 6)
+    assert profile.affinities["language"]["French"] == pytest.approx(2.0 / 6)
+    assert profile.affinities["language"]["English"] == pytest.approx(-2.0 / 6)
+
+
+def test_affinity_missing_cast_column_neutral(make_ratings):
+    # Pre-backfill history: no cast column at all, and NaN cells — both must be neutral, never a crash.
+    profile = build_affinity(make_ratings([{"user_rating": 5.0}, {"user_rating": 1.0}]))
+    assert profile.affinities["cast"] == {}
+    nan_df = pd.DataFrame([{"user_rating": 5.0, "cast": float("nan"), "genres": "A"}])
+    assert build_affinity(nan_df).affinities["cast"] == {}
+
+
 def test_affinity_mini_themes_folded_into_themes(make_ratings):
     df = make_ratings(
         [
@@ -125,6 +157,14 @@ def test_score_quality_prior_sign_and_nan():
     assert scores.iloc[2] == pytest.approx(_logistic(QUALITY_WEIGHT * -1.0))
 
 
+def test_score_cast_weight_and_nan_cast_neutral():
+    profile = _profile({"cast": {"Lead": 0.5}})
+    df = pd.DataFrame([{"cast": "Lead"}, {"cast": float("nan")}])
+    scores = score_films(df, profile)
+    assert scores.iloc[0] == pytest.approx(_logistic(0.4 * 0.5))
+    assert scores.iloc[1] == pytest.approx(50.0)
+
+
 def test_score_missing_metadata_columns_no_error():
     profile = _profile({"directors": {"D": 0.5}})
     df = pd.DataFrame({"title": ["X"]})
@@ -190,11 +230,27 @@ def test_attach_match_merges_by_tmdb_id_str_cast():
 
 def test_attach_match_carries_themes_and_release_year():
     profile = _profile({})
-    watchlist = pd.DataFrame([{"tmdb_id": 1, "genres": "A", "themes": "Heist", "mini_themes": "Noir", "release_year": 1994}])
+    watchlist = pd.DataFrame(
+        [
+            {
+                "tmdb_id": 1,
+                "genres": "A",
+                "themes": "Heist",
+                "mini_themes": "Noir",
+                "release_year": 1994,
+                "cast": "Sterling Hayden",
+                "country": "USA",
+                "language": "English",
+            }
+        ]
+    )
     out = attach_match(pd.DataFrame([{"tmdb_id": 1, "movie": "X"}]), watchlist, profile)
     assert out["themes"].iloc[0] == "Heist"
     assert out["mini_themes"].iloc[0] == "Noir"
     assert out["release_year"].iloc[0] == 1994
+    assert out["cast"].iloc[0] == "Sterling Hayden"
+    assert out["country"].iloc[0] == "USA"
+    assert out["language"].iloc[0] == "English"
 
 
 def test_attach_match_graceful_without_tmdb_id():
@@ -230,6 +286,19 @@ def test_format_lines_present_and_dislikes(make_ratings):
     assert "Favourite directors (≥2 films rated): Howard Hawks" in result
     assert "Least favourite directors (≥2 films rated): Dany Boon" in result
     assert "Favourite eras: 1950s" in result
+
+
+def test_format_actors_line_with_threshold(make_ratings):
+    df = make_ratings(
+        [
+            {"user_rating": 5.0, "cast": "Toshiro Mifune, Cameo Once"},
+            {"user_rating": 4.5, "cast": "Toshiro Mifune"},
+        ]
+    )
+    result = format_taste_profile(build_affinity(df))
+    assert "Favourite actors (≥2 films rated): Toshiro Mifune" in result
+    # A single rated appearance stays below the threshold
+    assert "Cameo Once" not in result
 
 
 def test_format_omits_empty_dimensions():

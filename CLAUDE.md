@@ -112,7 +112,10 @@ typecheck, security, test.
   `build_chat_context()` + `render_chat()`; it is mounted full-page by `pages/recommendations.py` (prompt
   chips, pinned-recs column, export) and compact by `utils/cmdk.py` (the `Cmd+K` `st.dialog`, no pinned
   column). Both share `st.session_state["chat"]` (a `ChatState` dataclass) so the conversation persists
-  across surfaces. The model gets taste profile + showtimes + streaming availability as markdown context,
+  across surfaces; the transcript + pinned recs are also persisted to `data/chat_state.json`
+  (`CHAT_STATE_PATH`, patchable in tests) and reloaded on launch — corrupt/absent file falls back to a
+  fresh state, and "Clear conversation" deletes the file. The model gets taste profile + showtimes +
+  streaming availability as markdown context,
   plus a `search_theater` tool (one round of tool use). The system prompt is strictly **closed-set** — the
   model may only name films/providers present in the injected context — and any new tool must preserve that
   by construction (return rows drawn from the same context, never from outside it). The
@@ -124,7 +127,10 @@ typecheck, security, test.
   poster, theater, and the streaming list-columns — `utils/streaming.STREAMING_COLUMNS`, i.e. `flatrate`
   plus `free`).
 - **Taste ranker lives in `utils/taste.py`** (all formulas + constants in one place). `build_affinity`
-  derives signed, shrunk affinities per director/genre/theme/decade from the ratings history;
+  derives signed, shrunk affinities per director/genre/theme/cast/country/language/decade from the
+  ratings history (`_DIM_COLUMNS` + `WEIGHTS` are the single place new dimensions plug in; `_CARRY_COLUMNS`
+  must mirror any dimension column the showtimes join strips, or "because" chips silently vanish on joined
+  rows);
   `score_films` blends them into a stable 0–100 match value (fixed logistic, so a film's badge means the
   same thing every week); `explain` yields the positive contributors for the "✓ because" chips;
   `attach_match` joins scores onto candidate rows. Home's "Top matches this week" rail and the streaming
@@ -176,6 +182,12 @@ typecheck, security, test.
   the target frame.** Any new `data_letterboxd.parquet` column must be pre-seeded on the target
   (`data_df[col] = None`) before `update()`, or refreshed rows never gain it — no error, just missing
   data. Add a regression test when introducing cache columns.
+- **`cast` and `trailer_url` are TMDB-sourced cache columns** in `data_letterboxd.parquet` (not from
+  letterboxdpy): `cast` is the top-8 billed names `", "`-joined, `trailer_url` a YouTube link preferring FR
+  over EN — fetched beside `_fetch_french_title` on the same client, `None` without a `tmdb_id`. Backfill
+  is incremental: `main.py` adds missing-`cast` slugs to the refresh queue bounded by
+  `letterboxd_refresh_limit` (1000/run), so a large cache converges over 2–3 runs; `--reset_database` is
+  the escape hatch.
 - **Showtimes datetimes are naive Paris wall-clock.** The Allocine scraper emits no timezone;
   `data_loader.future_showtimes` anchors "now" to `Europe/Paris` accordingly. Other contract quirks:
   `runtime` is a raw string (`"1h 52min"`), `director` may be `" | "`-joined, `release_year` is nullable

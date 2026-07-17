@@ -5,8 +5,8 @@ The model is a weighted heuristic (no ML — single user, a few thousand
 ratings). It works in three steps:
 
 1. **Affinity profile** (:func:`build_affinity`). For every feature value the
-   user has encountered — each director, genre, theme (mini-themes folded in)
-   and decade — compute a signed, shrunk affinity::
+   user has encountered — each director, genre, theme (mini-themes folded in),
+   actor, country, language and decade — compute a signed, shrunk affinity::
 
        A(v) = Σ(rating_i − μ_user) / (n_v + SHRINKAGE_K)
 
@@ -61,7 +61,18 @@ SHRINKAGE_K = 5.0
 # Per-dimension blend weights, sized so each dimension's weighted reach is
 # comparable on real data: directors dominate when present (strongest personal
 # signal); decade only tie-breaks (partly confounds curated-classics viewing).
-WEIGHTS: dict[str, float] = {"directors": 1.0, "genres": 0.6, "themes": 0.5, "decade": 0.3}
+# Cast sits between themes and decade (leads carry real signal but a film has
+# up to 8 of them); country/language are weak context signals. The 2.2 backtest
+# sweep will revisit these provisional values.
+WEIGHTS: dict[str, float] = {
+    "directors": 1.0,
+    "genres": 0.6,
+    "themes": 0.5,
+    "cast": 0.4,
+    "decade": 0.3,
+    "country": 0.2,
+    "language": 0.15,
+}
 
 # Community-quality prior: small, centered at the watchlist's median Letterboxd
 # rating so the term stays signed instead of being a constant positive offset.
@@ -81,11 +92,14 @@ _DIM_COLUMNS: dict[str, tuple[str, ...]] = {
     "directors": ("directors",),
     "genres": ("genres",),
     "themes": ("themes", "mini_themes"),
+    "cast": ("cast",),
+    "country": ("country",),
+    "language": ("language",),
 }
 
 # Metadata the showtimes join strips (see data_loader.build_watchlist_showtimes
 # _want_cols) that attach_match carries back along with the match score.
-_CARRY_COLUMNS = ("themes", "mini_themes", "release_year")
+_CARRY_COLUMNS = ("themes", "mini_themes", "release_year", "cast", "country", "language")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -292,6 +306,12 @@ def format_taste_profile(profile: TasteProfile) -> str:
         disliked_directors = _bottom_negative(eligible, 3)
         if disliked_directors:
             lines.append(f"Least favourite directors (≥2 films rated): {', '.join(disliked_directors)}")
+
+    actors = profile.affinities.get("cast", {})
+    actor_counts = profile.counts.get("cast", {})
+    eligible_actors = {v: a for v, a in actors.items() if actor_counts.get(v, 0) >= 2}
+    if eligible_actors:
+        lines.append(f"Favourite actors (≥2 films rated): {', '.join(_top_values(eligible_actors, 5))}")
 
     decades = profile.affinities.get("decade", {})
     if decades:

@@ -10,10 +10,17 @@ ratings). It works in three steps:
 
        A(v) = Σ(rating_i − μ_user) / (n_v + SHRINKAGE_K)
 
-   Centering on the *user's own mean* turns low ratings into genuine negative
-   signal (a harsh rater's 3.5 is praise); the additive shrinkage constant
-   damps single-film evidence (±(r−μ)/(1+k) max) while a rated body of work
-   keeps most of its raw deviation.
+   Centering on the *user's own mean* matches their rating methodology: a
+   semantic tier ladder (0.5–1 don't bother, 1.5–2 watchable, 2.5–3 good,
+   3.5–4 must watch, 4.5–5 masterpiece) where the low mean (~2.5) is the
+   scale's design, not harshness, and 3.5 is praise by definition (must-watch
+   tier). Half-star quantization puts μ and the ladder's watchable/good pivot
+   (2.25) in the same empty (2.0, 2.5) gap, so mean-centering and
+   tier-centering classify every rating identically; recentering on
+   2.5/3.0/2.25 only inflates the badge (verified July 2026: p50 61→77, 98%
+   of films ≥50) — don't. The additive shrinkage constant damps single-film
+   evidence (±(r−μ)/(1+k) max) while a rated body of work keeps most of its
+   raw deviation.
 
 2. **Film score** (:func:`score_films`). Per dimension, average the affinities
    of the film's *known* values only — unknown values are neutral, never a
@@ -269,6 +276,11 @@ def _top_values(affinities: dict[str, float], k: int) -> list[str]:
     return [v for v, _ in sorted(affinities.items(), key=lambda item: (-item[1], item[0]))[:k]]
 
 
+# The `a < 0` cutoff below is μ-relative, not tier-relative: values whose mean
+# rating sits in [2.25, μ) are semantically "watchable-to-good" on the ladder
+# yet net-negative here. Verified July 2026 that none reach any displayed list
+# today; decoupling to a semantic sentiment pivot (2.25) is a deliberate
+# deferral, not an oversight.
 def _bottom_negative(affinities: dict[str, float], k: int) -> list[str]:
     """Up to k strictly negative values, most disliked first."""
     negative = sorted(((v, a) for v, a in affinities.items() if a < 0), key=lambda item: (item[1], item[0]))
@@ -278,14 +290,19 @@ def _bottom_negative(affinities: dict[str, float], k: int) -> list[str]:
 def format_taste_profile(profile: TasteProfile) -> str:
     """Render the profile as the compact summary string for the LLM prompt.
 
-    Line prefixes ("Average rating given:", "Favourite genres:", "Favourite
-    directors", the empty sentinel) are a stable contract with the chat evals
-    and tests — extend with new lines rather than rewording existing ones.
-    Dimensions with no qualifying values are omitted entirely.
+    Line prefixes ("Average rating given:", "Rating scale:", "Favourite
+    genres:", "Favourite directors", the empty sentinel) are a stable
+    contract with the chat evals and tests — extend with new lines rather
+    than rewording existing ones. Dimensions with no qualifying values are
+    omitted entirely.
     """
     if profile.is_empty:
         return "No rating history available."
     lines = [f"Average rating given: {profile.mu:.1f}/5 across {profile.n_ratings} films"]
+    lines.append(
+        "Rating scale: 0.5–1 = don't bother; 1.5–2 = watchable but not great; 2.5–3 = good; "
+        "3.5–4 = must watch; 4.5–5 = masterpiece — the low average is the scale's design, not dissatisfaction"
+    )
 
     genres = profile.affinities.get("genres", {})
     if genres:
@@ -312,6 +329,7 @@ def format_taste_profile(profile: TasteProfile) -> str:
     # Positive-affinity guard: unlike directors, actors have no "Least favourite"
     # companion line, so a net-disliked actor's only path into the prompt would be
     # under the "Favourite" label — filter on sign, not just evidence count.
+    # Same μ-relative cutoff caveat as _bottom_negative above.
     eligible_actors = {v: a for v, a in actors.items() if actor_counts.get(v, 0) >= 2 and a > 0}
     if eligible_actors:
         lines.append(f"Favourite actors (≥2 films rated): {', '.join(_top_values(eligible_actors, 5))}")

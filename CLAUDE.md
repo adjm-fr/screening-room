@@ -133,8 +133,9 @@ typecheck, security, test.
   rows);
   `score_films` blends them into a stable 0–100 match value (fixed logistic, so a film's badge means the
   same thing every week); `explain` yields the positive contributors for the "✓ because" chips;
-  `attach_match` joins scores onto candidate rows. Home's "Top matches this week" rail and the streaming
-  rail ordering consume it. `data_loader.build_taste_profile` (the chat-prompt string) is a thin formatter
+  `attach_match` joins scores onto candidate rows. Home's "Top matches this week" rail, home's streaming
+  rail (ordering), and the streaming page's per-provider rails (ordering, plus the match badge/"because"
+  chips on each card) consume it. `data_loader.build_taste_profile` (the chat-prompt string) is a thin formatter
   over the same profile — its line prefixes ("Average rating given:", "Favourite genres:", …) are a
   contract pinned by `tests/test_data_loader.py` and the eval goldens: extend with new lines, don't reword.
 - **Two orchestrators, both intentional.** `orchestrate.py` (CLI, staleness-aware, runs both scrapers in

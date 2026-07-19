@@ -8,16 +8,20 @@ TMDB returns when that's unset), and no-cost ``free`` providers (e.g.
 Arte.tv, France.tv), which always get a rail regardless of
 ``STREAMING_SERVICES`` — they're watchable by everyone. The chip filter at
 the top operates on display names (``Canal+``, ``MUBI``…) over the union of
-both, not raw slugs.
+both, not raw slugs. When a ratings profile exists, each rail is taste-ranked
+(see ``utils.taste``) and cards carry the match badge plus "because" chips;
+otherwise rails fall back to community-rating order.
 """
 
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 from modules.config import settings
-from utils.data_loader import attach_streaming, get_paths, load_watchlist
+from utils.data_loader import attach_streaming, get_paths, load_ratings, load_watchlist
 from utils.streaming import display_name, load_display_names_catalog
-from utils.ui import render_chip_filter, render_empty_state, render_poster_rail
+from utils.taste import attach_match, build_affinity
+from utils.ui import match_chips_html, render_chip_filter, render_empty_state, render_poster_rail
 
 
 def main() -> None:
@@ -54,6 +58,9 @@ def main() -> None:
         st.error(f"Failed to load watchlist: {exc}")
         return
 
+    ratings_df = load_ratings(str(movies_path)) if (movies_path / "ratings_with_letterboxd.parquet").exists() else pd.DataFrame()
+    profile = build_affinity(ratings_df) if not ratings_df.empty else None
+
     # The movie-card renderer looks for `letterboxd_title` first; mirror the
     # rename used by `build_watchlist_showtimes` so cards display the canonical
     # Letterboxd title rather than the French one.
@@ -70,6 +77,10 @@ def main() -> None:
             "Set TMDB_API_KEY in .env and run `uv run python orchestrate.py` to populate it.",
         )
         return
+
+    # Taste-rank once on the full frame (not per provider inside the loop below).
+    if profile is not None and not profile.is_empty:
+        df = attach_match(df, watchlist_df, profile)
 
     subscribed = settings.streaming_service_slugs
     flatrate_present: set[str] = set()
@@ -135,16 +146,21 @@ def main() -> None:
     else:
         selected_slugs = {display_to_slug[d] for d in picked if d in display_to_slug}
 
+    # When a profile exists, cards carry the match badge + "because" chips and
+    # each rail ranks by taste match; community rating breaks ties and is the
+    # fallback ordering before any films are rated.
+    chips_fn = (lambda r: match_chips_html(r, profile)) if profile is not None and not profile.is_empty else None
+
     for slug in sorted(selected_slugs, key=lambda s: display_name(s, catalogue).lower()):
         rows = df[df.apply(lambda r, s=slug: s in r["flatrate"] or s in r["free"], axis=1)]
         if rows.empty:
             continue
-        rows = (
-            rows.sort_values("letterboxd_avg_rating", ascending=False, na_position="last")
-            .drop_duplicates(subset=["tmdb_id"])
-            .head(20)
-        )
-        render_poster_rail(rows, title=display_name(slug, catalogue), subscribed=subscribed)
+        if profile is not None and not profile.is_empty:
+            rows = rows.sort_values(["match", "letterboxd_avg_rating"], ascending=False, na_position="last")
+        else:
+            rows = rows.sort_values("letterboxd_avg_rating", ascending=False, na_position="last")
+        rows = rows.drop_duplicates(subset=["tmdb_id"]).head(20)
+        render_poster_rail(rows, title=display_name(slug, catalogue), subscribed=subscribed, extra_html_fn=chips_fn)
 
 
 main()

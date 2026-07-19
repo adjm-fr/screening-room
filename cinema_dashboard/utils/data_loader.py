@@ -280,8 +280,10 @@ def build_taste_profile(ratings_df: pd.DataFrame) -> str:
 
     Thin formatter over the affinity profile in :mod:`utils.taste` — favourite
     (and least favourite) genres, themes, directors, and eras ranked by signed,
-    shrunk affinity rather than raw mean rating. The string feeds the LLM
-    system prompt via :func:`utils.chat.build_chat_context`.
+    shrunk affinity, with liked/disliked membership classified against the
+    semantic sentiment pivot (``taste.SENTIMENT_PIVOT``) rather than affinity
+    sign. The string feeds the LLM system prompt via
+    :func:`utils.chat.build_chat_context`.
     """
     if ratings_df.empty or "user_rating" not in ratings_df.columns:
         log.warning("Ratings DataFrame empty or missing user_rating — taste profile unavailable")

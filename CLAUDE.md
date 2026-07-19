@@ -243,11 +243,15 @@ typecheck, security, test.
   the "Min Letterboxd rating" sliders (database + calendar) cap at 5. Treating either column as /10 mis-scales
   the amber heatmap and lets the sliders reach unreachable values. On cards the user's own rating shows as a
   green chip (`chip--user-rating`, `hue=145`) beside the amber community average — Letterboxd's convention.
-- **Taste constants are calibrated, not arbitrary.** The user is a harsh rater (mean ≈2.5/5, ~43% of
-  ratings ≤2), so all affinity math centers on the *user's own mean* — never recentre on 2.5 or 3.0. The
-  shrinkage k, dimension weights, and logistic τ in `utils/taste.py` were tuned against the real parquets;
-  changing them shifts every badge. The `liked` column in `ratings_with_letterboxd.parquet` is all-zero
-  (pulled from letterboxdpy but never populated) — don't build features on it.
+- **Taste constants are calibrated, not arbitrary.** The user's ratings are a semantic tier ladder (2.5–3 =
+  good, 3.5–4 = must watch, 4.5–5 = masterpiece); the low mean (≈2.5/5, ~43% of ratings ≤2) is the scale's
+  design, not harshness. Affinity math still centers on the *user's own mean* — never recentre on 2.5 or
+  3.0 (nor 2.25: μ shares the ladder pivot's half-star gap, and recentering only inflates the badge,
+  verified July 2026). The shrinkage k, dimension weights, and logistic τ in `utils/taste.py` were tuned
+  against the real parquets; changing them shifts every badge. The `liked` column in
+  `ratings_with_letterboxd.parquet` is all-zero (pulled from letterboxdpy but never populated) — don't
+  build features on it. The LLM taste-profile string (`format_taste_profile`) carries a pinned "Rating
+  scale:" legend line so the chat model doesn't misread the average as dissatisfaction.
 
 ## Conventions
 

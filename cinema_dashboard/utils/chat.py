@@ -401,7 +401,9 @@ def build_system_message(ctx: ChatContext) -> dict:
             "- Refer to movies by title and include theater name and showtime when relevant.\n"
             "- The taste profile describes the user's preferences (genres, directors, themes) for "
             "STYLE matching only. Use it to pick which provided films to suggest — NEVER as a source "
-            "of titles, director filmographies, or 'similar films' from outside the provided lists.\n"
+            "of titles, director filmographies, or 'similar films' from outside the provided lists. "
+            "The user's ratings follow a strict tier ladder — 2.5–3/5 already means a good film, "
+            "3.5+/5 a must-watch — so never interpret their low rating average as dissatisfaction.\n"
             "- For any theater not in the known theaters list, follow the THEATER LOOKUP rule above "
             "(call search_theater); never say the theater has no data."
         ),

@@ -281,6 +281,9 @@ def test_format_lines_present_and_dislikes(make_ratings):
     )
     result = format_taste_profile(build_affinity(df))
     assert result.startswith("Average rating given: 2.8/5 across 4 films")
+    lines = result.split("\n")
+    assert lines[1].startswith("Rating scale:")
+    assert "2.5–3 = good" in lines[1]
     assert "Favourite genres: Western" in result
     assert "Least favourite genres: Comedy" in result
     assert "Favourite directors (≥2 films rated): Howard Hawks" in result
@@ -320,6 +323,7 @@ def test_format_actors_excludes_negative_affinity(make_ratings):
 def test_format_omits_empty_dimensions():
     result = format_taste_profile(build_affinity(pd.DataFrame({"user_rating": [3.0, 5.0]})))
     assert result.startswith("Average rating given: 4.0")
+    assert "Rating scale:" in result
     assert "genres" not in result
     assert "directors" not in result
     assert "themes" not in result

@@ -132,7 +132,8 @@ typecheck, security, test.
   must mirror any dimension column the showtimes join strips, or "because" chips silently vanish on joined
   rows);
   `score_films` blends them into a stable 0–100 match value (fixed logistic, so a film's badge means the
-  same thing every week); `explain` yields the positive contributors for the "✓ because" chips;
+  same thing every week); `explain` yields the liked contributors (per `SENTIMENT_PIVOT`, not affinity
+  sign) for the "✓ because" chips;
   `attach_match` joins scores onto candidate rows. Home's "Top matches this week" rail, home's streaming
   rail (ordering), and the streaming page's per-provider rails (ordering, plus the match badge/"because"
   chips on each card) consume it. `data_loader.build_taste_profile` (the chat-prompt string) is a thin formatter
@@ -247,7 +248,11 @@ typecheck, security, test.
   good, 3.5–4 = must watch, 4.5–5 = masterpiece); the low mean (≈2.5/5, ~43% of ratings ≤2) is the scale's
   design, not harshness. Affinity math still centers on the *user's own mean* — never recentre on 2.5 or
   3.0 (nor 2.25: μ shares the ladder pivot's half-star gap, and recentering only inflates the badge,
-  verified July 2026). The shrinkage k, dimension weights, and logistic τ in `utils/taste.py` were tuned
+  verified July 2026). Sentiment labelling is the one non-μ surface: the "Least favourite" lines, the
+  favourite-actors guard, and the "because" chips classify liked/disliked by whether a value's mean rating
+  crosses `SENTIMENT_PIVOT = 2.25` (the ladder's watchable/good boundary — semantic, not tuned), so a
+  [2.25, μ) "watchable-to-good" value is never branded disliked despite its negative affinity. The
+  shrinkage k, dimension weights, and logistic τ in `utils/taste.py` were tuned
   against the real parquets; changing them shifts every badge. The `liked` column in
   `ratings_with_letterboxd.parquet` is all-zero (pulled from letterboxdpy but never populated) — don't
   build features on it. The LLM taste-profile string (`format_taste_profile`) carries a pinned "Rating

@@ -18,9 +18,11 @@ ratings). It works in three steps:
    (2.25) in the same empty (2.0, 2.5) gap, so mean-centering and
    tier-centering classify every rating identically; recentering on
    2.5/3.0/2.25 only inflates the badge (verified July 2026: p50 61→77, 98%
-   of films ≥50) — don't. The additive shrinkage constant damps single-film
-   evidence (±(r−μ)/(1+k) max) while a rated body of work keeps most of its
-   raw deviation.
+   of films ≥50) — don't. Aggregated value *means* do land inside that gap,
+   though — sentiment surfaces therefore classify liked/disliked against
+   SENTIMENT_PIVOT, never against affinity sign. The additive shrinkage
+   constant damps single-film evidence (±(r−μ)/(1+k) max) while a rated body
+   of work keeps most of its raw deviation.
 
 2. **Film score** (:func:`score_films`). Per dimension, average the affinities
    of the film's *known* values only — unknown values are neutral, never a
@@ -33,14 +35,15 @@ ratings). It works in three steps:
    The logistic depends only on (profile, film), so a film's match value is
    stable week to week regardless of what else is screening.
 
-3. **Explanation** (:func:`explain`). The top strictly-positive contributions
-   power honest "Because: …" chips — never "because you hate X".
+3. **Explanation** (:func:`explain`). The top contributions among *liked*
+   values (mean rating ≥ SENTIMENT_PIVOT, not affinity sign) power honest
+   "Because: …" chips — never "because you dislike X".
 
 Public API:
     TasteProfile               frozen profile (mu, n_ratings, affinities, counts)
     build_affinity(df)         ratings DataFrame -> TasteProfile
     score_films(df, profile)   -> 0–100 match Series, index-aligned
-    explain(row, profile)      -> top-k positive (label, contribution) pairs
+    explain(row, profile)      -> top-k liked (label, contribution) pairs
     attach_match(df, wl, p)    score the watchlist, left-join match by tmdb_id
     format_taste_profile(p)    compact summary string for the LLM system prompt
 """
@@ -91,6 +94,18 @@ QUALITY_CENTER = 3.5
 # saturating at either end.
 LOGISTIC_TAU = 0.5
 
+# Liked/disliked boundary for the sentiment surfaces — the "Least favourite …"
+# lines, the favourite-actors guard, and explain()'s "because" chips — sitting
+# in the empty half-star gap between the ladder's "watchable" (≤2) and "good"
+# (≥2.5) tiers. Those surfaces classify a value by whether its mean rating
+# (recovered from the shrunk affinity, see _mean_rating) crosses this pivot,
+# NOT by affinity sign: sign is μ-relative and μ≈2.48 sits above the pivot, so
+# a sign cutoff would misbrand the [2.25, μ) "watchable-to-good" band as
+# disliked (R2, July 2026 methodology review). Ranking and the 0–100 badge
+# (build_affinity/score_films) stay strictly μ-centered. Semantic, not
+# calibrated: this moves only if the user's rating methodology changes.
+SENTIMENT_PIVOT = 2.25
+
 # Columns feeding each affinity dimension. Themes fold in mini_themes (same
 # Letterboxd vocabulary, split upstream by the scraper's "type" field) to lift
 # coverage — plain themes are missing on ~35% of watchlist rows. The decade
@@ -114,8 +129,11 @@ class TasteProfile:
     """Signed affinity profile derived from the user's ratings history.
 
     ``affinities`` maps dimension -> feature value -> shrunk centered affinity
-    (positive = liked, negative = disliked). ``counts`` carries the raw n_v per
-    value for formatting thresholds (e.g. directors need ≥2 rated films).
+    (μ-relative; liked/disliked labelling is tier-relative, see
+    SENTIMENT_PIVOT). ``counts`` carries the raw n_v per value — used for
+    formatting thresholds (e.g. directors need ≥2 rated films) and to recover
+    a value's mean rating for sentiment classification (:func:`_mean_rating`),
+    so every affinity key must carry its count.
     """
 
     mu: float
@@ -222,24 +240,42 @@ def score_films(df: pd.DataFrame, profile: TasteProfile) -> pd.Series:
     return pd.Series(scores, index=df.index, dtype=float)
 
 
+def _mean_rating(affinity: float, count: int, mu: float) -> float:
+    """Invert the shrinkage: A = Σ(r−μ)/(n+k) means the value's raw mean rating is μ + A·(n+k)/n."""
+    return mu + affinity * (count + SHRINKAGE_K) / count
+
+
+def _is_liked(affinity: float, count: int, mu: float) -> bool:
+    """Tier-relative sentiment: liked ⇔ the value's mean rating reaches SENTIMENT_PIVOT, disliked ⇔ it falls below."""
+    return _mean_rating(affinity, count, mu) >= SENTIMENT_PIVOT
+
+
 def explain(row: pd.Series, profile: TasteProfile, top_k: int = 2) -> list[tuple[str, float]]:
-    """Top-k strictly positive contributions for "Because: …" chips.
+    """Top-k contributions among liked values for "Because: …" chips.
 
     The contribution of value v in dimension d is ``WEIGHTS[d]·A_d(v)/m_d``
     where m_d is the film's number of known values in d — contributions within
-    a dimension sum to its share of the raw score. Negative affinities are
-    never surfaced ("because you hate X" is not a recommendation), and the
-    quality prior is excluded (community taste, not the user's).
+    a dimension sum to its share of the raw score. Disliked values are never
+    surfaced ("because you dislike X" is not a recommendation), but membership
+    is tier-relative (:func:`_is_liked`), not contribution-sign: a value whose
+    mean sits in [SENTIMENT_PIVOT, μ) still qualifies, ranked after the
+    genuinely positive contributors. The quality prior is excluded (community
+    taste, not the user's).
     """
     contributions: list[tuple[str, float]] = []
     for dim, weight in WEIGHTS.items():
         dim_affinities = profile.affinities.get(dim, {})
+        dim_counts = profile.counts.get(dim, {})
         known = [(v, dim_affinities[v]) for v in _film_features(row, dim) if v in dim_affinities]
         if not known:
             continue
-        contributions.extend((value, weight * affinity / len(known)) for value, affinity in known)
-    positive = sorted((c for c in contributions if c[1] > 0), key=lambda c: c[1], reverse=True)
-    return positive[:top_k]
+        contributions.extend(
+            (value, weight * affinity / len(known))
+            for value, affinity in known
+            if _is_liked(affinity, dim_counts[value], profile.mu)
+        )
+    liked = sorted(contributions, key=lambda c: c[1], reverse=True)
+    return liked[:top_k]
 
 
 def attach_match(df: pd.DataFrame, watchlist_df: pd.DataFrame, profile: TasteProfile) -> pd.DataFrame:
@@ -276,15 +312,21 @@ def _top_values(affinities: dict[str, float], k: int) -> list[str]:
     return [v for v, _ in sorted(affinities.items(), key=lambda item: (-item[1], item[0]))[:k]]
 
 
-# The `a < 0` cutoff below is μ-relative, not tier-relative: values whose mean
-# rating sits in [2.25, μ) are semantically "watchable-to-good" on the ladder
-# yet net-negative here. Verified July 2026 that none reach any displayed list
-# today; decoupling to a semantic sentiment pivot (2.25) is a deliberate
-# deferral, not an oversight.
-def _bottom_negative(affinities: dict[str, float], k: int) -> list[str]:
-    """Up to k strictly negative values, most disliked first."""
-    negative = sorted(((v, a) for v, a in affinities.items() if a < 0), key=lambda item: (item[1], item[0]))
-    return [v for v, _ in negative[:k]]
+# Disliked is tier-relative (mean rating below SENTIMENT_PIVOT), not the old
+# μ-relative `a < 0`: values whose mean sits in [2.25, μ) are semantically
+# "watchable-to-good" on the ladder despite net-negative affinity and must
+# never be branded least-favourites (R2 of the July 2026 methodology review;
+# zero displayed rows changed at decoupling time). Candidates may be a
+# pre-filtered subset of a dimension's affinities; ordering stays by shrunk
+# affinity so the most-disliked surface first.
+def _bottom_disliked(candidates: dict[str, float], profile: TasteProfile, dim: str, k: int) -> list[str]:
+    """Up to k disliked values (mean rating below SENTIMENT_PIVOT), most disliked first."""
+    counts = profile.counts.get(dim, {})
+    disliked = sorted(
+        ((v, a) for v, a in candidates.items() if not _is_liked(a, counts[v], profile.mu)),
+        key=lambda item: (item[1], item[0]),
+    )
+    return [v for v, _ in disliked[:k]]
 
 
 def format_taste_profile(profile: TasteProfile) -> str:
@@ -307,7 +349,7 @@ def format_taste_profile(profile: TasteProfile) -> str:
     genres = profile.affinities.get("genres", {})
     if genres:
         lines.append(f"Favourite genres: {', '.join(_top_values(genres, 5))}")
-        disliked_genres = _bottom_negative(genres, 3)
+        disliked_genres = _bottom_disliked(genres, profile, "genres", 3)
         if disliked_genres:
             lines.append(f"Least favourite genres: {', '.join(disliked_genres)}")
 
@@ -320,17 +362,20 @@ def format_taste_profile(profile: TasteProfile) -> str:
     eligible = {v: a for v, a in directors.items() if director_counts.get(v, 0) >= 2}
     if eligible:
         lines.append(f"Favourite directors (≥2 films rated): {', '.join(_top_values(eligible, 5))}")
-        disliked_directors = _bottom_negative(eligible, 3)
+        disliked_directors = _bottom_disliked(eligible, profile, "directors", 3)
         if disliked_directors:
             lines.append(f"Least favourite directors (≥2 films rated): {', '.join(disliked_directors)}")
 
     actors = profile.affinities.get("cast", {})
     actor_counts = profile.counts.get("cast", {})
-    # Positive-affinity guard: unlike directors, actors have no "Least favourite"
-    # companion line, so a net-disliked actor's only path into the prompt would be
-    # under the "Favourite" label — filter on sign, not just evidence count.
-    # Same μ-relative cutoff caveat as _bottom_negative above.
-    eligible_actors = {v: a for v, a in actors.items() if actor_counts.get(v, 0) >= 2 and a > 0}
+    # Sentiment guard: unlike directors, actors have no "Least favourite"
+    # companion line, so a disliked actor's only path into the prompt would be
+    # under the "Favourite" label. Liked is tier-relative (_is_liked), not the
+    # old `a > 0`: a slightly-below-μ regular whose mean sits in
+    # [SENTIMENT_PIVOT, μ) is watchable-to-good, not a dislike to hide.
+    eligible_actors = {
+        v: a for v, a in actors.items() if actor_counts.get(v, 0) >= 2 and _is_liked(a, actor_counts[v], profile.mu)
+    }
     if eligible_actors:
         lines.append(f"Favourite actors (≥2 films rated): {', '.join(_top_values(eligible_actors, 5))}")
 

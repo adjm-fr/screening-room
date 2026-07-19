@@ -10,6 +10,7 @@ from utils.taste import (
     LOGISTIC_TAU,
     QUALITY_WEIGHT,
     TasteProfile,
+    _mean_rating,
     attach_match,
     build_affinity,
     explain,
@@ -23,8 +24,9 @@ def _logistic(raw: float) -> float:
 
 
 def _profile(affinities: dict[str, dict[str, float]], n_ratings: int = 10) -> TasteProfile:
-    """Hand-built profile for scorer/explain tests (counts unused by both)."""
-    return TasteProfile(mu=3.0, n_ratings=n_ratings, affinities=affinities, counts={})
+    """Hand-built profile for scorer/explain tests; counts mirror every value (n=10, so mean rating = 3 + 1.5·a)."""
+    counts = {dim: {value: 10 for value in values} for dim, values in affinities.items()}
+    return TasteProfile(mu=3.0, n_ratings=n_ratings, affinities=affinities, counts=counts)
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +123,24 @@ def test_affinity_skips_nan_user_rating_rows(make_ratings):
     assert "B" not in profile.counts["genres"]
 
 
+def test_mean_rating_inverts_shrunk_affinity(make_ratings):
+    # Sentiment classification back-solves the raw mean from A = Σ(r−μ)/(n+k);
+    # this pins the inversion to build_affinity's exact formula.
+    df = make_ratings(
+        [
+            {"user_rating": 2.5, "directors": "Mid Band"},
+            {"user_rating": 2.0, "directors": "Mid Band"},
+            {"user_rating": 2.5, "directors": "Mid Band"},
+            {"user_rating": 4.5, "directors": "Other"},
+        ]
+    )
+    profile = build_affinity(df)
+    affinity = profile.affinities["directors"]["Mid Band"]
+    assert affinity < 0  # μ-relative ranking still sees the below-mean deviation
+    recovered = _mean_rating(affinity, profile.counts["directors"]["Mid Band"], profile.mu)
+    assert recovered == pytest.approx((2.5 + 2.0 + 2.5) / 3)
+
+
 # ---------------------------------------------------------------------------
 # score_films
 # ---------------------------------------------------------------------------
@@ -192,8 +212,9 @@ def test_score_empty_profile_quality_only():
 # ---------------------------------------------------------------------------
 
 
-def test_explain_topk_sorted_positive_only():
-    profile = _profile({"directors": {"Great": 0.9}, "genres": {"Good": 0.5, "Bad": -0.5}})
+def test_explain_topk_sorted_disliked_excluded():
+    # "Bad" at -0.9 means a 1.65 mean rating — below the sentiment pivot, never a chip.
+    profile = _profile({"directors": {"Great": 0.9}, "genres": {"Good": 0.5, "Bad": -0.9}})
     row = pd.Series({"directors": "Great", "genres": "Good, Bad"})
     top2 = explain(row, profile, top_k=2)
     assert [label for label, _ in top2] == ["Great", "Good"]
@@ -202,17 +223,37 @@ def test_explain_topk_sorted_positive_only():
 
 
 def test_explain_contribution_formula_exact():
-    profile = _profile({"directors": {"Great": 0.9}, "genres": {"Good": 0.5, "Bad": -0.5}})
+    profile = _profile({"directors": {"Great": 0.9}, "genres": {"Good": 0.5, "Bad": -0.9}})
     row = pd.Series({"directors": "Great", "genres": "Good, Bad"})
     contributions = dict(explain(row, profile, top_k=2))
     assert contributions["Great"] == pytest.approx(1.0 * 0.9 / 1)
+    # m_d counts every known value, liked or not: "Bad" still splits the genres share.
     assert contributions["Good"] == pytest.approx(0.6 * 0.5 / 2)
 
 
-def test_explain_all_negative_returns_empty():
-    profile = _profile({"directors": {"Meh": -0.3}, "genres": {"Bad": -0.5}})
+def test_explain_all_disliked_returns_empty():
+    # Means 2.1 and 1.65 — both below the sentiment pivot.
+    profile = _profile({"directors": {"Meh": -0.6}, "genres": {"Bad": -0.9}})
     row = pd.Series({"directors": "Meh", "genres": "Bad"})
     assert explain(row, profile) == []
+
+
+def test_explain_liked_band_negative_affinity_still_surfaces():
+    # μ-relative sign must not decide chip membership: a value whose mean sits
+    # in [SENTIMENT_PIVOT, μ) — negative affinity, "watchable-to-good" tier —
+    # stays eligible, ranked after the genuinely positive contributors.
+    profile = _profile({"genres": {"Good": 0.5, "Mid Band": -0.4}})  # means 3.75 and 2.4
+    row = pd.Series({"genres": "Good, Mid Band"})
+    top2 = explain(row, profile, top_k=2)
+    assert [label for label, _ in top2] == ["Good", "Mid Band"]
+    assert top2[1][1] < 0  # eligibility is tier-based even when the μ-relative contribution is negative
+
+
+def test_explain_boundary_exact_pivot_is_liked():
+    # a = -0.5 lands the mean exactly on SENTIMENT_PIVOT (2.25) — liked, not disliked.
+    profile = _profile({"genres": {"Edge": -0.5}})
+    row = pd.Series({"genres": "Edge"})
+    assert [label for label, _ in explain(row, profile)] == ["Edge"]
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +346,9 @@ def test_format_actors_line_with_threshold(make_ratings):
     assert "Cameo Once" not in result
 
 
-def test_format_actors_excludes_negative_affinity(make_ratings):
-    # Two rated films is enough evidence, but a below-mean actor must never be labelled a favourite.
+def test_format_actors_excludes_disliked(make_ratings):
+    # Two rated films is enough evidence, but a sub-pivot actor (mean 1.25 < 2.25)
+    # must never be labelled a favourite.
     df = make_ratings(
         [
             {"user_rating": 1.0, "cast": "Disliked Twice"},
@@ -318,6 +360,49 @@ def test_format_actors_excludes_negative_affinity(make_ratings):
     result = format_taste_profile(build_affinity(df))
     assert "Favourite actors (≥2 films rated): Loved Lead" in result
     assert "Disliked Twice" not in result
+
+
+def test_format_actors_include_liked_band_despite_negative_affinity(make_ratings):
+    # The favourites guard is the sentiment pivot, not `a > 0`: a regular whose
+    # mean sits in [2.25, μ≈2.57) stays eligible, ranked after the genuinely
+    # loved; sub-pivot actors are still excluded.
+    df = make_ratings(
+        [
+            {"user_rating": 2.5, "cast": "Mid Band"},
+            {"user_rating": 2.0, "cast": "Mid Band"},
+            {"user_rating": 2.5, "cast": "Mid Band"},
+            {"user_rating": 1.0, "cast": "Truly Bad"},
+            {"user_rating": 1.0, "cast": "Truly Bad"},
+            {"user_rating": 4.5, "cast": "Loved Lead"},
+            {"user_rating": 4.5, "cast": "Loved Lead"},
+        ]
+    )
+    result = format_taste_profile(build_affinity(df))
+    actors_line = next(line for line in result.split("\n") if line.startswith("Favourite actors"))
+    assert actors_line == "Favourite actors (≥2 films rated): Loved Lead, Mid Band"
+    assert "Truly Bad" not in result
+
+
+def test_format_dislikes_use_pivot_not_affinity_sign(make_ratings):
+    # R2 regression: a genre/director whose mean rating lands in [2.25, μ≈2.57)
+    # carries negative affinity yet is "watchable-to-good" on the ladder — it
+    # must not be branded least-favourite; genuinely sub-pivot values still are.
+    df = make_ratings(
+        [
+            {"user_rating": 2.5, "genres": "Horror", "directors": "Mid Band"},
+            {"user_rating": 2.0, "genres": "Horror", "directors": "Mid Band"},
+            {"user_rating": 2.5, "genres": "Horror", "directors": "Mid Band"},
+            {"user_rating": 1.0, "genres": "Comedy", "directors": "Truly Bad"},
+            {"user_rating": 1.0, "genres": "Comedy", "directors": "Truly Bad"},
+            {"user_rating": 4.5, "genres": "Western", "directors": "Loved"},
+            {"user_rating": 4.5, "genres": "Western", "directors": "Loved"},
+        ]
+    )
+    profile = build_affinity(df)
+    assert profile.affinities["directors"]["Mid Band"] < 0  # ranking stays μ-centered
+    lines = {line.split(": ")[0]: line for line in format_taste_profile(profile).split("\n")}
+    assert lines["Least favourite genres"] == "Least favourite genres: Comedy"
+    assert lines["Least favourite directors (≥2 films rated)"] == "Least favourite directors (≥2 films rated): Truly Bad"
 
 
 def test_format_omits_empty_dimensions():

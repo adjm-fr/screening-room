@@ -284,11 +284,15 @@ def test_streaming_badges_free_and_subscribed_flatrate_both_render():
 
 
 def _make_profile() -> TasteProfile:
+    # counts mirror every affinity value (explain recovers mean ratings from
+    # them): n=10 with mu=3.0 puts Comedy at a 1.65 mean — below the sentiment
+    # pivot, so it can never surface as a chip.
+    affinities = {"directors": {"Alfred Hitchcock": 0.9}, "genres": {"Western": 0.5, "Comedy": -0.9}}
     return TasteProfile(
         mu=3.0,
         n_ratings=10,
-        affinities={"directors": {"Alfred Hitchcock": 0.9}, "genres": {"Western": 0.5, "Comedy": -0.5}},
-        counts={},
+        affinities=affinities,
+        counts={dim: {value: 10 for value in values} for dim, values in affinities.items()},
     )
 
 
@@ -307,7 +311,7 @@ def test_match_chips_html_empty_when_no_match_value():
     assert match_chips_html(pd.Series({"title": "X"}), profile) == ""
 
 
-def test_match_chips_html_badge_only_when_no_positive_contributors():
+def test_match_chips_html_badge_only_when_no_liked_contributors():
     row = pd.Series({"match": 31.0, "genres": "Comedy"})
     out = match_chips_html(row, _make_profile())
     assert "% match" in out

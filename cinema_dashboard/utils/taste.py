@@ -66,19 +66,26 @@ TTL_SECONDS = 300
 # Shrinkage constant k in A(v) = Σ(r−μ)/(n+k): a singleton caps at ±(r−μ)/(1+k)
 # while n=10 keeps 2/3 of the raw deviation. Uniform across dimensions — for
 # genres/themes/decades n is in the hundreds, so k is negligible there.
+# Evaluated, not hand-tuned: the 2.2 backtest (`backtest.py --sweep`, 20-repeat
+# random-holdout on the 4109-film ratings history) swept k∈{2,5,10} and 5.0 beat
+# both alternatives at every cast/quality_weight combo — left unchanged.
 SHRINKAGE_K = 5.0
 
 # Per-dimension blend weights, sized so each dimension's weighted reach is
 # comparable on real data: directors dominate when present (strongest personal
 # signal); decade only tie-breaks (partly confounds curated-classics viewing).
 # Cast sits between themes and decade (leads carry real signal but a film has
-# up to 8 of them); country/language are weak context signals. The 2.2 backtest
-# sweep will revisit these provisional values.
+# up to 8 of them); country/language are weak context signals. Evaluated, not
+# hand-tuned: the winning 2.2 backtest combo (shrinkage_k=5.0, cast_weight=0.2,
+# quality_weight=0.3) scored spearman=0.6688/quartile_lift=2.0011 vs. a
+# quality-prior-only baseline of spearman=0.5931/quartile_lift=1.7814. cast_weight
+# had near-zero sensitivity across 0.2–0.6 (noise-level deltas); 0.2 was kept as
+# the more conservative pick for this noisy, wide-net signal.
 WEIGHTS: dict[str, float] = {
     "directors": 1.0,
     "genres": 0.6,
     "themes": 0.5,
-    "cast": 0.4,
+    "cast": 0.2,
     "decade": 0.3,
     "country": 0.2,
     "language": 0.15,
@@ -86,7 +93,10 @@ WEIGHTS: dict[str, float] = {
 
 # Community-quality prior: small, centered at the watchlist's median Letterboxd
 # rating so the term stays signed instead of being a constant positive offset.
-QUALITY_WEIGHT = 0.2
+# Evaluated, not hand-tuned: quality_weight dominated the 2.2 backtest sweep,
+# monotonically improving spearman/quartile_lift at every k/cast_weight combo
+# tested (0.1/0.2/0.3) — 0.3 was the best of those and is now the default.
+QUALITY_WEIGHT = 0.3
 QUALITY_CENTER = 3.5
 
 # Logistic temperature for the 0–100 display mapping, calibrated on the real
@@ -173,12 +183,15 @@ def _film_features(row: pd.Series, dim: str) -> list[str]:
 
 
 @st.cache_data(ttl=TTL_SECONDS)
-def build_affinity(ratings_df: pd.DataFrame) -> TasteProfile:
+def build_affinity(ratings_df: pd.DataFrame, *, shrinkage_k: float = SHRINKAGE_K) -> TasteProfile:
     """Build the signed affinity profile from rated films.
 
     Rows with a null ``user_rating`` are skipped; feature values are deduped
     per film so a repeated genre cannot double-count. Returns an empty profile
-    (``is_empty``) when there is no usable rating history.
+    (``is_empty``) when there is no usable rating history. ``shrinkage_k``
+    defaults to the module constant; the phase 2.2 backtest harness sweeps it
+    to compare candidate values against the shipped default without touching
+    this function's normal (positional, one-arg) call sites.
     """
     if ratings_df.empty or "user_rating" not in ratings_df.columns:
         log.warning("Ratings DataFrame empty or missing user_rating — affinity profile unavailable")
@@ -199,7 +212,7 @@ def build_affinity(ratings_df: pd.DataFrame) -> TasteProfile:
                 counts[dim][value] = counts[dim].get(value, 0) + 1
 
     affinities = {
-        dim: {value: total / (counts[dim][value] + SHRINKAGE_K) for value, total in dim_sums.items()}
+        dim: {value: total / (counts[dim][value] + shrinkage_k) for value, total in dim_sums.items()}
         for dim, dim_sums in sums.items()
     }
     log.info(
@@ -211,22 +224,35 @@ def build_affinity(ratings_df: pd.DataFrame) -> TasteProfile:
     return TasteProfile(mu=mu, n_ratings=len(rated), affinities=affinities, counts=counts)
 
 
-def _raw_score(row: pd.Series, profile: TasteProfile) -> float:
+def _raw_score(
+    row: pd.Series,
+    profile: TasteProfile,
+    *,
+    weights: dict[str, float] | None = None,
+    quality_weight: float | None = None,
+) -> float:
     """Weighted blend of per-dimension affinity means plus the quality prior.
 
     Each dimension averages over the film's *known* values only — a film by an
     unrated director is neutral, and one loved genre is not diluted by an
     unknown sibling. A dimension with no known values contributes nothing.
+    ``weights``/``quality_weight`` default to the module ``WEIGHTS``/
+    ``QUALITY_WEIGHT`` constants when omitted; the phase 2.2 backtest harness
+    passes candidate values through here to score a weight sweep without
+    mutating module state. :func:`score_films` always calls this with no
+    override, so its behavior is unchanged.
     """
+    active_weights = WEIGHTS if weights is None else weights
+    active_quality_weight = QUALITY_WEIGHT if quality_weight is None else quality_weight
     raw = 0.0
-    for dim, weight in WEIGHTS.items():
+    for dim, weight in active_weights.items():
         dim_affinities = profile.affinities.get(dim, {})
         known = [dim_affinities[v] for v in _film_features(row, dim) if v in dim_affinities]
         if known:
             raw += weight * (sum(known) / len(known))
     lb_rating = row.get("letterboxd_avg_rating")
     if isinstance(lb_rating, (int, float)) and not pd.isna(lb_rating):
-        raw += QUALITY_WEIGHT * (float(lb_rating) - QUALITY_CENTER)
+        raw += active_quality_weight * (float(lb_rating) - QUALITY_CENTER)
     return raw
 
 

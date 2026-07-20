@@ -114,6 +114,7 @@ movies_management          Allocine-Showtimes-Scraping
 cinema_dashboard/
 ├── app.py                        # Streamlit entry point — registers pages, injects CSS, mounts Cmd+K
 ├── orchestrate.py                # Lightweight CLI to refresh all data (consumes modules/scrapers.py)
+├── backtest.py                   # CLI to evaluate/sweep the taste-ranker constants against held-out ratings
 ├── .streamlit/
 │   └── config.toml               # Cinema theme: dark + light, system-driven
 ├── assets/
@@ -253,6 +254,21 @@ uv run --directory ../Allocine-Showtimes-Scraping python main.py
 ```
 
 Streamlit cache TTL is **5 minutes**, shared across all pages (`DATA_TTL_SECONDS` in [`utils/data_loader.py`](utils/data_loader.py)). Conversation history on the Recommendations page is session-scoped and not affected by the cache.
+
+### Backtesting the taste ranker
+
+`backtest.py` measures how well the taste ranker (`utils/taste.py`) actually predicts held-out ratings,
+instead of trusting the shrinkage/weight/quality constants on eyeball alone. It repeatedly holds out a
+random slice of your rated films, retrains an affinity profile on the rest, and reports the held-out
+Spearman rank correlation and top-vs-bottom-quartile rating lift — both compared against a quality-prior-only
+baseline (i.e. "just trust Letterboxd's community rating"), so it's clear whether the ranker earns its keep.
+See [`utils/backtest.py`](utils/backtest.py) for the full methodology. Like other data-dependent commands,
+it requires `OUTPUT_PATH` (real ratings data) to be set.
+
+```bash
+uv run --no-sync --directory cinema_dashboard python backtest.py            # metrics for the current constants
+uv run --no-sync --directory cinema_dashboard python backtest.py --sweep    # grid-search SHRINKAGE_K / cast-weight / QUALITY_WEIGHT
+```
 
 ## LLM evals
 

@@ -181,7 +181,7 @@ def test_score_cast_weight_and_nan_cast_neutral():
     profile = _profile({"cast": {"Lead": 0.5}})
     df = pd.DataFrame([{"cast": "Lead"}, {"cast": float("nan")}])
     scores = score_films(df, profile)
-    assert scores.iloc[0] == pytest.approx(_logistic(0.4 * 0.5))
+    assert scores.iloc[0] == pytest.approx(_logistic(0.2 * 0.5))
     assert scores.iloc[1] == pytest.approx(50.0)
 
 

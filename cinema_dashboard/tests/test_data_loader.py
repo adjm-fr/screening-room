@@ -189,6 +189,16 @@ def test_key_column_not_in_output(make_showtimes, make_watchlist):
     assert "_key" not in result.columns
 
 
+def test_trailer_url_carried_onto_joined_rows(make_showtimes, make_watchlist):
+    # trailer_url (Phase 1.1 upstream cache column) must survive the join so
+    # Home/Calendar cards can render the trailer chip (see utils/ui.py).
+    showtimes = make_showtimes([{"movie": "Dune", "showtimes": "2025-01-01 18:00"}])
+    watchlist = make_watchlist([{"title": "Dune", "trailer_url": "https://www.youtube.com/watch?v=abc123"}])
+    result = build_watchlist_showtimes(showtimes, watchlist)
+    assert "trailer_url" in result.columns
+    assert result.iloc[0]["trailer_url"] == "https://www.youtube.com/watch?v=abc123"
+
+
 # ---------------------------------------------------------------------------
 # build_watchlist_showtimes — director-aware merge
 # ---------------------------------------------------------------------------

@@ -216,6 +216,7 @@ def build_watchlist_showtimes(
         "release_year",
         "poster_url",
         "banner_url",
+        "trailer_url",
         "tmdb_id",
     ]
     meta_cols = [c for c in _want_cols if c in watchlist_df.columns]

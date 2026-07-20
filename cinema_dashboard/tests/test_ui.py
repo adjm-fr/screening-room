@@ -131,6 +131,39 @@ def test_rating_chip_uses_five_point_scale():
     assert "hsl(36 80% 40%)" in _movie_card_html(row)
 
 
+# ── trailer chip ─────────────────────────────────────────────────────────────
+
+
+def test_movie_card_renders_trailer_chip():
+    row = pd.Series({"title": "Solaris", "trailer_url": "https://www.youtube.com/watch?v=abc123"})
+    card = _movie_card_html(row)
+    assert "chip--trailer" in card
+    assert "https://www.youtube.com/watch?v=abc123" in card
+    assert "▶ Trailer" in card
+
+
+def test_movie_card_omits_trailer_chip_when_missing():
+    row = pd.Series({"title": "No Trailer Column"})
+    assert "chip--trailer" not in _movie_card_html(row)
+
+
+def test_movie_card_omits_trailer_chip_when_none():
+    row = pd.Series({"title": "Untrailered", "trailer_url": None})
+    assert "chip--trailer" not in _movie_card_html(row)
+
+
+def test_movie_card_omits_trailer_chip_when_nan():
+    row = pd.Series({"title": "Untrailered", "trailer_url": float("nan")})
+    assert "chip--trailer" not in _movie_card_html(row)
+
+
+def test_movie_card_escapes_trailer_url():
+    row = pd.Series({"title": "XSS", "trailer_url": 'https://example.com/"><script>alert(1)</script>'})
+    card = _movie_card_html(row)
+    assert "<script>" not in card
+    assert "&lt;script&gt;" in card
+
+
 # ── _ics_escape ─────────────────────────────────────────────────────────────
 
 

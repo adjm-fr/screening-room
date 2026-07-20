@@ -208,8 +208,9 @@ def _movie_card_html(
 
     Pulls ``poster_url``, ``letterboxd_title``/``title``/``french_title``,
     ``directors``, ``runtime_minutes``/``runtime``, ``letterboxd_avg_rating``,
-    and ``genres`` from the row when present; missing fields are silently
-    skipped. ``size`` controls the CSS modifier class on the card element.
+    ``genres``, and ``trailer_url`` from the row when present; missing fields
+    are silently skipped. ``size`` controls the CSS modifier class on the
+    card element.
     """
     _title_candidates = [row.get("letterboxd_title"), row.get("french_title"), row.get("title"), row.get("movie")]
     title = next((str(v) for v in _title_candidates if isinstance(v, str) and v), "Untitled")
@@ -221,6 +222,7 @@ def _movie_card_html(
     rating = row.get("letterboxd_avg_rating")
     user_rating = row.get("user_rating")
     genres = row.get("genres")
+    trailer_url = row.get("trailer_url")
 
     poster_html = (
         f'<img class="poster" src="{html.escape(str(poster_url))}" alt="{html.escape(title)} poster" loading="lazy" />'
@@ -231,6 +233,11 @@ def _movie_card_html(
     rating_chip = _rating_chip_html(rating if isinstance(rating, (int, float)) else None)
     user_rating_chip = _user_rating_chip_html(user_rating if isinstance(user_rating, (int, float)) else None)
     genre_chips = _genre_chips_html(genres if isinstance(genres, str) else None)
+    trailer_chip = (
+        f'<a class="chip chip--trailer" href="{html.escape(trailer_url)}" target="_blank" rel="noopener noreferrer">▶ Trailer</a>'
+        if isinstance(trailer_url, str) and trailer_url
+        else ""
+    )
     streaming_chips = _streaming_badges_html(row.get("flatrate"), row.get("free"), subscribed)
     sub = html.escape(directors) if directors else ""
 
@@ -241,7 +248,7 @@ def _movie_card_html(
         f'<div class="title">{html.escape(title)}</div>'
         f"{f'<div class="sub">{sub}</div>' if sub else ''}"
         f"<div>{user_rating_chip}{rating_chip}{runtime_chip}</div>"
-        f"<div>{genre_chips}</div>"
+        f"<div>{genre_chips}{trailer_chip}</div>"
         f"{streaming_chips}"
         f"{extra_html}"
         f"</div>"

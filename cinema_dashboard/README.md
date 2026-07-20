@@ -28,7 +28,7 @@ The "top matches this week" rail ranks this week's watchlist screenings against 
 
 The "available on streaming platforms" rail is drawn from the full watchlist (not the cinema join), ranked by taste match (Letterboxd rating as tie-break, and as fallback before any films are rated). A film counts as "available" when it's on a subscribed provider in `STREAMING_SERVICES` (or on any provider when that's unset) **or** on a no-cost provider (Arte.tv, France.tv, …) — free platforms always count, regardless of `STREAMING_SERVICES`.
 
-Every card shows a small badge row: subscribed services carrying the film (filled `chip--streaming`) when `STREAMING_SERVICES` is configured, plus a distinct dashed `chip--streaming-free` badge — labelled with the word "free" so the distinction isn't color-only — for any no-cost provider, unconditionally.
+Every card shows a small badge row: subscribed services carrying the film (filled `chip--streaming`) when `STREAMING_SERVICES` is configured, plus a distinct dashed `chip--streaming-free` badge — labelled with the word "free" so the distinction isn't color-only — for any no-cost provider, unconditionally. Any card with a cached `trailer_url` also gets a `▶ Trailer` chip that opens the trailer on YouTube in a new tab.
 
 **Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH`
 

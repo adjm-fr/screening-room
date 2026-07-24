@@ -21,8 +21,11 @@ This module owns:
     PROMPT_SUGGESTIONS    : list[str]            (chip-row examples)
     save_chat_state() / load_chat_state() / delete_chat_state()  (disk persistence)
 
-The Gemini API call lives in :func:`_ask_gemini` which streams the assistant
-reply and handles a single round of ``search_theater`` tool use.
+The Gemini API call lives in :func:`_ask_gemini`, which streams the assistant
+reply and handles up to :data:`MAX_TOOL_ROUNDS` rounds of tool use, dispatched
+by :func:`_run_tool`: ``search_theater`` (Allocine lookup, defined here) plus
+``top_matches`` / ``showtimes_query`` (pure queries over the injected data,
+defined in :mod:`utils.chat_tools`).
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ from google.genai import types
 from modules.config import settings
 
 from utils.allocine_search import _get_paris_cinemas, search_theaters
+from utils.chat_tools import SHOWTIMES_TOOL, TASTE_TOOL, showtimes_query, top_matches
 from utils.data_loader import (
     _normalize_title,
     attach_streaming,
@@ -52,6 +56,7 @@ from utils.data_loader import (
     load_showtimes,
     load_watchlist,
 )
+from utils.taste import attach_match, build_affinity
 from utils.theater_manager import append_theater, backfill_addresses, load_theater_ids, load_theaters
 from utils.ui import render_movie_card
 
@@ -201,6 +206,11 @@ class ChatContext:
     known_theaters: list[str]
     theaters_csv: Path | None
     wl_shows: pd.DataFrame
+    # ``wl_shows`` with the taste ``match`` column joined on (see
+    # ``utils.taste.attach_match``) — the frame the ``top_matches`` /
+    # ``showtimes_query`` tools query. Falls back to ``wl_shows`` unchanged
+    # when there is no usable rating history or scoring fails.
+    wl_scored: pd.DataFrame
     n_movies: int
     n_screenings: int
 
@@ -311,6 +321,16 @@ def build_chat_context() -> ChatContext | None:
 
     watchlist_streaming = attach_streaming(watchlist_df.rename(columns={"title": "letterboxd_title"}), str(movies_path))
 
+    # Score once here rather than per tool call: both chat surfaces and every
+    # turn of the conversation reuse the same frame. Scoring is best-effort —
+    # a failure costs the tools their ``match`` column, not the whole page.
+    try:
+        profile = build_affinity(ratings_df)
+        wl_scored = attach_match(wl_shows, watchlist_df, profile) if not profile.is_empty else wl_shows
+    except Exception as exc:
+        log.warning("Taste scoring failed — chat tools fall back to unscored showtimes: %s", exc)
+        wl_scored = wl_shows
+
     showtime_theaters = set(wl_shows["theater_name"].dropna().unique()) if "theater_name" in wl_shows.columns else set()
     csv_theaters = {t["name"] for t in load_theaters(theaters_csv)} if theaters_csv else set()
     known_theaters = sorted(showtime_theaters | csv_theaters)
@@ -322,6 +342,7 @@ def build_chat_context() -> ChatContext | None:
         known_theaters=known_theaters,
         theaters_csv=theaters_csv,
         wl_shows=wl_shows,
+        wl_scored=wl_scored,
         n_movies=int(wl_shows["letterboxd_title"].nunique()),
         n_screenings=int(len(wl_shows)),
     )
@@ -392,6 +413,15 @@ def build_system_message(ctx: ChatContext) -> dict:
             "NOT answer from the known list, do NOT say the theater is unknown or has no data, and "
             "do NOT ask the user whether they'd like you to search — just call search_theater. The "
             "refusal flow does NOT apply to theaters.\n\n"
+            "TASTE & SHOWTIME TOOLS — two read-only tools query the SAME closed set as the data blocks "
+            "below. Call top_matches when the user asks what they would most enjoy ('what are my top "
+            "matches tonight?', 'what should I prioritise?'), optionally narrowed to a genre; it ranks "
+            "their OWN watchlist films by their taste profile. Call showtimes_query for a targeted "
+            "showtime lookup ('when is X playing?', 'what's on at the Champo on Saturday?'), passing the "
+            "day as an ISO date. Their results are the only additional source of rankings and showtimes "
+            "you may cite — every row they return already belongs to the closed set, and the ABSOLUTE "
+            "RULE still holds: never name a film, provider or theater that appears neither in a tool "
+            "result nor in the data blocks below.\n\n"
             f"User taste profile (from their Letterboxd ratings history):\n{ctx.taste}\n\n"
             f"These are the watchlist movies currently showing at their theaters:\n{ctx.showtimes_md}\n"
             f"{streaming_block}\n"
@@ -424,8 +454,67 @@ def _history_to_contents(history: list[dict]) -> list[types.Content]:
     return contents
 
 
+# How many tool calls one user turn may trigger. Bounded so a model that keeps
+# asking for tools can't loop forever (or drain the token budget); the reply is
+# still streamed, the surplus tool call is simply ignored.
+MAX_TOOL_ROUNDS = 2
+
+
+def _run_tool(ctx: ChatContext, name: str, args: dict) -> tuple[dict, list[dict] | None]:
+    """Execute one tool call and surface it in the UI as a transparent expander.
+
+    Returns ``(response_payload, theater_results)``: the payload goes back to
+    Gemini as the function response, and ``theater_results`` is non-``None``
+    only for ``search_theater`` — the one tool whose output also drives the
+    "add this theater?" confirmation flow (:func:`_render_pending_theaters`).
+
+    An unknown function name is reported back to the model as an error payload
+    rather than raising, so a hallucinated tool can't abort the reply.
+    """
+    if name == "search_theater":
+        query = args.get("query", "")
+        log.info("Tool call: search_theater(query=%r)", query)
+        theaters = search_theaters(query)
+        log.info("search_theater returned %d result(s)", len(theaters))
+        with st.expander(f"🛠 Searched theaters: {query}", expanded=False):
+            if theaters:
+                st.dataframe(pd.DataFrame(theaters), width="stretch", hide_index=True)
+            else:
+                st.caption("No matches.")
+        return {"results": theaters}, theaters
+
+    if name == "top_matches":
+        n = args.get("n") or 5
+        genre = args.get("genre")
+        log.info("Tool call: top_matches(n=%r, genre=%r)", n, genre)
+        rows = top_matches(ctx.wl_scored, n=n, genre=genre)
+        label = f"🛠 Ranked your top matches ({genre})" if genre else "🛠 Ranked your top matches"
+        _render_tool_rows(label, rows)
+        return {"results": rows}, None
+
+    if name == "showtimes_query":
+        title, theater, day = args.get("title"), args.get("theater"), args.get("day")
+        log.info("Tool call: showtimes_query(title=%r, theater=%r, day=%r)", title, theater, day)
+        rows = showtimes_query(ctx.wl_scored, title=title, theater=theater, day=day)
+        criteria = ", ".join(f"{k}={v}" for k, v in (("title", title), ("theater", theater), ("day", day)) if v)
+        _render_tool_rows(f"🛠 Searched showtimes: {criteria or 'all upcoming'}", rows)
+        return {"results": rows}, None
+
+    log.warning("Ignoring unknown tool call: %r", name)
+    return {"error": f"unknown tool {name!r}"}, None
+
+
+def _render_tool_rows(label: str, rows: list[dict]) -> None:
+    """Show a tool's returned rows in a collapsed expander, mirroring ``search_theater``'s UI."""
+    with st.expander(label, expanded=False):
+        if rows:
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        else:
+            st.caption("No matches.")
+
+
 def _ask_gemini(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], list]:
-    """Stream a Gemini chat response, handling one round of ``search_theater`` tool use.
+    """Stream a Gemini chat response, handling up to :data:`MAX_TOOL_ROUNDS` rounds of tool use.
 
     Returns ``(text_stream, pending_ref)`` where ``pending_ref`` is a
     single-element list populated *after* the generator is exhausted with the
@@ -437,7 +526,7 @@ def _ask_gemini(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], l
     contents = _history_to_contents(history)
     cfg = types.GenerateContentConfig(
         system_instruction=system_instruction,
-        tools=[SEARCH_THEATER_TOOL],
+        tools=[SEARCH_THEATER_TOOL, TASTE_TOOL, SHOWTIMES_TOOL],
         max_output_tokens=settings.gemini_max_tokens,
         temperature=settings.gemini_temperature,
         top_p=settings.gemini_top_p,
@@ -445,54 +534,47 @@ def _ask_gemini(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], l
     pending_ref: list[list[dict] | None] = [None]
 
     def _generate() -> Iterator[str]:
-        fn_call: types.FunctionCall | None = None
-        assistant_parts: list[types.Part] = []
+        convo = list(contents)
+        theaters: list[dict] | None = None
 
-        stream = client.models.generate_content_stream(model=settings.gemini_model, contents=cast(list, contents), config=cfg)
-        for chunk in stream:
-            if not chunk.candidates or chunk.candidates[0].content is None:
-                continue
-            for part in chunk.candidates[0].content.parts or []:
-                if part.text:
-                    assistant_parts.append(part)
-                    yield part.text
-                elif part.function_call:
-                    fn_call = part.function_call
-                    assistant_parts.append(part)
+        # One extra iteration over the round budget: the last pass streams the
+        # model's answer to the final tool result without granting a new call.
+        for round_index in range(MAX_TOOL_ROUNDS + 1):
+            fn_call: types.FunctionCall | None = None
+            assistant_parts: list[types.Part] = []
 
-        if fn_call is None:
-            return
+            stream = client.models.generate_content_stream(model=settings.gemini_model, contents=cast(list, convo), config=cfg)
+            for chunk in stream:
+                if not chunk.candidates or chunk.candidates[0].content is None:
+                    continue
+                for part in chunk.candidates[0].content.parts or []:
+                    if part.text:
+                        assistant_parts.append(part)
+                        yield part.text
+                    elif part.function_call:
+                        fn_call = part.function_call
+                        assistant_parts.append(part)
 
-        query = (fn_call.args or {}).get("query", "")
-        log.info("Tool call: search_theater(query=%r)", query)
-        results = search_theaters(query)
-        log.info("search_theater returned %d result(s)", len(results))
+            if fn_call is None:
+                break
+            if round_index == MAX_TOOL_ROUNDS:
+                log.warning("Tool-call budget of %d round(s) exhausted — ignoring %r", MAX_TOOL_ROUNDS, fn_call.name)
+                break
 
-        # Surface the tool call to the UI as a transparent expander.
-        with st.expander(f"🛠 Searched theaters: {query}", expanded=False):
-            if results:
-                st.dataframe(pd.DataFrame(results), width="stretch", hide_index=True)
-            else:
-                st.caption("No matches.")
+            name = fn_call.name or ""
+            payload, tool_theaters = _run_tool(ctx, name, dict(fn_call.args or {}))
+            if tool_theaters is not None:
+                theaters = tool_theaters
 
-        follow_contents = contents + [
-            types.Content(role="model", parts=assistant_parts),
-            types.Content(
-                role="user",
-                parts=[types.Part.from_function_response(name="search_theater", response={"results": results})],
-            ),
-        ]
-        follow_up = client.models.generate_content_stream(
-            model=settings.gemini_model, contents=cast(list, follow_contents), config=cfg
-        )
-        for chunk in follow_up:
-            if not chunk.candidates or chunk.candidates[0].content is None:
-                continue
-            for part in chunk.candidates[0].content.parts or []:
-                if part.text:
-                    yield part.text
+            convo = convo + [
+                types.Content(role="model", parts=assistant_parts),
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_function_response(name=name or "unknown", response=payload)],
+                ),
+            ]
 
-        pending_ref[0] = results if results else None
+        pending_ref[0] = theaters if theaters else None
 
     return _generate(), pending_ref
 

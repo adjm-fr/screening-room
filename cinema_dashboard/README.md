@@ -67,6 +67,7 @@ Chat interface powered by the [Gemini API](https://ai.google.dev/) via the nativ
 - "Which watchlist movies are showing this weekend?"
 - "Based on my taste, what should I prioritise?"
 - "What's showing at Cinéma X that I'd enjoy?"
+- "What are my top matches this week?" *(taste-ranked, via tool use)*
 - "What's on my streaming services tonight that fits my taste?" *(requires `STREAMING_SERVICES`)*
 
 Power-user surface: prompt-suggestion chips, streaming spinner with transparent tool-call expanders, in-page pinned-recommendations column on the right (substring-match watchlist titles in each reply, then click to pin), Markdown conversation export.
@@ -74,6 +75,18 @@ Power-user surface: prompt-suggestion chips, streaming spinner with transparent 
 The same assistant is reachable from any page via the global **`Cmd+K`** command palette (or the "✦ Ask AI" sidebar button). Both surfaces share a single `st.session_state['chat']` (a `ChatState` dataclass) so the conversation persists across them. The transcript and pinned recommendations are also persisted to `data/chat_state.json` (gitignored, beside the streaming/geo caches) and reloaded on the next launch, so they survive app restarts — saved after each assistant reply and pin change; **🗑 Clear conversation** deletes the file. A corrupt or missing file falls back to a fresh conversation.
 
 The page derives a taste profile from your Letterboxd ratings (favourite *and least favourite* genres, themes, directors, plus favourite actors and eras — ranked by the signed affinities in `utils/taste.py`, with liked/disliked classified against the ladder's 2.25 sentiment pivot) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted. Because ratings follow a tier ladder rather than a conventional satisfaction scale (2.5–3/5 already means a good film, 3.5+/5 a must-watch), the profile carries a `Rating scale:` legend line and the system prompt is reminded not to read the ~2.5/5 average as dissatisfaction. When the FR streaming-providers cache is populated, per-film availability is injected into the system prompt as `flatrate={a, b}` (subscription providers) plus, when the film also has one, `; free={c}` (no-cost providers) — and the model is rule-bound to only reference providers from those lists (no hallucinated availability).
+
+#### Tool use
+
+The model can call three read-only tools, each surfaced in the chat as a collapsed "🛠" expander showing what was queried and what came back (up to two tool calls per question):
+
+| Tool | What it does |
+| --- | --- |
+| `top_matches` | Ranks your **own** watchlist films that have upcoming screenings by taste match (`utils/taste.py`), optionally narrowed to a genre — "what are my top matches tonight?" |
+| `showtimes_query` | Targeted screening lookup filtered by title (original *or* French), theater, and/or day — "when is X playing?", "what's on at the Champo on Saturday?" |
+| `search_theater` | Searches Allocine for a Paris cinema you haven't tracked yet (see below) |
+
+`top_matches` and `showtimes_query` live in `utils/chat_tools.py` and are pure filters over the same watchlist×showtimes frame already injected into the prompt: they can only ever return rows that are in it, so tool use never widens the model's closed set.
 
 #### Auto-adding theaters
 

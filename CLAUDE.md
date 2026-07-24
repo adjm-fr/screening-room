@@ -173,7 +173,10 @@ typecheck, security, test.
   (`EXC_BAD_ACCESS` in `mi_thread_init` → `mi_heap_main`, first Arrow allocation on a fresh Streamlit
   script-runner thread — crashed the dashboard on launch). All three member pins carry a `<25` ceiling and
   `.github/dependabot.yml` ignores `pyarrow >=25.0.0`; lift both together only after verifying a newer
-  release actually runs the dashboard on macOS.
+  release actually runs the dashboard on macOS. Streamlit hit the identical crash in its own E2E suite and
+  ships the same `pyarrow<25` cap from 1.60.0 onward, so the ceiling is now enforced upstream too — track
+  [apache/arrow#50471](https://github.com/apache/arrow/issues/50471) and lift ours only once Streamlit
+  relaxes its cap.
 - **`common.__init__` is deliberately pandas-free.** It re-exports only settings + logging (cheap), because
   `modules.config` is on a very-hot import path. The parquet helpers (which import pandas) are imported from
   `common.parquet_io` directly by data loaders, not via the package root.

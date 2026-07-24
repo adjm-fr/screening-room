@@ -115,12 +115,29 @@ typecheck, security, test.
   across surfaces; the transcript + pinned recs are also persisted to `data/chat_state.json`
   (`CHAT_STATE_PATH`, patchable in tests) and reloaded on launch — corrupt/absent file falls back to a
   fresh state, and "Clear conversation" deletes the file. The model gets taste profile + showtimes +
-  streaming availability as markdown context,
-  plus a `search_theater` tool (one round of tool use). The system prompt is strictly **closed-set** — the
-  model may only name films/providers present in the injected context — and any new tool must preserve that
-  by construction (return rows drawn from the same context, never from outside it). The
-  `- {title} — flatrate=…` streaming-context line format is pinned by the eval goldens: append new
-  segments (e.g. `; free=…`), never reword the existing prefix.
+  streaming availability as markdown context, plus three tools: `search_theater` (live Allocine lookup,
+  declared in `chat.py`) and `top_matches` / `showtimes_query` (declared with their pure handlers in
+  `utils/chat_tools.py`). `_ask_gemini` dispatches them through a bounded loop (`MAX_TOOL_ROUNDS = 2`,
+  plus one final pass to stream the answer); only `search_theater` sets `pending_ref`. The system prompt is
+  strictly **closed-set** — the model may only name films/providers present in the injected context or
+  returned by a tool — and any new tool must preserve that by construction (return rows drawn from the same
+  context, never from outside it). The `- {title} — flatrate=…` streaming-context line format is pinned by
+  the eval goldens: append new segments (e.g. `; free=…`), never reword the existing prefix. The system
+  prompt's existing rules are likewise pinned: **insert** new paragraphs, never reword or reflow old ones.
+- **The injected context blocks and the chat tools are deliberately redundant — don't "optimize" the
+  blocks away.** The blocks define the closed set *at rest*: tools are opt-in, so any turn where the model
+  doesn't call one would otherwise be ungrounded. `top_matches` is the tool that adds what the prompt
+  genuinely lacks — `_showtimes_context` is built from the *unscored* `wl_shows`, so the 0–100 `match`
+  value appears nowhere in the prompt; the tool reads `ctx.wl_scored` (scored once in `build_chat_context`,
+  degrading to `wl_shows` on failure) so chat cites the same number as the Home rail badges instead of
+  guessing an order. `ctx.taste` is a ~200-token profile distilled from a 4k-row ratings history that is
+  never in the prompt; it drives style-matching and carries the rating-ladder legend, so no tool replaces
+  it. `showtimes_query` only adds precision (exact day filtering) over data already in context.
+- **`utils/chat_tools.py` is Streamlit-free and imports only pandas, `google.genai.types`, and
+  `_normalize_title`** — that purity is what keeps the closed set true by construction. Its handlers take
+  the scored DataFrame, *not* `ChatContext` (which would also cycle the import back into `chat.py`). New
+  tools belong here and must follow both rules; they must also be total (missing columns / NaN / junk args
+  return `[]`, never raise) since a raised exception would kill the streaming generator mid-reply.
 - **Data flow:** `utils/data_loader.py` loads the parquets, validates `showtimes.parquet` against
   `contracts.SHOWTIMES`, and `build_watchlist_showtimes` produces `wl_shows` — the watchlist↔showtimes join
   every page consumes (one row per movie×showtime, carrying titles, directors, runtime, rating, genres,

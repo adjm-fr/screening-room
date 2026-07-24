@@ -57,6 +57,8 @@ def _ctx_from_golden(g: Golden) -> ChatContext:
         known_theaters=g.known_theaters,
         theaters_csv=None,
         wl_shows=pd.DataFrame(),
+        # The evals call Gemini without tools, so the tool-query frame is unused.
+        wl_scored=pd.DataFrame(),
         n_movies=len(g.allowed_films),
         n_screenings=0,
     )

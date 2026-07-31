@@ -195,6 +195,12 @@ def build_watchlist_showtimes(
     by director overlap (:func:`_directors_overlap`): a row is kept only when
     both sides carry director data and share a common name, so an unconfirmed
     title-only collision can't attach a wrong film's screening.
+
+    ``letterboxd_slug`` **survives into the result** (it is both the
+    de-duplication key here and the unique, non-null identity of a film in
+    ``data_letterboxd.parquet``): it is what makes every card rendered off this
+    frame linkable to its ``?movie=<slug>`` detail page. ``tmdb_id`` cannot
+    stand in — it carries nulls and duplicates in the cache.
     """
     showtimes_df = showtimes_df.copy().reset_index(drop=True)
     showtimes_df["_st_idx"] = showtimes_df.index
@@ -254,6 +260,9 @@ def build_watchlist_showtimes(
     elif "_st_idx" in merged.columns:
         merged = merged.drop_duplicates(subset=["_st_idx"])
 
+    # letterboxd_slug is deliberately NOT dropped — it is the movie-detail
+    # route key (see the docstring); dropping it would leave every card built
+    # from this frame unlinkable.
     drop_cols = [
         c
         for c in [
@@ -262,7 +271,6 @@ def build_watchlist_showtimes(
             "director",
             "original_title",
             "runtime",
-            "letterboxd_slug",
             "french_title",
             "release_year_x",
             "release_year_y",

@@ -162,12 +162,26 @@ def test_runtime_from_watchlist_not_scraper(make_showtimes, make_watchlist):
     assert result.iloc[0]["runtime_minutes"] == 155
 
 
-def test_slug_column_dropped(make_showtimes, make_watchlist):
+def test_slug_carried_through_as_letterboxd_slug(make_showtimes, make_watchlist):
+    # The slug is the movie-detail route key: every card built from this frame
+    # links to ?movie=<slug>, so dropping it would silently unlink most of the app.
     showtimes = make_showtimes([{"movie": "Dune", "showtimes": "2025-01-01 18:00"}])
     watchlist = make_watchlist([{"title": "Dune", "slug": "dune-2021"}])
     result = build_watchlist_showtimes(showtimes, watchlist)
-    assert "letterboxd_slug" not in result.columns
-    assert "slug" not in result.columns
+    assert result.iloc[0]["letterboxd_slug"] == "dune-2021"
+    assert "slug" not in result.columns  # renamed, not duplicated
+
+
+def test_slug_survives_alongside_multiple_showtimes(make_showtimes, make_watchlist):
+    showtimes = make_showtimes(
+        [
+            {"movie": "Dune", "showtimes": "2025-01-01 14:00"},
+            {"movie": "Dune", "showtimes": "2025-01-01 20:00"},
+        ]
+    )
+    watchlist = make_watchlist([{"title": "Dune", "slug": "dune-2021"}])
+    result = build_watchlist_showtimes(showtimes, watchlist)
+    assert result["letterboxd_slug"].tolist() == ["dune-2021", "dune-2021"]
 
 
 def test_multiple_showtimes_for_same_movie(make_showtimes, make_watchlist):

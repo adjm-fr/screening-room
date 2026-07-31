@@ -108,10 +108,14 @@ typecheck, security, test.
 - **Shared UI vocabulary lives in `utils/ui.py`** (`render_movie_card`, `render_poster_rail`,
   `render_hero_card`, chip/KPI/empty-state/freshness helpers). New movie displays should reuse these, not
   hand-roll `st.image`/HTML.
-- **The Gemini chat assistant has two surfaces, one state.** `utils/chat.py` owns
-  `build_chat_context()` + `render_chat()`; it is mounted full-page by `pages/recommendations.py` (prompt
-  chips, pinned-recs column, export) and compact by `utils/cmdk.py` (the `Cmd+K` `st.dialog`, no pinned
-  column). Both share `st.session_state["chat"]` (a `ChatState` dataclass) so the conversation persists
+- **The Gemini chat assistant has two surfaces, one state.** `utils/chat.py` owns the LLM transport and
+  UI (`render_chat()`); context assembly (`ChatContext`, `build_chat_context()`, the system prompt) lives
+  in `utils/chat_prompt.py`, and conversation state + disk persistence (`ChatState`, `save_chat_state()` /
+  `load_chat_state()` / `delete_chat_state()`) lives in `utils/chat_state.py` — both re-exported from
+  `utils/chat.py` so existing `from utils.chat import ...` call sites are unaffected. It is mounted
+  full-page by `pages/recommendations.py` (prompt chips, pinned-recs column, export) and compact by
+  `utils/cmdk.py` (the `Cmd+K` `st.dialog`, no pinned column). Both share `st.session_state["chat"]` (a
+  `ChatState` dataclass) so the conversation persists
   across surfaces; the transcript + pinned recs are also persisted to `data/chat_state.json`
   (`CHAT_STATE_PATH`, patchable in tests) and reloaded on launch — corrupt/absent file falls back to a
   fresh state, and "Clear conversation" deletes the file. The model gets taste profile + showtimes +

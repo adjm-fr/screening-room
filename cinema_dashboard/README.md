@@ -153,7 +153,11 @@ cinema_dashboard/
 │   ├── ui.py                     # Shared rendering helpers (movie cards, rails, hero card, KPIs, chips, ICS, runtime/rating formatting)
 │   ├── availability.py           # Free-time mask (weekend/holiday/day-off/after-cutoff, minus unavailable days)
 │   ├── geo.py                    # Theater geocoding (Nominatim + RateLimiter, cached parquet) + pydeck map renderer
-│   ├── chat.py                   # Reusable Gemini chat assistant (build_chat_context + render_chat) shared by the page and Cmd+K dialog
+│   ├── chat.py                   # Gemini transport + chat UI (render_chat); re-exports the public API below
+│   ├── chat_prompt.py            # ChatContext assembly + the pinned system prompt (build_chat_context, build_system_message)
+│   ├── chat_state.py             # ChatState dataclass + transcript/pins persistence to data/chat_state.json
+│   ├── chat_tools.py             # Pure handlers + declarations for the top_matches / showtimes_query tools
+│   ├── backtest.py               # Held-out evaluation of the taste-ranker constants (used by backtest.py)
 │   ├── cmdk.py                   # Global Cmd+K command palette (st.dialog + streamlit-shortcuts)
 │   ├── allocine_search.py        # Searches Paris theaters via the Allocine API
 │   └── theater_manager.py        # Reads/appends to the theaters CSV

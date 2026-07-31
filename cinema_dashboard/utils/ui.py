@@ -9,6 +9,12 @@ The CSS lives in assets/styles.css and is injected on every rerun via
 :func:`inject_css`. All HTML rendering uses ``st.markdown(..., unsafe_allow_html=True)``
 because Streamlit has no native primitives for the editorial card/rail layouts
 this dashboard needs.
+
+Cards and hero cards are **links**: whenever the row carries a Letterboxd slug
+they render an anchor to ``?movie=<slug>`` (see :func:`movie_href`), which
+``app.py`` routes to the movie detail page. Wrapping it here rather than at the
+call sites is what makes every surface — home rails, calendar day rails,
+streaming rails, chat's pinned recommendations — clickable for free.
 """
 
 from __future__ import annotations
@@ -19,6 +25,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 from uuid import uuid4
 
 import pandas as pd
@@ -31,6 +38,16 @@ from utils.taste import TasteProfile, explain
 log = logging.getLogger(__name__)
 
 _STYLES_PATH = Path(__file__).parent.parent / "assets" / "styles.css"
+
+#: Query-parameter name carrying the Letterboxd slug of the film to detail.
+#: Read by ``app.py`` (routing) and written by :func:`movie_href` (every card).
+MOVIE_QUERY_PARAM = "movie"
+
+#: Row columns that may hold the Letterboxd slug, in priority order. The
+#: watchlist/ratings/cache parquets call it ``slug``; the watchlist↔showtimes
+#: join renames it ``letterboxd_slug`` (see
+#: :func:`utils.data_loader.build_watchlist_showtimes`).
+_SLUG_COLUMNS = ("slug", "letterboxd_slug")
 
 
 def inject_css() -> None:
@@ -106,6 +123,35 @@ def rating_to_hsl(rating: float | int | None, *, hue: int = 36, scale_max: float
     r_clamped = max(0.0, min(scale_max, r))
     lightness = round(80.0 - (r_clamped / scale_max) * 40.0)
     return f"hsl({hue} 80% {lightness}%)"
+
+
+# ── Movie detail links ──────────────────────────────────────────────────────
+
+
+def movie_href(slug: str) -> str:
+    """Return the relative href of a film's detail page, ``?movie=<slug>``.
+
+    Relative on purpose: it resolves against whatever page the card is
+    rendered on, so the same string works from ``/``, ``/database``, ``/calendar``
+    — and needs no knowledge of the host or base path. The slug is
+    percent-encoded then HTML-escaped, so it is safe to interpolate directly
+    into an ``href`` attribute.
+    """
+    return f"?{MOVIE_QUERY_PARAM}={html.escape(quote(slug, safe=''))}"
+
+
+def row_slug(row: pd.Series) -> str | None:
+    """Return the row's Letterboxd slug from whichever column carries it, else ``None``.
+
+    Tolerates the ``slug``/``letterboxd_slug`` split across frames (see
+    :data:`_SLUG_COLUMNS`) and treats NaN/empty as absent, so callers can gate
+    link rendering on a single truthiness check.
+    """
+    for column in _SLUG_COLUMNS:
+        value = row.get(column)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 # ── Movie card / hero / rail ────────────────────────────────────────────────
@@ -211,6 +257,14 @@ def _movie_card_html(
     ``genres``, and ``trailer_url`` from the row when present; missing fields
     are silently skipped. ``size`` controls the CSS modifier class on the
     card element.
+
+    When the row carries a slug (:func:`row_slug`) the **title becomes a link**
+    to that film's detail page and the card gains ``.movie-card--linked``,
+    whose ``::after`` overlay stretches the title link's hit area across the
+    whole card. That indirection is deliberate: a card already contains a real
+    ``<a>`` (the trailer chip), and nesting anchors is invalid HTML that
+    browsers silently unnest. One anchor per card also keeps the tab order to
+    one stop and gives screen readers the film title as the link name.
     """
     _title_candidates = [row.get("letterboxd_title"), row.get("french_title"), row.get("title"), row.get("movie")]
     title = next((str(v) for v in _title_candidates if isinstance(v, str) and v), "Untitled")
@@ -241,11 +295,19 @@ def _movie_card_html(
     streaming_chips = _streaming_badges_html(row.get("flatrate"), row.get("free"), subscribed)
     sub = html.escape(directors) if directors else ""
 
+    slug = row_slug(row)
+    linked_class = " movie-card--linked" if slug else ""
+    title_html = (
+        f'<a class="movie-card-link" href="{movie_href(slug)}" target="_self">{html.escape(title)}</a>'
+        if slug
+        else html.escape(title)
+    )
+
     return (
-        f'<div class="movie-card movie-card--{size}">'
+        f'<div class="movie-card movie-card--{size}{linked_class}">'
         f"{poster_html}"
         f'<div class="meta">'
-        f'<div class="title">{html.escape(title)}</div>'
+        f'<div class="title">{title_html}</div>'
         f"{f'<div class="sub">{sub}</div>' if sub else ''}"
         f"<div>{user_rating_chip}{rating_chip}{runtime_chip}</div>"
         f"<div>{genre_chips}{trailer_chip}</div>"
@@ -313,8 +375,20 @@ def render_hero_card(
 
     Uses ``banner_url`` (falls back to ``poster_url``) as the background image.
     Title in Playfair Display, eyebrow optional (e.g. "TONIGHT • 19:30"),
-    sub-line built from theater + directors. Includes a poster_url alt text
-    label for screen readers when no banner is present.
+    sub-line built from theater + directors.
+
+    When the row carries a slug (:func:`row_slug`) an absolutely-positioned
+    overlay anchor covering the whole hero links to that film's detail page.
+    It is a sibling of ``.hero-body`` rather than a wrapper around the title
+    because ``.hero-body`` is itself positioned — an ``::after`` overlay opened
+    inside it would only stretch across the text block, not the banner. The
+    empty anchor carries an ``aria-label`` so it still has an accessible name.
+
+    The container deliberately carries **no** ``role="img"``: that role hides
+    an element's contents from assistive technology, which would have muted the
+    title, the meta line, and the link below it. The banner ``<img>`` is marked
+    decorative instead (``alt=""`` + ``aria-hidden``), and the title is read as
+    ordinary text.
     """
 
     banner = next((v for v in [row.get("banner_url"), row.get("poster_url")] if isinstance(v, str) and v), "")
@@ -354,11 +428,19 @@ def render_hero_card(
         )
         if p
     )
+    slug = row_slug(row)
+    link_html = (
+        f'<a class="hero-link" href="{movie_href(slug)}" target="_self" '
+        f'aria-label="{html.escape(title)} — open film details"></a>'
+        if slug
+        else ""
+    )
     st.markdown(
-        f'<div class="hero-card" role="img" aria-label="{html.escape(title)}">'
+        f'<div class="hero-card{" hero-card--linked" if slug else ""}">'
         f"{banner_html}"
         f'<div class="hero-overlay"></div>'
         f'<div class="hero-body">{body_parts}</div>'
+        f"{link_html}"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -484,6 +566,33 @@ def render_freshness_banner(*paths: Path | str | None) -> None:
 
 
 # ── ICS export ──────────────────────────────────────────────────────────────
+
+#: Ads + trailers run longer in the big chains than in independent/arthouse theaters.
+ADS_MINUTES_CHAIN = 20
+ADS_MINUTES_DEFAULT = 10
+#: Substrings (lowercase) identifying the chains that run the longer ad block.
+_CHAIN_MARKERS = ("mk2", "ugc")
+
+
+def _ads_minutes(theater_name: object) -> int:
+    """Minutes of ads/trailers before the feature actually starts, by theater."""
+    name = str(theater_name or "").lower()
+    return ADS_MINUTES_CHAIN if any(marker in name for marker in _CHAIN_MARKERS) else ADS_MINUTES_DEFAULT
+
+
+def screening_end(row: pd.Series, showtime: pd.Timestamp) -> pd.Timestamp:
+    """End of the calendar block: showtime + pre-feature ads + runtime (120min fallback).
+
+    The single source of calendar-block duration, shared by the calendar page's
+    ICS *and* CSV exports and by the movie detail page's per-screening ``.ics``
+    — keeping them on one helper is what stops the three from drifting.
+    """
+    runtime = row.get("runtime_minutes")
+    try:
+        runtime_min = int(float(runtime)) if runtime and not pd.isna(runtime) else 120
+    except (ValueError, TypeError):
+        runtime_min = 120
+    return showtime + pd.Timedelta(minutes=_ads_minutes(row.get("theater_name")) + runtime_min)
 
 
 def _ics_escape(value: str) -> str:

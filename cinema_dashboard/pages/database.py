@@ -9,8 +9,8 @@ Reorganises the Letterboxd cache + ratings + watchlist into three calmer tabs:
 - **Discover** — chip filters (genre, director, min-rating slider) over a
   poster rail of matching films. The taste profile becomes interactive,
   not a static chart wall.
-- **Tables** — the three raw dataframes with poster + IMDB/TMDB/Letterboxd
-  link columns for power users.
+- **Tables** — the three raw dataframes with poster + a "Details" link into
+  the movie detail page + IMDB/TMDB/Letterboxd link columns for power users.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from utils.data_loader import (
 )
 from utils.ui import (
     format_runtime,
+    movie_href,
     rating_to_hsl,
     render_empty_state,
     render_freshness_banner,
@@ -79,6 +80,22 @@ def _with_streaming_column(
     )
     enriched["streaming_on"] = enriched.apply(_streaming_label, axis=1)
     return enriched.drop(columns=["flatrate", "free"], errors="ignore")
+
+
+def _with_detail_url(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepend a ``detail_url`` column linking each row to its movie detail page.
+
+    The value is the same relative ``?movie=<slug>`` href the cards use
+    (:func:`utils.ui.movie_href`), which ``st.column_config.LinkColumn`` opens
+    against the current document — no base URL to configure. Rows without a
+    slug get an empty cell, which the link column renders as blank. Returns the
+    frame untouched when there is no ``slug`` column at all.
+    """
+    if "slug" not in df.columns:
+        return df
+    out = df.copy()
+    out.insert(0, "detail_url", out["slug"].map(lambda s: movie_href(s) if isinstance(s, str) and s else ""))
+    return out
 
 
 def _explode_tags(series: pd.Series, separator: str = ", ") -> pd.Series:
@@ -274,12 +291,13 @@ def main() -> None:
 
     with tab_tables:
         subscribed = settings.streaming_service_slugs
-        cache_df_s = _with_streaming_column(cache_df, str(output_path), subscribed)
-        ratings_df_s = _with_streaming_column(ratings_df, str(output_path), subscribed)
-        watchlist_df_s = _with_streaming_column(watchlist_df, str(output_path), subscribed)
+        cache_df_s = _with_detail_url(_with_streaming_column(cache_df, str(output_path), subscribed))
+        ratings_df_s = _with_detail_url(_with_streaming_column(ratings_df, str(output_path), subscribed))
+        watchlist_df_s = _with_detail_url(_with_streaming_column(watchlist_df, str(output_path), subscribed))
 
         sub_cache, sub_ratings, sub_watch = st.tabs(["Cache", "Ratings", "Watchlist"])
         link_cfg = {
+            "detail_url": st.column_config.LinkColumn("Details", display_text="View ↗"),
             "letterboxd_url": st.column_config.LinkColumn("Letterboxd", display_text="Open ↗"),
             "imdb_url": st.column_config.LinkColumn("IMDB", display_text="Open ↗"),
             "tmdb_url": st.column_config.LinkColumn("TMDB", display_text="Open ↗"),

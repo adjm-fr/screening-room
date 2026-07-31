@@ -84,6 +84,35 @@ html, body, .stMarkdown, .stText {
   font-variant-numeric: tabular-nums;
 }
 
+/* Linked cards ------------------------------------------------------------
+ * The whole card opens the film's detail page, but only ONE anchor per card
+ * exists: the title link, stretched over the card by an ::after overlay. A
+ * second, nested anchor would be invalid HTML (browsers unnest it) and would
+ * add a redundant tab stop. Real nested links (the trailer chip) are lifted
+ * back above the overlay with z-index so they stay clickable. */
+
+.movie-card--linked { position: relative; }
+.movie-card-link {
+  color: inherit;
+  text-decoration: none;
+}
+.movie-card-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--r-card);
+}
+.movie-card-link:hover { text-decoration: underline; }
+.movie-card-link:focus-visible { outline: none; }
+.movie-card-link:focus-visible::after {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+.movie-card--linked .chip--trailer {
+  position: relative;
+  z-index: 1;
+}
+
 /* Movie card sizes ------------------------------------------------------ */
 .movie-card--sm .title { font-size: 0.8rem; }
 .movie-card--sm .sub { font-size: 0.7rem; }
@@ -138,6 +167,21 @@ html, body, .stMarkdown, .stText {
 .hero-card .hero-meta {
   font-size: 1rem;
   opacity: 0.92;
+}
+/* Whole-hero link. A sibling of .hero-body rather than an ::after inside it:
+ * .hero-body is positioned, so an overlay opened there would only cover the
+ * text block. Empty by design — it carries an aria-label for its name. */
+.hero-card .hero-link {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: var(--r-card);
+}
+.hero-card--linked { transition: box-shadow var(--t-med), transform var(--t-med); }
+.hero-card--linked:hover { transform: translateY(-2px); }
+.hero-card .hero-link:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: -4px;
 }
 
 /* Poster rail (horizontal scroll) ---------------------------------------- */
@@ -273,6 +317,108 @@ html, body, .stMarkdown, .stText {
 .empty-state .empty-title { font-weight: 600; font-size: 1.1rem; margin-bottom: 0.25rem; }
 .empty-state .empty-hint { opacity: 0.7; font-size: 0.9rem; }
 
+/* Movie detail page ------------------------------------------------------ */
+
+.detail-back {
+  display: inline-block;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+  text-decoration: none;
+  opacity: 0.8;
+  transition: opacity var(--t-fast);
+}
+.detail-back:hover { opacity: 1; text-decoration: underline; }
+
+.detail-hero { min-height: 260px; margin-bottom: 1.25rem; }
+.detail-tagline {
+  margin-top: 0.75rem;
+  font-style: italic;
+  font-size: 1.05rem;
+  opacity: 0.9;
+  max-width: 60ch;
+}
+
+.detail-section-title {
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.65;
+  margin: 1.25rem 0 0.5rem;
+}
+.detail-synopsis {
+  font-size: 1rem;
+  line-height: 1.6;
+  max-width: 70ch;
+}
+.detail-verdict-note {
+  font-size: 0.85rem;
+  opacity: 0.7;
+  margin-left: 0.5rem;
+}
+.detail-credits {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0;
+  font-size: 0.92rem;
+}
+.detail-credits dt { opacity: 0.6; }
+.detail-credits dd { margin: 0; }
+.detail-links { margin-top: 0.75rem; }
+.theater-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  margin: 0.9rem 0 0.15rem;
+}
+
+/* Taste-match breakdown --------------------------------------------------- */
+
+.contrib-dim { margin-bottom: 0.9rem; }
+.contrib-dim-head {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.6;
+  margin-bottom: 0.3rem;
+}
+.contrib-weight { margin-left: 0.5rem; opacity: 0.75; text-transform: none; letter-spacing: 0; }
+.contrib-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(80px, 1fr) max-content;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.15rem 0;
+  font-size: 0.88rem;
+}
+.contrib-label { min-width: 0; }
+.contrib-n {
+  display: block;
+  font-size: 0.72rem;
+  opacity: 0.55;
+}
+.contrib-bar {
+  height: 6px;
+  border-radius: var(--r-chip);
+  background: rgba(127, 127, 127, 0.18);
+  overflow: hidden;
+}
+.contrib-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-chip);
+  transition: width var(--t-med);
+}
+.contrib-fill--pos { background: #4ade80; }
+.contrib-fill--neg { background: #ef4444; }
+.contrib-value { font-variant-numeric: tabular-nums; opacity: 0.85; }
+.contrib-total {
+  margin-top: 0.5rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgba(127, 127, 127, 0.25);
+  font-size: 0.9rem;
+}
+
 /* Freshness banner ------------------------------------------------------ */
 
 .freshness-banner {
@@ -302,6 +448,9 @@ html, body, .stMarkdown, .stText {
 @media (prefers-reduced-motion: reduce) {
   .movie-card { transition: none; }
   .movie-card:hover { transform: none; box-shadow: none; }
+  .hero-card--linked { transition: none; }
+  .hero-card--linked:hover { transform: none; }
+  .contrib-fill { transition: none; }
   .skeleton { animation: none; }
 }
 
@@ -311,4 +460,10 @@ html, body, .stMarkdown, .stText {
   .poster-rail > .movie-card { width: 140px; }
   .hero-card { padding: 1.25rem; min-height: 260px; }
   .kpi-card .kpi-value { font-size: 1.4rem; }
+  /* The bar column would squeeze the label to a couple of characters; drop it
+   * and keep the signed number, which carries the same information. */
+  .contrib-row { grid-template-columns: minmax(0, 1fr) max-content; gap: 0.5rem; }
+  .contrib-bar { display: none; }
+  .detail-credits { grid-template-columns: 1fr; gap: 0.1rem 0; }
+  .detail-credits dd { margin-bottom: 0.45rem; }
 }

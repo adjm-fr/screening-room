@@ -3,14 +3,25 @@ Cinema Dashboard — unified Streamlit entry point.
 
 Run with:
     streamlit run app.py
+
+Routing has two layers. ``st.navigation`` owns the five sections in the
+sidebar; on top of that, a ``?movie=<slug>`` query parameter overlays the movie
+detail page (``pages/movie.py``) in place of whichever section is selected.
+Every movie card in the app is an anchor to that URL (:func:`utils.ui.movie_href`),
+so films get real, shareable, back-button-friendly links from any page without
+each page having to know about detail routing. The detail module is *called*
+rather than mounted as an ``st.Page``: ``StreamlitPage.run()`` only works on the
+page ``st.navigation`` itself returns, and a detail view that shares a URL path
+with every section has no page of its own to be routed to.
 """
 
 import plotly.io as pio
 import streamlit as st
 from common import configure_logging
 from modules.config import settings
+from pages.movie import main as render_movie_detail
 from utils.cmdk import mount_cmdk
-from utils.ui import inject_css
+from utils.ui import MOVIE_QUERY_PARAM, inject_css
 
 configure_logging(settings.log_level, quiet=("httpx", "httpcore", "google_genai", "urllib3"))
 
@@ -37,4 +48,12 @@ pg = st.navigation(
         st.Page("pages/recommendations.py", title="Recommendations", icon="🤖"),
     ]
 )
-pg.run()
+
+# A `movie` parameter present but empty (`?movie=`) still routes to the detail
+# page, which renders its "no film at this link" empty state — a truncated or
+# mistyped link should explain itself rather than silently land on Home.
+movie_slug = st.query_params.get(MOVIE_QUERY_PARAM)
+if movie_slug is None:
+    pg.run()
+else:
+    render_movie_detail(movie_slug)

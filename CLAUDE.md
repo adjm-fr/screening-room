@@ -105,9 +105,36 @@ typecheck, security, test.
   typography, movie cards, poster rails, chips; called once globally, so page code can assume the classes
   exist), mounts the global `Cmd+K` palette, then routes via `st.navigation` to the five `pages/` files
   (home, database, calendar, streaming, recommendations).
+- **Routing has a second layer: `?movie=<slug>` overlays the movie detail page.** `app.py` reads
+  `st.query_params[ui.MOVIE_QUERY_PARAM]` after `st.navigation` and, when present (even empty — a
+  truncated link shows the "no film at this link" empty state), calls `pages/movie.py:main(slug)`
+  *instead of* `pg.run()`. `pages/movie.py` is therefore the one page file that does **not** call `main()`
+  at import time: it is imported by `app.py`, so a module-level call would only ever fire once per
+  process. It can't be an `st.Page` either — `StreamlitPage.run()` only works on the page `st.navigation`
+  itself returns, and the overlay shares its URL path with every section. `pages/__init__.py` exists only
+  so mypy resolves that file as `pages.movie` (matching the import) rather than twice under two names.
+- **Every movie rendered anywhere is a link to its detail page.** `utils/ui._movie_card_html` and
+  `render_hero_card` emit an anchor to `movie_href(slug)` whenever the row carries a slug (`row_slug`
+  accepts both the `slug` and `letterboxd_slug` spellings), so home/streaming/discover rails, calendar day
+  rails and chat's pinned recs became clickable without touching their call sites — keep new surfaces on
+  these renderers and they stay linked. The card uses **one** anchor (the title) stretched over the card by
+  a `::after` overlay, because a card already contains a real `<a>` (the trailer chip) and nesting anchors
+  is invalid HTML; the hero's overlay anchor is a sibling of `.hero-body` (which is positioned, so an
+  `::after` opened inside it would only cover the text). `pages/database.py`'s Tables tab links through a
+  `detail_url` `LinkColumn` instead.
 - **Shared UI vocabulary lives in `utils/ui.py`** (`render_movie_card`, `render_poster_rail`,
-  `render_hero_card`, chip/KPI/empty-state/freshness helpers). New movie displays should reuse these, not
-  hand-roll `st.image`/HTML.
+  `render_hero_card`, `movie_href`/`row_slug`, chip/KPI/empty-state/freshness helpers, plus `to_ics` and
+  the `screening_end` calendar-block sizing shared with the detail page). New movie displays should reuse
+  these, not hand-roll `st.image`/HTML.
+- **The detail page reads the cache, not the watchlist.** `utils/movie.py` (Streamlit-free, pure pandas)
+  holds `load_movie` / `movie_screenings` / `similar_films`; `load_movie` keys `data_letterboxd.parquet` by
+  `slug` — unique and non-null there, whereas `tmdb_id` has nulls and duplicates and would collide as a
+  route key — and left-joins `user_rating` from the ratings parquet (the cache has no such column; the
+  all-zero `liked` column stays unused). Because the cache is a clean superset of ratings+watchlist, every
+  film the app can render a card for has a page, and the screenings section re-uses
+  `build_watchlist_showtimes` keyed on the *cache* so rated/cache-only films list screenings too. Sections
+  are omitted, never rendered empty — cache coverage is uneven (`trailer_url` ~67% null, `cast` ~41%,
+  `themes` ~31%, `tagline` ~30%; the first two are an in-flight TMDB backfill).
 - **The Gemini chat assistant has two surfaces, one state.** `utils/chat.py` owns the LLM transport and
   UI (`render_chat()`); context assembly (`ChatContext`, `build_chat_context()`, the system prompt) lives
   in `utils/chat_prompt.py`, and conversation state + disk persistence (`ChatState`, `save_chat_state()` /
@@ -145,16 +172,18 @@ typecheck, security, test.
 - **Data flow:** `utils/data_loader.py` loads the parquets, validates `showtimes.parquet` against
   `contracts.SHOWTIMES`, and `build_watchlist_showtimes` produces `wl_shows` — the watchlist↔showtimes join
   every page consumes (one row per movie×showtime, carrying titles, directors, runtime, rating, genres,
-  poster, theater, and the streaming list-columns — `utils/streaming.STREAMING_COLUMNS`, i.e. `flatrate`
-  plus `free`).
+  poster, theater, `letterboxd_slug` — the movie-detail route key — and the streaming list-columns —
+  `utils/streaming.STREAMING_COLUMNS`, i.e. `flatrate` plus `free`).
 - **Taste ranker lives in `utils/taste.py`** (all formulas + constants in one place). `build_affinity`
   derives signed, shrunk affinities per director/genre/theme/cast/country/language/decade from the
   ratings history (`_DIM_COLUMNS` + `WEIGHTS` are the single place new dimensions plug in; `_CARRY_COLUMNS`
   must mirror any dimension column the showtimes join strips, or "because" chips silently vanish on joined
   rows);
-  `score_films` blends them into a stable 0–100 match value (fixed logistic, so a film's badge means the
-  same thing every week); `explain` yields the liked contributors (per `SENTIMENT_PIVOT`, not affinity
-  sign) for the "✓ because" chips;
+  `score_films` blends them into a stable 0–100 match value (fixed logistic `match_from_raw`, so a film's
+  badge means the same thing every week); `explain` yields the liked contributors (per `SENTIMENT_PIVOT`,
+  not affinity sign) for the "✓ because" chips, and is a ranked, liked-only view of `contributions` — the
+  unfiltered per-value terms the movie detail page shows in full (disliked ones flagged, not hidden), which
+  with `quality_prior` sum back to `_raw_score` exactly, so the breakdown always reconciles with the badge;
   `attach_match` joins scores onto candidate rows. Home's "Top matches this week" rail, home's streaming
   rail (ordering), and the streaming page's per-provider rails (ordering, plus the match badge/"because"
   chips on each card) consume it. `data_loader.build_taste_profile` (the chat-prompt string) is a thin formatter
@@ -239,9 +268,11 @@ typecheck, security, test.
   (`_build_ics_events(filtered)`) reads that *same* frame — so every filter flows into the download
   automatically. Add a new filter by narrowing `filtered` before the export block; don't rebuild the export
   off the unfiltered `wl_shows` or the two will silently diverge. Both exports size their blocks with the
-  shared `_screening_end`, which pads the film's runtime (120min when `runtime_minutes` is missing/junk)
-  with the pre-feature ad block — `ADS_MINUTES_CHAIN` (20) when the theater name case-insensitively contains
-  `mk2`/`ugc`, else `ADS_MINUTES_DEFAULT` (10). Keep both exports on that one helper so ICS and CSV can't drift.
+  shared `utils.ui.screening_end` (promoted out of the page module so the movie detail page's per-screening
+  `.ics` uses the identical helper), which pads the film's runtime (120min when `runtime_minutes` is
+  missing/junk) with the pre-feature ad block — `ADS_MINUTES_CHAIN` (20) when the theater name
+  case-insensitively contains `mk2`/`ugc`, else `ADS_MINUTES_DEFAULT` (10). Keep all three downloads on that
+  one helper so they can't drift.
 - **The free-time filter distinguishes "day off" from "unavailable".** `utils/availability.py` (Streamlit-
   free, unit-tested) computes `watchable = (weekend | FR holiday | day-off | weekday ≥ cutoff) & ~unavailable`.
   A *day off* is free all day (includes daytime screenings); an *unavailable* day (away/vacation) excludes the
@@ -252,7 +283,10 @@ typecheck, security, test.
 - **`build_watchlist_showtimes` strips taste metadata.** Its `_want_cols` whitelist drops `themes`/
   `mini_themes`, and `release_year` is lost to an `_x`/`_y` suffix collision (both sides carry it). That's
   why `taste.attach_match` scores the full-metadata *watchlist* and joins back onto `wl_shows` by `tmdb_id`
-  (a solid key: ~0 dupes, ~2 nulls) — don't try to score `wl_shows` directly.
+  (a solid key: ~0 dupes, ~2 nulls) — don't try to score `wl_shows` directly. It does **not** strip the
+  slug: `letterboxd_slug` (the dedup key) is deliberately kept out of `drop_cols` because it is the
+  `?movie=<slug>` route key for every card built off the frame — the home hero, all three home rails and the
+  calendar day rails would silently stop linking without it.
 - **The watchlist↔showtimes join is title-matched, director-confirmed.** `build_watchlist_showtimes` matches
   the Allocine display title against **both** normalized watchlist titles — the TMDB `french_title` *and* the
   original `title` — because repertory screenings often run under the original title (VO) even when TMDB

@@ -23,7 +23,9 @@ All of these filters narrow the same ``filtered`` frame that both the day
 rails and the ICS/CSV export read from, so exports always match what's on
 screen.
 ICS export is the primary download (universally accepted by Google Calendar /
-Apple Calendar / Outlook); CSV is kept behind an expander for legacy use.
+Apple Calendar / Outlook); CSV is kept behind an expander for legacy use. Both
+size their calendar blocks with :func:`_screening_end`, which pads the film's
+runtime with the pre-feature ad block (20min in an MK2/UGC, 10min elsewhere).
 """
 
 from __future__ import annotations
@@ -102,18 +104,36 @@ def _runtime_bucket(minutes: float | str | None) -> str:
     return ">120"
 
 
+#: Ads + trailers run longer in the big chains than in independent/arthouse theaters.
+ADS_MINUTES_CHAIN = 20
+ADS_MINUTES_DEFAULT = 10
+#: Substrings (lowercase) identifying the chains that run the longer ad block.
+_CHAIN_MARKERS = ("mk2", "ugc")
+
+
+def _ads_minutes(theater_name: object) -> int:
+    """Minutes of ads/trailers before the feature actually starts, by theater."""
+    name = str(theater_name or "").lower()
+    return ADS_MINUTES_CHAIN if any(marker in name for marker in _CHAIN_MARKERS) else ADS_MINUTES_DEFAULT
+
+
+def _screening_end(row: pd.Series, showtime: pd.Timestamp) -> pd.Timestamp:
+    """End of the calendar block: showtime + pre-feature ads + runtime (120min fallback)."""
+    runtime = row.get("runtime_minutes")
+    try:
+        runtime_min = int(float(runtime)) if runtime and not pd.isna(runtime) else 120
+    except (ValueError, TypeError):
+        runtime_min = 120
+    return showtime + pd.Timedelta(minutes=_ads_minutes(row.get("theater_name")) + runtime_min)
+
+
 def _build_ics_events(df: pd.DataFrame) -> list[dict]:
     events: list[dict] = []
     for idx, row in df.iterrows():
         showtime = pd.to_datetime(row["showtimes"])
         if pd.isna(showtime):
             continue
-        runtime = row.get("runtime_minutes")
-        try:
-            runtime_min = int(float(runtime)) if runtime and not pd.isna(runtime) else 120
-        except (ValueError, TypeError):
-            runtime_min = 120
-        end = showtime + pd.Timedelta(minutes=runtime_min)
+        end = _screening_end(row, showtime)
         events.append(
             {
                 "summary": str(row.get("letterboxd_title") or row["french_title"]),
@@ -289,12 +309,7 @@ def main() -> None:
                 showtime = pd.to_datetime(row["showtimes"])
                 if pd.isna(showtime):
                     continue
-                runtime = row.get("runtime_minutes")
-                try:
-                    runtime_min = int(float(runtime)) if runtime and not pd.isna(runtime) else 120
-                except (ValueError, TypeError):
-                    runtime_min = 120
-                end_time = showtime + pd.Timedelta(minutes=runtime_min)
+                end_time = _screening_end(row, showtime)
                 csv_rows.append(
                     {
                         "Subject": str(row.get("letterboxd_title") or row["french_title"]),

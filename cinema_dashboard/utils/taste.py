@@ -37,13 +37,19 @@ ratings). It works in three steps:
 
 3. **Explanation** (:func:`explain`). The top contributions among *liked*
    values (mean rating ≥ SENTIMENT_PIVOT, not affinity sign) power honest
-   "Because: …" chips — never "because you dislike X".
+   "Because: …" chips — never "because you dislike X". :func:`contributions`
+   exposes the same per-value terms *unfiltered and unranked* (liked and
+   disliked alike) so the movie detail page can show the full breakdown behind
+   a card's two-chip summary.
 
 Public API:
     TasteProfile               frozen profile (mu, n_ratings, affinities, counts)
     build_affinity(df)         ratings DataFrame -> TasteProfile
     score_films(df, profile)   -> 0–100 match Series, index-aligned
     explain(row, profile)      -> top-k liked (label, contribution) pairs
+    contributions(row, p)      -> every per-value Contribution behind the score
+    quality_prior(row)         -> the community-quality term, or None
+    match_from_raw(raw)        -> the fixed logistic mapping raw -> 0–100
     attach_match(df, wl, p)    score the watchlist, left-join match by tmdb_id
     format_taste_profile(p)    compact summary string for the LLM system prompt
 """
@@ -256,13 +262,22 @@ def _raw_score(
     return raw
 
 
+def match_from_raw(raw: float) -> float:
+    """Map a raw blended score to the displayed 0–100 match value.
+
+    The single place the fixed logistic lives, so the badge and the detail
+    page's breakdown can't drift: ``match = 100 / (1 + exp(−raw / τ))``.
+    """
+    return 100.0 / (1.0 + math.exp(-raw / LOGISTIC_TAU))
+
+
 def score_films(df: pd.DataFrame, profile: TasteProfile) -> pd.Series:
     """Return a 0–100 match value per row, index-aligned with ``df``.
 
     A film with no known features and no Letterboxd rating lands at exactly 50
     (neutral). An empty profile degrades to the quality prior alone.
     """
-    scores = [100.0 / (1.0 + math.exp(-_raw_score(row, profile) / LOGISTIC_TAU)) for _, row in df.iterrows()]
+    scores = [match_from_raw(_raw_score(row, profile)) for _, row in df.iterrows()]
     return pd.Series(scores, index=df.index, dtype=float)
 
 
@@ -276,31 +291,85 @@ def _is_liked(affinity: float, count: int, mu: float) -> bool:
     return _mean_rating(affinity, count, mu) >= SENTIMENT_PIVOT
 
 
-def explain(row: pd.Series, profile: TasteProfile, top_k: int = 2) -> list[tuple[str, float]]:
-    """Top-k contributions among liked values for "Because: …" chips.
+@dataclasses.dataclass(frozen=True)
+class Contribution:
+    """One feature value's share of a film's raw score.
 
-    The contribution of value v in dimension d is ``WEIGHTS[d]·A_d(v)/m_d``
-    where m_d is the film's number of known values in d — contributions within
-    a dimension sum to its share of the raw score. Disliked values are never
-    surfaced ("because you dislike X" is not a recommendation), but membership
-    is tier-relative (:func:`_is_liked`), not contribution-sign: a value whose
-    mean sits in [SENTIMENT_PIVOT, μ) still qualifies, ranked after the
-    genuinely positive contributors. The quality prior is excluded (community
-    taste, not the user's).
+    ``contribution`` is ``WEIGHTS[dimension]·affinity/m_d`` (m_d = the film's
+    number of *known* values in that dimension), so summing every contribution
+    plus :func:`quality_prior` reproduces the raw score exactly. ``liked`` is
+    the tier-relative sentiment (:func:`_is_liked`), not the contribution's
+    sign — pair it with the label in any UI so a negative-affinity but
+    watchable-to-good value isn't branded a dislike.
     """
-    contributions: list[tuple[str, float]] = []
+
+    dimension: str
+    value: str
+    affinity: float
+    n_rated: int
+    contribution: float
+    liked: bool
+
+
+def contributions(row: pd.Series, profile: TasteProfile) -> list[Contribution]:
+    """Every per-value term behind a film's raw score, in ``WEIGHTS`` order.
+
+    The unfiltered, unranked superset of :func:`explain` — disliked values are
+    included (flagged, not hidden) so the detail page can show the whole
+    breakdown rather than the card's top-2 summary. Values the profile has
+    never seen are omitted entirely: they are neutral in :func:`_raw_score`,
+    never a penalty. The quality prior is not a per-value term; get it from
+    :func:`quality_prior`.
+    """
+    out: list[Contribution] = []
     for dim, weight in WEIGHTS.items():
         dim_affinities = profile.affinities.get(dim, {})
         dim_counts = profile.counts.get(dim, {})
         known = [(v, dim_affinities[v]) for v in _film_features(row, dim) if v in dim_affinities]
         if not known:
             continue
-        contributions.extend(
-            (value, weight * affinity / len(known))
+        out.extend(
+            Contribution(
+                dimension=dim,
+                value=value,
+                affinity=affinity,
+                n_rated=dim_counts[value],
+                contribution=weight * affinity / len(known),
+                liked=_is_liked(affinity, dim_counts[value], profile.mu),
+            )
             for value, affinity in known
-            if _is_liked(affinity, dim_counts[value], profile.mu)
         )
-    liked = sorted(contributions, key=lambda c: c[1], reverse=True)
+    return out
+
+
+def quality_prior(row: pd.Series) -> float | None:
+    """The community-quality term ``QUALITY_WEIGHT·(letterboxd_avg − QUALITY_CENTER)``.
+
+    ``None`` when the film carries no Letterboxd average, which is exactly
+    when :func:`_raw_score` omits the term — so a breakdown that renders
+    ``None`` as "not counted" stays faithful to the score.
+    """
+    lb_rating = row.get("letterboxd_avg_rating")
+    if isinstance(lb_rating, (int, float)) and not pd.isna(lb_rating):
+        return QUALITY_WEIGHT * (float(lb_rating) - QUALITY_CENTER)
+    return None
+
+
+def explain(row: pd.Series, profile: TasteProfile, top_k: int = 2) -> list[tuple[str, float]]:
+    """Top-k contributions among liked values for "Because: …" chips.
+
+    A ranked, liked-only view of :func:`contributions`. Disliked values are
+    never surfaced ("because you dislike X" is not a recommendation), but
+    membership is tier-relative (:func:`_is_liked`), not contribution-sign: a
+    value whose mean sits in [SENTIMENT_PIVOT, μ) still qualifies, ranked after
+    the genuinely positive contributors. The quality prior is excluded
+    (community taste, not the user's).
+    """
+    liked = sorted(
+        ((c.value, c.contribution) for c in contributions(row, profile) if c.liked),
+        key=lambda c: c[1],
+        reverse=True,
+    )
     return liked[:top_k]
 
 

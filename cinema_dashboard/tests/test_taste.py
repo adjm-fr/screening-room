@@ -8,13 +8,19 @@ import pandas as pd
 import pytest
 from utils.taste import (
     LOGISTIC_TAU,
+    QUALITY_CENTER,
     QUALITY_WEIGHT,
+    WEIGHTS,
     TasteProfile,
     _mean_rating,
+    _raw_score,
     attach_match,
     build_affinity,
+    contributions,
     explain,
     format_taste_profile,
+    match_from_raw,
+    quality_prior,
     score_films,
 )
 
@@ -417,3 +423,109 @@ def test_format_omits_empty_dimensions():
 
 def test_format_empty_profile_sentinel():
     assert format_taste_profile(build_affinity(pd.DataFrame())) == "No rating history available."
+
+
+# ---------------------------------------------------------------------------
+# contributions / quality_prior / match_from_raw — the detail page's breakdown
+# ---------------------------------------------------------------------------
+
+
+def test_contributions_returns_every_known_value():
+    profile = _profile({"genres": {"Western": 0.5, "Drama": 0.2}, "directors": {"Howard Hawks": 0.9}})
+    row = pd.Series({"genres": "Western, Drama", "directors": "Howard Hawks"})
+
+    terms = contributions(row, profile)
+
+    assert {(c.dimension, c.value) for c in terms} == {
+        ("genres", "Western"),
+        ("genres", "Drama"),
+        ("directors", "Howard Hawks"),
+    }
+
+
+def test_contributions_divide_a_dimension_between_its_known_values():
+    """Contributions within a dimension sum to that dimension's share of the raw score."""
+    profile = _profile({"genres": {"Western": 0.5, "Drama": 0.3}})
+    row = pd.Series({"genres": "Western, Drama"})
+
+    terms = contributions(row, profile)
+
+    assert [c.contribution for c in terms] == pytest.approx([WEIGHTS["genres"] * 0.5 / 2, WEIGHTS["genres"] * 0.3 / 2])
+
+
+def test_contributions_skip_values_the_profile_has_never_seen():
+    profile = _profile({"genres": {"Western": 0.5}})
+
+    terms = contributions(pd.Series({"genres": "Western, Kaiju"}), profile)
+
+    assert [c.value for c in terms] == ["Western"]
+
+
+def test_contributions_are_empty_for_an_unknown_film():
+    assert contributions(pd.Series({"genres": "Kaiju"}), _profile({"genres": {"Western": 0.5}})) == []
+
+
+def test_contributions_flag_sentiment_tier_relatively_not_by_sign():
+    """A value in [SENTIMENT_PIVOT, μ) scores negative but is still liked — see CLAUDE.md."""
+    profile = _profile({"genres": {"Horror": -0.4}})  # n=10, mu=3.0 -> mean rating 2.4, above the 2.25 pivot
+
+    (term,) = contributions(pd.Series({"genres": "Horror"}), profile)
+
+    assert term.contribution < 0
+    assert term.liked is True
+
+
+def test_contributions_carry_the_rated_count():
+    profile = _profile({"directors": {"Howard Hawks": 0.9}})
+
+    (term,) = contributions(pd.Series({"directors": "Howard Hawks"}), profile)
+
+    assert term.n_rated == 10
+
+
+def test_contributions_are_the_unfiltered_superset_of_explain():
+    profile = _profile({"genres": {"Western": 0.5, "Comedy": -0.9}})
+    row = pd.Series({"genres": "Western, Comedy"})
+
+    liked = {value for value, _ in explain(row, profile, top_k=10)}
+
+    assert liked == {"Western"}
+    assert {c.value for c in contributions(row, profile)} == {"Western", "Comedy"}
+
+
+def test_quality_prior_is_signed_around_the_centre():
+    assert quality_prior(pd.Series({"letterboxd_avg_rating": QUALITY_CENTER})) == pytest.approx(0.0)
+    assert quality_prior(pd.Series({"letterboxd_avg_rating": 4.5})) == pytest.approx(QUALITY_WEIGHT * 1.0)
+
+
+@pytest.mark.parametrize("value", [None, float("nan")])
+def test_quality_prior_is_none_without_a_community_rating(value):
+    assert quality_prior(pd.Series({"letterboxd_avg_rating": value})) is None
+
+
+def test_quality_prior_is_none_when_the_column_is_absent():
+    assert quality_prior(pd.Series({"genres": "Western"})) is None
+
+
+def test_match_from_raw_is_neutral_at_zero():
+    assert match_from_raw(0.0) == pytest.approx(50.0)
+
+
+def test_breakdown_reconciles_with_the_badge():
+    """The detail page's arithmetic must reproduce the score_films value on the card."""
+    profile = _profile({"genres": {"Western": 0.5, "Comedy": -0.9}, "directors": {"Howard Hawks": 0.9}})
+    row = pd.Series({"genres": "Western, Comedy", "directors": "Howard Hawks", "letterboxd_avg_rating": 4.1})
+
+    raw = sum(c.contribution for c in contributions(row, profile)) + (quality_prior(row) or 0.0)
+
+    assert raw == pytest.approx(_raw_score(row, profile))
+    assert match_from_raw(raw) == pytest.approx(score_films(pd.DataFrame([row]), profile).iloc[0])
+
+
+def test_breakdown_reconciles_without_a_community_rating():
+    profile = _profile({"genres": {"Western": 0.5}})
+    row = pd.Series({"genres": "Western"})
+
+    raw = sum(c.contribution for c in contributions(row, profile)) + (quality_prior(row) or 0.0)
+
+    assert match_from_raw(raw) == pytest.approx(score_films(pd.DataFrame([row]), profile).iloc[0])

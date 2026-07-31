@@ -8,14 +8,21 @@ import pandas as pd
 import pytest
 from utils.taste import TasteProfile
 from utils.ui import (
+    ADS_MINUTES_CHAIN,
+    ADS_MINUTES_DEFAULT,
+    _ads_minutes,
     _ics_escape,
     _movie_card_html,
     _streaming_badges_html,
     _user_rating_chip_html,
     format_runtime,
     match_chips_html,
+    movie_href,
     rating_to_hsl,
+    render_hero_card,
     render_poster_rail,
+    row_slug,
+    screening_end,
     to_ics,
 )
 
@@ -357,3 +364,145 @@ def test_render_poster_rail_extra_html_fn_passthrough(mocker):
     render_poster_rail(rows, title="Top matches", extra_html_fn=lambda r: f"<b>extra-{int(r['match'])}</b>")
     rendered = markdown.call_args[0][0]
     assert "extra-90" in rendered
+
+
+# ── movie detail links ──────────────────────────────────────────────────────
+
+
+def test_movie_href_is_relative_to_the_current_page():
+    assert movie_href("goodbye-dragon-inn") == "?movie=goodbye-dragon-inn"
+
+
+def test_movie_href_percent_encodes_the_slug():
+    assert movie_href("a b&c") == "?movie=a%20b%26c"
+
+
+def test_movie_href_escapes_quote_injection():
+    assert '"' not in movie_href('x" onclick="alert(1)')
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        ({"slug": "solaris"}, "solaris"),
+        ({"letterboxd_slug": "solaris"}, "solaris"),
+        # The showtimes join renames it; both spellings must resolve.
+        ({"slug": "solaris", "letterboxd_slug": "stalker"}, "solaris"),
+        ({"slug": "  solaris  "}, "solaris"),
+        ({"slug": ""}, None),
+        ({"slug": "   "}, None),
+        ({"slug": None}, None),
+        ({"slug": float("nan")}, None),
+        ({"title": "No slug at all"}, None),
+    ],
+)
+def test_row_slug(row, expected):
+    assert row_slug(pd.Series(row)) == expected
+
+
+def test_movie_card_title_links_to_the_detail_page():
+    card = _movie_card_html(pd.Series({"title": "Solaris", "slug": "solaris"}))
+
+    assert 'class="movie-card-link" href="?movie=solaris" target="_self"' in card
+    assert "movie-card--linked" in card
+    assert ">Solaris</a>" in card
+
+
+def test_movie_card_links_off_the_joined_slug_column():
+    """wl_shows carries the slug as letterboxd_slug — cards built from it must still link."""
+    card = _movie_card_html(pd.Series({"letterboxd_title": "Solaris", "letterboxd_slug": "solaris"}))
+
+    assert 'href="?movie=solaris"' in card
+
+
+def test_movie_card_without_a_slug_renders_no_link():
+    card = _movie_card_html(pd.Series({"title": "Solaris"}))
+
+    assert "<a" not in card
+    assert "movie-card--linked" not in card
+
+
+def test_movie_card_never_nests_anchors():
+    """The trailer chip is already an <a>; a second, wrapping anchor would be invalid HTML."""
+    row = pd.Series({"title": "Solaris", "slug": "solaris", "trailer_url": "https://youtu.be/x"})
+    card = _movie_card_html(row)
+
+    assert card.count("<a ") == 2  # the title link and the trailer chip, and no more
+    title_open = card.index('<a class="movie-card-link"')
+    title_close = card.index("</a>", title_open)
+    trailer_open = card.index('<a class="chip chip--trailer"')
+    assert trailer_open > title_close  # siblings, not nested
+    assert "<a" not in card[card.index(">", title_open) + 1 : title_close]
+
+
+def test_render_hero_card_links_the_whole_hero(mocker):
+    markdown = mocker.patch("utils.ui.st.markdown")
+    render_hero_card(pd.Series({"title": "Solaris", "letterboxd_slug": "solaris"}))
+    rendered = markdown.call_args[0][0]
+
+    assert 'class="hero-link" href="?movie=solaris" target="_self"' in rendered
+    assert "hero-card--linked" in rendered
+    assert 'aria-label="Solaris — open film details"' in rendered
+
+
+def test_render_hero_card_without_a_slug_renders_no_link(mocker):
+    markdown = mocker.patch("utils.ui.st.markdown")
+    render_hero_card(pd.Series({"title": "Solaris"}))
+    rendered = markdown.call_args[0][0]
+
+    assert "hero-link" not in rendered
+    assert "hero-card--linked" not in rendered
+
+
+def test_render_hero_card_does_not_hide_its_body_from_screen_readers(mocker):
+    """role="img" on the container would suppress the title, meta line and link inside it."""
+    markdown = mocker.patch("utils.ui.st.markdown")
+    render_hero_card(pd.Series({"title": "Solaris", "slug": "solaris"}))
+
+    assert 'role="img"' not in markdown.call_args[0][0]
+
+
+# ── screening_end / _ads_minutes ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "theater_name",
+    ["MK2 Bibliothèque", "mk2 Odéon", "UGC Ciné Cité Les Halles", "ugc les halles", "Ugc Normandie"],
+)
+def test_ads_minutes_chain_theaters_case_insensitive(theater_name):
+    assert _ads_minutes(theater_name) == ADS_MINUTES_CHAIN == 20
+
+
+@pytest.mark.parametrize("theater_name", ["Le Champo", "Christine Cinéma Club", "Cinémathèque Française"])
+def test_ads_minutes_other_theaters(theater_name):
+    assert _ads_minutes(theater_name) == ADS_MINUTES_DEFAULT == 10
+
+
+@pytest.mark.parametrize("theater_name", [None, "", float("nan")])
+def test_ads_minutes_missing_theater_falls_back_to_default(theater_name):
+    assert _ads_minutes(theater_name) == ADS_MINUTES_DEFAULT
+
+
+def test_screening_end_adds_chain_ads_to_runtime():
+    row = pd.Series({"runtime_minutes": 112, "theater_name": "MK2 Beaubourg"})
+
+    assert screening_end(row, pd.Timestamp("2026-08-03 19:30")) == pd.Timestamp("2026-08-03 21:42")  # 20 ads + 112
+
+
+def test_screening_end_adds_default_ads_to_runtime():
+    row = pd.Series({"runtime_minutes": 112, "theater_name": "Le Champo"})
+
+    assert screening_end(row, pd.Timestamp("2026-08-03 19:30")) == pd.Timestamp("2026-08-03 21:32")  # 10 ads + 112
+
+
+@pytest.mark.parametrize("runtime", [None, float("nan"), "", "not-a-number"])
+def test_screening_end_unusable_runtime_falls_back_to_120_plus_ads(runtime):
+    row = pd.Series({"runtime_minutes": runtime, "theater_name": "UGC Danton"})
+
+    assert screening_end(row, pd.Timestamp("2026-08-03 19:30")) == pd.Timestamp("2026-08-03 21:50")  # 20 ads + 120
+
+
+def test_screening_end_missing_theater_column():
+    row = pd.Series({"runtime_minutes": 90})
+
+    assert screening_end(row, pd.Timestamp("2026-08-03 19:30")) == pd.Timestamp("2026-08-03 21:10")  # 10 ads + 90

@@ -32,12 +32,27 @@ Every card shows a small badge row: subscribed services carrying the film (fille
 
 **Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH`
 
+### Movie detail (`?movie=<slug>`)
+
+Every movie rendered anywhere in the app — the Home hero, all poster rails, the calendar's day rails, the streaming rails, the Discover rail and the chat's pinned recommendations — is a link to that film's detail page at `?movie=<letterboxd-slug>`. It's a real URL: shareable, bookmarkable, and the browser back button returns you to where you were. The page has no sidebar entry; it overlays whichever section you were on, and a "← Back to the dashboard" link clears the parameter. An unknown or truncated slug renders a designed empty state, never a traceback.
+
+The page is backed by `data_letterboxd.parquet`, which is a superset of the ratings and watchlist parquets, so **any** cached film has a page — including the few hundred Allocine-enriched films on neither list. It shows, omitting any section the cache has no data for:
+
+- **Hero** — banner (poster fallback), title, original/French titles, year · runtime · country, tagline
+- **Your verdict** — your own star rating as a green chip, else "on your watchlist", else "not tracked yet"
+- **Taste match** — the `◎ n% match` badge plus, behind an expander, the full per-dimension breakdown: every value that fed the score with its weight, its shrunk affinity, how many films you've rated it across, and its signed contribution, then the community-quality prior and the logistic that maps the raw total to the badge. Disliked contributors are shown and labelled rather than hidden (sentiment follows the rating ladder's 2.25 pivot, so a value can be *liked* and still contribute negatively). The arithmetic reconciles exactly with the badge on the film's card.
+- **Synopsis**, **Credits** (director, writer, producer, studio, top-8 billed cast), **Themes** chips
+- **Upcoming screenings** — grouped by theater, each with a one-click `.ics` sized by the same helper the calendar page's bulk ICS/CSV export uses (runtime + the pre-feature ad block)
+- **Streaming**, **Trailer** (embedded when cached — null for ~2/3 of films), **More like this** (same-director and shared-theme films), and out-links to Letterboxd / IMDB / TMDB
+
+**Requires**: `OUTPUT_PATH` (+ `ALLOCINE_OUTPUT_PATH` for the screenings section)
+
 ### Movies Database (📊)
 
 Three calmer tabs in place of the old chart wall:
 - **Overview** — Genre × avg rating chart (rated films only) + micro-card insights (runtime distribution sparkline, top directors chip cloud, top themes chip cloud). A caption below the title clarifies the stats are based on your rated films count.
 - **Discover** — chip filters (genre, director multiselect with live search, min-rating slider) over a poster rail of matching films. Each card shows your own star rating as a green chip (Letterboxd convention) next to the amber Letterboxd community average; both ratings are on the same 0–5 scale.
-- **Tables** — raw dataframes with poster, IMDB, TMDB, and Letterboxd link columns. A "Streaming on" column lists, per film, the subscribed services currently carrying it (when `STREAMING_SERVICES` is set) plus every no-cost provider suffixed `(free)` (e.g. `netflix, arte-tv (free)`) — free platforms always show, subscription-gated ones don't.
+- **Tables** — raw dataframes with poster, a "Details" link into the film's [movie detail page](#movie-detailmovieslug), IMDB, TMDB, and Letterboxd link columns. A "Streaming on" column lists, per film, the subscribed services currently carrying it (when `STREAMING_SERVICES` is set) plus every no-cost provider suffixed `(free)` (e.g. `netflix, arte-tv (free)`) — free platforms always show, subscription-gated ones don't.
 
 **Requires**: `OUTPUT_PATH`
 
@@ -111,9 +126,9 @@ movies_management          Allocine-Showtimes-Scraping
               cinema_dashboard
    ┌──────┬──────────┬──────┴──────────────┬───────────┬─────────────────┐
   Home  Database  Watchlist Showtimes  Streaming  Recommendations
-                                                         │
-                                                  Gemini API
-                                             (google-genai SDK)
+   └──────┴──────────┴─────────┴──────────┘                │
+     every movie card → ?movie=<slug>                Gemini API
+     (pages/movie.py — detail overlay)          (google-genai SDK)
                                                          │
                                utils/data_loader.py       ← cached parquet readers
                                utils/streaming.py         ← TMDB FR providers cache
@@ -125,7 +140,7 @@ movies_management          Allocine-Showtimes-Scraping
 
 ```
 cinema_dashboard/
-├── app.py                        # Streamlit entry point — registers pages, injects CSS, mounts Cmd+K
+├── app.py                        # Streamlit entry point — registers pages, injects CSS, mounts Cmd+K, routes ?movie=<slug>
 ├── orchestrate.py                # Lightweight CLI to refresh all data (consumes modules/scrapers.py)
 ├── backtest.py                   # CLI to evaluate/sweep the taste-ranker constants against held-out ratings
 ├── .streamlit/
@@ -141,16 +156,19 @@ cinema_dashboard/
 │   ├── resources.py              # ScraperConfig resource (ScraperConfig.from_settings)
 │   └── definitions.py            # Dagster Definitions entry point
 ├── pages/
+│   ├── __init__.py               # Makes `pages` a real package (app.py imports pages.movie — see the module docstring)
 │   ├── 0_home.py                 # Home — hero "tonight" card, poster rails, KPI strip
 │   ├── database.py               # Movies Database page (Overview / Discover / Tables)
 │   ├── calendar.py               # Watchlist Showtimes page (theater dropdown, runtime/time-of-day/free-time/search filters, day rails, map, ICS export)
+│   ├── movie.py                  # Movie detail page — routed by ?movie=<slug>, not by st.navigation (no import-time main())
 │   ├── streaming.py              # Streaming page — one poster rail per FR provider
 │   └── recommendations.py        # Recommendations chat page (calls utils/chat.render_chat)
 ├── utils/
 │   ├── data_loader.py            # Cached parquet readers + watchlist↔showtimes join + attach_streaming
-│   ├── taste.py                  # Taste ranker — affinity profile, 0–100 match scorer, "because" explanations
+│   ├── taste.py                  # Taste ranker — affinity profile, 0–100 match scorer, "because" explanations + full contribution breakdown
+│   ├── movie.py                  # Movie detail data assembly (load_movie, movie_screenings, similar_films) — Streamlit-free
 │   ├── streaming.py              # TMDB FR watch-providers cache + display-name catalogue loader/updater
-│   ├── ui.py                     # Shared rendering helpers (movie cards, rails, hero card, KPIs, chips, ICS, runtime/rating formatting)
+│   ├── ui.py                     # Shared rendering helpers (movie cards + detail links, rails, hero card, KPIs, chips, ICS + screening_end, runtime/rating formatting)
 │   ├── availability.py           # Free-time mask (weekend/holiday/day-off/after-cutoff, minus unavailable days)
 │   ├── geo.py                    # Theater geocoding (Nominatim + RateLimiter, cached parquet) + pydeck map renderer
 │   ├── chat.py                   # Gemini transport + chat UI (render_chat); re-exports the public API below
@@ -163,7 +181,8 @@ cinema_dashboard/
 │   └── theater_manager.py        # Reads/appends to the theaters CSV
 ├── tests/
 │   ├── conftest.py               # Shared fixtures + @st.cache_data no-op patch
-│   ├── test_*.py                 # Unit tests for data_loader, taste, ui, chat, streaming, database, geo, scrapers, config, allocine_search
+│   ├── test_*.py                 # Unit tests for data_loader, taste, ui, movie, chat, streaming, database, geo, scrapers, config, allocine_search
+│   ├── test_movie_page.py        # ?movie=<slug> routing, driven through streamlit.testing.v1.AppTest
 │   └── evals/                    # LLM hallucination evals (opt-in via `-m evals`)
 │       ├── goldens.py            # Bait prompts + allowed film/provider sets
 │       ├── metrics.py            # FilmSetMembership + StreamingClaim DeepEval metrics

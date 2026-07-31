@@ -68,6 +68,9 @@ A Dagster-based equivalent lives in `cinema_dashboard/pipeline/` — see
 ## Quality gates (what CI runs)
 
 ```bash
+# CI's lint job runs this FIRST — a lock out of sync with the pyprojects fails the build.
+# The other jobs use `uv sync`, which silently re-resolves and would mask the drift.
+uv lock --check
 uv run ruff check . --fix && uv run ruff format .
 uv run --no-sync mypy packages/common/src/common packages/contracts/src/contracts
 uv run --no-sync --directory movies_management mypy main.py modules/

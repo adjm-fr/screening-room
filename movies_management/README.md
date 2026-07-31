@@ -243,7 +243,7 @@ Split by source → Output files (ratings + watchlist)
 
 2. **Intelligent Refresh** - Movies older than `days_to_update` — plus rows missing the TMDB `cast`/`trailer_url` enrichment — are refreshed, reducing API load while keeping data relatively fresh; both share the per-run `LETTERBOXD_REFRESH_LIMIT` cap.
 
-3. **Parallel Fetching** - Uses thread pool (10 workers) to fetch movies concurrently, improving performance for large libraries.
+3. **Parallel Fetching** - `asyncio` with a semaphore bounding 20 slugs in flight. The blocking Letterboxd scrape runs per slug via `asyncio.to_thread`; the three TMDB lookups for a movie (`french_title`, `cast`, `trailer_url`) run concurrently in a nested `TaskGroup` over one shared `httpx.AsyncClient`, so connections are pooled across the whole batch.
 
 4. **Unified DataFrame** - Ratings and watchlist rows are stacked into one DataFrame before any API calls. A single enrichment join produces both outputs, avoiding redundant merges.
 

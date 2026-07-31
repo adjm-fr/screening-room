@@ -234,7 +234,10 @@ typecheck, security, test.
   time-of-day range slider, text search, and min rating), and the ICS/CSV export
   (`_build_ics_events(filtered)`) reads that *same* frame — so every filter flows into the download
   automatically. Add a new filter by narrowing `filtered` before the export block; don't rebuild the export
-  off the unfiltered `wl_shows` or the two will silently diverge.
+  off the unfiltered `wl_shows` or the two will silently diverge. Both exports size their blocks with the
+  shared `_screening_end`, which pads the film's runtime (120min when `runtime_minutes` is missing/junk)
+  with the pre-feature ad block — `ADS_MINUTES_CHAIN` (20) when the theater name case-insensitively contains
+  `mk2`/`ugc`, else `ADS_MINUTES_DEFAULT` (10). Keep both exports on that one helper so ICS and CSV can't drift.
 - **The free-time filter distinguishes "day off" from "unavailable".** `utils/availability.py` (Streamlit-
   free, unit-tested) computes `watchable = (weekend | FR holiday | day-off | weekday ≥ cutoff) & ~unavailable`.
   A *day off* is free all day (includes daytime screenings); an *unavailable* day (away/vacation) excludes the

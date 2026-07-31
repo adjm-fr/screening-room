@@ -42,6 +42,22 @@ def _eyebrow_for(when: pd.Timestamp) -> str:
     return when.strftime("%A %d %b · %H:%M")
 
 
+def _streaming_rail_frame(watchlist_df: pd.DataFrame, movies_output: str) -> pd.DataFrame:
+    """Build the frame for the "Available on streaming platforms" rail.
+
+    ``watchlist_df`` carries ``title`` (and often ``french_title``) but not
+    ``letterboxd_title``. ``utils.ui._movie_card_html`` resolves the display
+    title in ``letterboxd_title`` → ``french_title`` → ``title`` → ``movie``
+    order, so without this rename cards on this rail fall through to the
+    French title while every other surface in the app shows the canonical
+    Letterboxd title. Mirrors the same rename already applied in
+    ``pages/streaming.py``, ``pages/database.py``, and ``utils/chat.py``.
+    """
+    if "title" in watchlist_df.columns and "letterboxd_title" not in watchlist_df.columns:
+        watchlist_df = watchlist_df.rename(columns={"title": "letterboxd_title"})
+    return attach_streaming(watchlist_df, movies_output)
+
+
 def main() -> None:
     movies_path, showtimes_path, _ = get_paths()
 
@@ -109,7 +125,7 @@ def main() -> None:
     # is still useful before the user configures their subscriptions. Free
     # providers (Arte.tv, France.tv, …) always count as "available" regardless
     # of STREAMING_SERVICES — they're watchable by everyone.
-    wl_streaming = attach_streaming(watchlist_df, str(movies_path))
+    wl_streaming = _streaming_rail_frame(watchlist_df, str(movies_path))
     if subscribed:
         wl_streaming = wl_streaming[
             wl_streaming.apply(lambda r: bool(set(r["flatrate"]) & subscribed) or bool(r["free"]), axis=1)

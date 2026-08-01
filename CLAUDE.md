@@ -122,6 +122,16 @@ typecheck, security, test.
   is invalid HTML; the hero's overlay anchor is a sibling of `.hero-body` (which is positioned, so an
   `::after` opened inside it would only cover the text). `pages/database.py`'s Tables tab links through a
   `detail_url` `LinkColumn` instead.
+- **Every anchor rule in `assets/styles.css` needs a specificity guard.** Streamlit styles links inside
+  `st.markdown` (theme colour + underline) through a selector that outranks a bare class, so a rule like
+  `.movie-card-link { color: inherit; text-decoration: none }` silently loses and the anchor renders as a
+  default blue underlined URL — which is exactly what shipped before it was caught by eye. Every anchor
+  rule is therefore written three ways: the bare class, `.stMarkdown a.<class>`, and
+  `[data-testid="stMarkdownContainer"] a.<class>`. This applies to `.movie-card-link`, `.detail-back` and
+  `.chip--trailer` (which also carries the detail page's Letterboxd/IMDB/TMDB out-links); **add the guard
+  to any new anchor class or it will look unstyled.** Hover affordances deliberately avoid
+  `text-decoration: underline` — the card's lift/shadow and the back pill's fill carry the affordance
+  instead.
 - **Shared UI vocabulary lives in `utils/ui.py`** (`render_movie_card`, `render_poster_rail`,
   `render_hero_card`, `movie_href`/`row_slug`, chip/KPI/empty-state/freshness helpers, plus `to_ics` and
   the `screening_end` calendar-block sizing shared with the detail page). New movie displays should reuse

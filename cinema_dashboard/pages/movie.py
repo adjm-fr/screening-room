@@ -96,8 +96,17 @@ def _render_back_link() -> None:
     ``href="?"`` keeps the current path and empties the query string, so it
     returns to whichever navigation page was showing rather than always to
     Home. Browser back works too — the detail view is a real URL.
+
+    Rendered as a ghost pill (``.detail-back``) rather than a bare anchor. The
+    arrow is its own span so it can nudge left on hover independently of the
+    label; it is ``aria-hidden`` because the label already carries the meaning.
     """
-    st.markdown('<a class="detail-back" href="?" target="_self">← Back to the dashboard</a>', unsafe_allow_html=True)
+    st.markdown(
+        '<a class="detail-back" href="?" target="_self">'
+        '<span class="detail-back__arrow" aria-hidden="true">←</span>Back to the dashboard'
+        "</a>",
+        unsafe_allow_html=True,
+    )
 
 
 def _render_hero(movie: pd.Series) -> None:

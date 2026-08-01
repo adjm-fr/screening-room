@@ -92,9 +92,16 @@ html, body, .stMarkdown, .stText {
  * back above the overlay with z-index so they stay clickable. */
 
 .movie-card--linked { position: relative; }
-.movie-card-link {
+/* Streamlit styles markdown links (theme color + underline) through a selector
+   that outranks a bare class, so every anchor rule in this file is written
+   against `.stMarkdown` / the markdown container too. Without that extra
+   specificity these titles render as default blue underlined URLs. */
+.movie-card-link,
+.stMarkdown a.movie-card-link,
+[data-testid="stMarkdownContainer"] a.movie-card-link {
   color: inherit;
   text-decoration: none;
+  transition: color var(--t-fast);
 }
 .movie-card-link::after {
   content: "";
@@ -102,7 +109,14 @@ html, body, .stMarkdown, .stText {
   inset: 0;
   border-radius: var(--r-card);
 }
-.movie-card-link:hover { text-decoration: underline; }
+/* The card's lift + shadow is the hover affordance; the title just warms to
+   the accent. An underline here would read as a 2005 hyperlink. */
+.movie-card-link:hover,
+.stMarkdown a.movie-card-link:hover,
+[data-testid="stMarkdownContainer"] a.movie-card-link:hover {
+  color: var(--primary-color);
+  text-decoration: none;
+}
 .movie-card-link:focus-visible { outline: none; }
 .movie-card-link:focus-visible::after {
   outline: 2px solid var(--primary-color);
@@ -251,7 +265,12 @@ html, body, .stMarkdown, .stText {
   background: rgba(46, 125, 50, 0.1);
   border-color: rgba(46, 125, 50, 0.3);
 }
-.chip--trailer {
+/* Also carries the movie page's Letterboxd / IMDB / TMDB out-links. Needs the
+   same specificity guard as .movie-card-link — a bare class loses to
+   Streamlit's markdown link styling and the chip renders underlined. */
+.chip--trailer,
+.stMarkdown a.chip--trailer,
+[data-testid="stMarkdownContainer"] a.chip--trailer {
   background: rgba(230, 126, 34, 0.16);
   border-color: rgba(230, 126, 34, 0.45);
   color: #e67e22;
@@ -259,8 +278,11 @@ html, body, .stMarkdown, .stText {
   cursor: pointer;
 }
 .chip--trailer:hover,
-.chip--trailer:focus-visible {
+.chip--trailer:focus-visible,
+.stMarkdown a.chip--trailer:hover,
+[data-testid="stMarkdownContainer"] a.chip--trailer:hover {
   background: rgba(230, 126, 34, 0.28);
+  text-decoration: none;
 }
 .match-row {
   margin-top: 0.35rem;
@@ -319,15 +341,36 @@ html, body, .stMarkdown, .stText {
 
 /* Movie detail page ------------------------------------------------------ */
 
-.detail-back {
-  display: inline-block;
-  margin-bottom: 0.75rem;
-  font-size: 0.9rem;
+/* A ghost pill, not a hyperlink — same specificity guard as .movie-card-link
+   above, plus an explicit `color` so it never inherits Streamlit's link blue. */
+.detail-back,
+.stMarkdown a.detail-back,
+[data-testid="stMarkdownContainer"] a.detail-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+  padding: 5px 14px 5px 11px;
+  border-radius: var(--r-chip);
+  border: 1px solid rgba(127, 127, 127, 0.25);
+  background: rgba(127, 127, 127, 0.06);
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: inherit;
+  opacity: 0.75;
   text-decoration: none;
-  opacity: 0.8;
-  transition: opacity var(--t-fast);
+  transition: opacity var(--t-fast), background var(--t-fast), border-color var(--t-fast);
 }
-.detail-back:hover { opacity: 1; text-decoration: underline; }
+.detail-back:hover,
+.stMarkdown a.detail-back:hover,
+[data-testid="stMarkdownContainer"] a.detail-back:hover {
+  opacity: 1;
+  text-decoration: none;
+  background: rgba(127, 127, 127, 0.12);
+  border-color: rgba(127, 127, 127, 0.4);
+}
+.detail-back__arrow { transition: transform var(--t-fast); }
+.detail-back:hover .detail-back__arrow { transform: translateX(-2px); }
 
 .detail-hero { min-height: 260px; margin-bottom: 1.25rem; }
 .detail-tagline {
@@ -451,6 +494,8 @@ html, body, .stMarkdown, .stText {
   .hero-card--linked { transition: none; }
   .hero-card--linked:hover { transform: none; }
   .contrib-fill { transition: none; }
+  .detail-back__arrow { transition: none; }
+  .detail-back:hover .detail-back__arrow { transform: none; }
   .skeleton { animation: none; }
 }
 

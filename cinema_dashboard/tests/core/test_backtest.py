@@ -6,6 +6,7 @@ import math
 
 import pandas as pd
 import pytest
+
 from core.backtest import evaluate, random_holdout_splits, raw_scores
 from core.taste import QUALITY_CENTER, TasteProfile
 

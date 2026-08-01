@@ -17,8 +17,8 @@ from typing import Literal
 
 import pandas as pd
 import streamlit as st
-from core.taste import TasteProfile, explain
 
+from core.taste import TasteProfile, explain
 from ui.theme import rating_to_hsl
 
 # ── Match chips (taste badge) ───────────────────────────────────────────────

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+
 from core.movie import MIN_SHARED_THEMES, load_movie, movie_screenings, similar_films, split_values
 
 

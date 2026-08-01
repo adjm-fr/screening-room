@@ -36,6 +36,16 @@ target-version = "py313"
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "UP"]
 
+# `cinema_dashboard` runs with `pythonpath = ["."]`, so its layer packages are imported
+# by bare name (`core.taste`, `sources.loader`, …) from a directory ruff's isort cannot
+# see from the workspace root. Left to its heuristics, ruff calls a module first-party
+# only inside its *own* package — so `from sources.streaming import …` would be a
+# first-party import in `sources/loader.py` but a third-party one everywhere else, and
+# the same file's import block would be grouped differently depending on where it lives.
+# Declaring them pins one grouping for every file.
+[tool.ruff.lint.isort]
+known-first-party = ["chat", "config", "core", "integrations", "pages", "pipeline", "sources", "ui"]
+
 [tool.mypy]
 python_version = "3.13"
 ignore_missing_imports = true

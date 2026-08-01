@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+
 from config import Settings
 
 _SETTINGS_ENV_VARS = (

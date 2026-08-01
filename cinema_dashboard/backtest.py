@@ -17,6 +17,7 @@ from pathlib import Path
 import click
 import pandas as pd
 from common import configure_logging
+
 from config import settings
 from core import backtest as backtest_utils
 from core import taste

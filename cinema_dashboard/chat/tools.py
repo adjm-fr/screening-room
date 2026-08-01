@@ -31,6 +31,7 @@ from typing import Any
 
 import pandas as pd
 from google.genai import types
+
 from sources.loader import _normalize_title
 
 log = logging.getLogger(__name__)

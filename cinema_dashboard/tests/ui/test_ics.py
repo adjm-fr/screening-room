@@ -6,6 +6,7 @@ import re
 
 import pandas as pd
 import pytest
+
 from ui import ADS_MINUTES_CHAIN, ADS_MINUTES_DEFAULT, screening_end, to_ics
 from ui.ics import _ads_minutes, _ics_escape
 

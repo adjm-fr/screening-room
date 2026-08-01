@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 from dagster import AssetExecutionContext, AutomationCondition, Config, MaterializeResult, MetadataValue, asset
+
 from integrations.scrapers import allocine_command, enrich_command, letterboxd_command
 from sources.streaming import refresh_streaming_providers
 

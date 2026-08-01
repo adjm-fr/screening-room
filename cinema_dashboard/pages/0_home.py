@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+
 from config import settings
 from core.taste import TasteProfile, attach_match, build_affinity
 from sources.loader import (

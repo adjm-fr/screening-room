@@ -26,8 +26,9 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from common.parquet_io import read_parquet_validated
-from config import settings
 from contracts import SHOWTIMES
+
+from config import settings
 from core.taste import build_affinity, format_taste_profile
 from sources.streaming import STREAMING_COLUMNS, load_streaming_providers
 

@@ -1,5 +1,6 @@
 import pandas as pd
 import pytest
+
 from sources.loader import (
     _director_key,
     _directors_overlap,

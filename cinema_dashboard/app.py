@@ -18,6 +18,7 @@ with every section has no page of its own to be routed to.
 import plotly.io as pio
 import streamlit as st
 from common import configure_logging
+
 from config import settings
 from pages.movie import main as render_movie_detail
 from ui import MOVIE_QUERY_PARAM, inject_css

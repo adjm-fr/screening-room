@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+
 from core.taste import TasteProfile
 from ui import match_chips_html
 

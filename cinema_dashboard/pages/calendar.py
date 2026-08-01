@@ -37,6 +37,7 @@ import html as _html
 
 import pandas as pd
 import streamlit as st
+
 from core.availability import free_time_mask
 from sources.geo import load_geocoded_theaters, render_theater_map
 from sources.loader import (

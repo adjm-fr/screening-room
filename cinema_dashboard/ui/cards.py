@@ -21,9 +21,9 @@ from typing import Literal
 
 import pandas as pd
 import streamlit as st
+
 from sources.loader import coerce_str_list
 from sources.streaming import display_name, load_display_names_catalog
-
 from ui.chips import render_empty_state
 from ui.theme import format_runtime, movie_href, rating_to_hsl, row_slug
 

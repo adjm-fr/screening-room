@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+
 from config import settings
 from core.taste import attach_match, build_affinity
 from sources.loader import attach_streaming, get_paths, load_ratings, load_watchlist

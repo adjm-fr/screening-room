@@ -6,6 +6,7 @@ import math
 
 import pandas as pd
 import pytest
+
 from core.taste import (
     LOGISTIC_TAU,
     QUALITY_CENTER,

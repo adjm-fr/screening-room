@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+
 from config import settings
 from core.taste import attach_match, build_affinity
 from integrations.allocine import _get_paris_cinemas

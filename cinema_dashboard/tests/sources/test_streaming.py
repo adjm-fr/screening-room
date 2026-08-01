@@ -8,6 +8,7 @@ import httpx
 import pandas as pd
 import pytest
 import respx
+
 from sources.streaming import (
     TMDB_PROVIDERS_URL,
     _fr_provider_name_pairs,

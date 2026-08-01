@@ -38,17 +38,17 @@ from typing import cast
 
 import pandas as pd
 import streamlit as st
-from config import settings
 from google import genai
 from google.genai import types
-from integrations.allocine import search_theaters
-from integrations.theaters import append_theater, load_theater_ids
-from sources.loader import _normalize_title
-from ui import render_movie_card
 
 from chat.prompt import ChatContext, build_system_message
 from chat.state import ChatState, chat_state, delete_chat_state, save_chat_state
 from chat.tools import SHOWTIMES_TOOL, TASTE_TOOL, showtimes_query, top_matches
+from config import settings
+from integrations.allocine import search_theaters
+from integrations.theaters import append_theater, load_theater_ids
+from sources.loader import _normalize_title
+from ui import render_movie_card
 
 log = logging.getLogger(__name__)
 

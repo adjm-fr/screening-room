@@ -25,6 +25,7 @@ import logging
 
 import pandas as pd
 import streamlit as st
+
 from config import settings
 from core.movie import THEME_COLUMNS, load_movie, movie_screenings, similar_films, split_values
 from core.taste import (

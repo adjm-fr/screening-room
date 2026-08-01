@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+
 from ui import format_runtime, movie_href, rating_to_hsl, render_hero_card, render_poster_rail, row_slug
 from ui.cards import _movie_card_html, _streaming_badges_html, _user_rating_chip_html
 

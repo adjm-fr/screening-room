@@ -15,6 +15,8 @@ import logging
 
 import pandas as pd
 import pytest
+from google.genai import types
+
 from chat import _streaming_context, load_chat_state
 from chat.ui import (
     ChatContext,
@@ -23,7 +25,6 @@ from chat.ui import (
     delete_chat_state,
     save_chat_state,
 )
-from google.genai import types
 
 
 def test_streaming_context_empty_when_no_columns():

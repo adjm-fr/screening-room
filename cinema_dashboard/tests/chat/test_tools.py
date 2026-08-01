@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+
 from chat.tools import MAX_SHOWTIME_ROWS, MAX_TOP_MATCHES, showtimes_query, top_matches
 
 

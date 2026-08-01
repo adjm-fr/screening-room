@@ -12,9 +12,10 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from streamlit.testing.v1 import AppTest
+
 from core.taste import build_affinity
 from pages.movie import _contribution_rows_html, _text, _title_of
-from streamlit.testing.v1 import AppTest
 
 APP_PATH = Path(__file__).resolve().parent.parent.parent / "app.py"
 

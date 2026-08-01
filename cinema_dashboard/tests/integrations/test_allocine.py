@@ -2,8 +2,9 @@
 
 import json
 
-import integrations.allocine as search_mod
 import pytest
+
+import integrations.allocine as search_mod
 
 
 def _make_card(cinema_id: str, name: str, address: str) -> str:

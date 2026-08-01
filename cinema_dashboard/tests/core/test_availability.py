@@ -1,6 +1,7 @@
 import datetime as dt
 
 import pandas as pd
+
 from core.availability import free_time_mask, french_public_holidays
 
 # 2026 anchors: Mon 2026-06-29 is a plain working day; Sat 2026-07-04 / Sun

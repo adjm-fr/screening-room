@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-from chat import ChatContext, build_system_message
-from config import settings
 from deepeval.test_case import LLMTestCase
 from google import genai
 from google.genai import types
 
+from chat import ChatContext, build_system_message
+from config import settings
 from tests.evals.goldens import GOLDENS, Golden
 from tests.evals.metrics import FilmSetMembershipMetric, StreamingClaimMetric
 

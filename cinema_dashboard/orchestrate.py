@@ -20,6 +20,7 @@ from pathlib import Path
 
 import click
 from common import configure_logging
+
 from config import settings
 from integrations.scrapers import (
     WATCHLIST_MAX_AGE_DAYS,

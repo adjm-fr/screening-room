@@ -21,7 +21,7 @@ from utils.data_loader import (
     load_showtimes,
     load_watchlist,
 )
-from utils.taste import attach_match, build_affinity
+from utils.taste import TasteProfile, attach_match, build_affinity
 from utils.ui import (
     match_chips_html,
     render_empty_state,
@@ -42,20 +42,63 @@ def _eyebrow_for(when: pd.Timestamp) -> str:
     return when.strftime("%A %d %b · %H:%M")
 
 
-def _streaming_rail_frame(watchlist_df: pd.DataFrame, movies_output: str) -> pd.DataFrame:
-    """Build the frame for the "Available on streaming platforms" rail.
+#: How many cards the "Available on streaming platforms" rail shows.
+STREAMING_RAIL_SIZE = 8
+
+
+def _streaming_rail_frame(
+    watchlist_df: pd.DataFrame,
+    movies_output: str,
+    *,
+    subscribed: set[str] | frozenset[str],
+    profile: TasteProfile | None,
+) -> pd.DataFrame:
+    """Build the ranked, capped frame for the "Available on streaming platforms" rail.
+
+    The whole rail is assembled here rather than inline in :func:`main` so it is
+    a single testable unit: the display-title rename below is invisible on a
+    rendered card, so a call site that skipped it could regress silently.
 
     ``watchlist_df`` carries ``title`` (and often ``french_title``) but not
     ``letterboxd_title``. ``utils.ui._movie_card_html`` resolves the display
     title in ``letterboxd_title`` → ``french_title`` → ``title`` → ``movie``
-    order, so without this rename cards on this rail fall through to the
-    French title while every other surface in the app shows the canonical
-    Letterboxd title. Mirrors the same rename already applied in
-    ``pages/streaming.py``, ``pages/database.py``, and ``utils/chat.py``.
+    order, so without the rename cards on this rail fall through to the French
+    title while every other surface in the app shows the canonical Letterboxd
+    title. Mirrors the same rename already applied in ``pages/streaming.py``,
+    ``pages/database.py``, and ``utils/chat.py``.
+
+    A film is "available" when it is on a ``subscribed`` flatrate provider or on
+    any no-cost ``free`` one — free platforms are watchable by everyone, so they
+    are never gated by ``STREAMING_SERVICES``. When ``subscribed`` is empty the
+    flatrate side falls back to "any provider" so the rail is still useful
+    before subscriptions are configured. Ranking is by taste ``match`` when a
+    profile exists (community rating breaking ties) and by community rating
+    alone otherwise. Returns at most :data:`STREAMING_RAIL_SIZE` rows, one per
+    ``tmdb_id``; an empty frame means "render no rail".
+
+    ``attach_match`` is deliberately passed the *original* ``watchlist_df``
+    rather than the renamed frame: it scores on metadata columns only and never
+    reads a title, so this keeps the scoring input identical to every other
+    ``attach_match`` call site.
     """
-    if "title" in watchlist_df.columns and "letterboxd_title" not in watchlist_df.columns:
-        watchlist_df = watchlist_df.rename(columns={"title": "letterboxd_title"})
-    return attach_streaming(watchlist_df, movies_output)
+    frame = watchlist_df
+    if "title" in frame.columns and "letterboxd_title" not in frame.columns:
+        frame = frame.rename(columns={"title": "letterboxd_title"})
+    out = attach_streaming(frame, movies_output)
+
+    if subscribed:
+        out = out[out.apply(lambda r: bool(set(r["flatrate"]) & subscribed) or bool(r["free"]), axis=1)]
+    else:
+        out = out[out.apply(lambda r: bool(r["flatrate"]) or bool(r["free"]), axis=1)]
+    if out.empty:
+        return out
+
+    if profile is not None and not profile.is_empty:
+        out = attach_match(out, watchlist_df, profile)
+        out = out.sort_values(["match", "letterboxd_avg_rating"], ascending=False, na_position="last")
+    else:
+        out = out.sort_values("letterboxd_avg_rating", ascending=False, na_position="last")
+    return out.drop_duplicates(subset=["tmdb_id"]).head(STREAMING_RAIL_SIZE)
 
 
 def main() -> None:
@@ -121,26 +164,10 @@ def main() -> None:
     render_poster_rail(up_next, title="Screening next on your watchlist")
 
     # ── Available on streaming platforms ─────────────────────────────────────
-    # When STREAMING_SERVICES is unset, fall back to "any provider" so the rail
-    # is still useful before the user configures their subscriptions. Free
-    # providers (Arte.tv, France.tv, …) always count as "available" regardless
-    # of STREAMING_SERVICES — they're watchable by everyone.
-    wl_streaming = _streaming_rail_frame(watchlist_df, str(movies_path))
-    if subscribed:
-        wl_streaming = wl_streaming[
-            wl_streaming.apply(lambda r: bool(set(r["flatrate"]) & subscribed) or bool(r["free"]), axis=1)
-        ]
-    else:
-        wl_streaming = wl_streaming[wl_streaming.apply(lambda r: bool(r["flatrate"]) or bool(r["free"]), axis=1)]
+    # Selection, ranking and the display-title rename all live in
+    # _streaming_rail_frame so the rail is one tested unit — see its docstring.
+    wl_streaming = _streaming_rail_frame(watchlist_df, str(movies_path), subscribed=subscribed, profile=profile)
     if not wl_streaming.empty:
-        # Rank by taste match when a profile exists; community rating breaks
-        # ties and is the fallback ordering before any films are rated.
-        if profile is not None and not profile.is_empty:
-            wl_streaming = attach_match(wl_streaming, watchlist_df, profile)
-            wl_streaming = wl_streaming.sort_values(["match", "letterboxd_avg_rating"], ascending=False, na_position="last")
-        else:
-            wl_streaming = wl_streaming.sort_values("letterboxd_avg_rating", ascending=False, na_position="last")
-        wl_streaming = wl_streaming.drop_duplicates(subset=["tmdb_id"]).head(8)
         render_poster_rail(wl_streaming, title="Available on streaming platforms", subscribed=subscribed)
 
     # ── Top matches this week ────────────────────────────────────────────────

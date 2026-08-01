@@ -7,7 +7,7 @@ Run with:
 Routing has two layers. ``st.navigation`` owns the five sections in the
 sidebar; on top of that, a ``?movie=<slug>`` query parameter overlays the movie
 detail page (``pages/movie.py``) in place of whichever section is selected.
-Every movie card in the app is an anchor to that URL (:func:`utils.ui.movie_href`),
+Every movie card in the app is an anchor to that URL (:func:`ui.movie_href`),
 so films get real, shareable, back-button-friendly links from any page without
 each page having to know about detail routing. The detail module is *called*
 rather than mounted as an ``st.Page``: ``StreamlitPage.run()`` only works on the
@@ -18,10 +18,10 @@ with every section has no page of its own to be routed to.
 import plotly.io as pio
 import streamlit as st
 from common import configure_logging
-from modules.config import settings
+from config import settings
 from pages.movie import main as render_movie_detail
-from utils.cmdk import mount_cmdk
-from utils.ui import MOVIE_QUERY_PARAM, inject_css
+from ui import MOVIE_QUERY_PARAM, inject_css
+from ui.cmdk import mount_cmdk
 
 configure_logging(settings.log_level, quiet=("httpx", "httpcore", "google_genai", "urllib3"))
 

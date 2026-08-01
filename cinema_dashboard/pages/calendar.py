@@ -14,7 +14,7 @@ The page top carries a single control: the "Only times I'm free" toggle
 (which replaced the old "Weekends only" one). It keeps a screening when it
 falls on a weekend, a French public holiday, a user-marked day off, or a
 weekday at/after an editable cutoff (default 19:00) — minus any dates marked
-unavailable (away), which override everything (see ``utils.availability``);
+unavailable (away), which override everything (see ``core.availability``);
 its cutoff + days-off/unavailable pickers appear inline when it's on. Every
 other filter lives in the sidebar: date range, a theater multi-select whose
 options stay hidden inside the dropdown (empty selection = all theaters),
@@ -24,9 +24,9 @@ rails and the ICS/CSV export read from, so exports always match what's on
 screen.
 ICS export is the primary download (universally accepted by Google Calendar /
 Apple Calendar / Outlook); CSV is kept behind an expander for legacy use. Both
-size their calendar blocks with :func:`utils.ui.screening_end`, which pads the
+size their calendar blocks with :func:`ui.screening_end`, which pads the
 film's runtime with the pre-feature ad block (20min in an MK2/UGC, 10min
-elsewhere) — it lives in ``utils.ui`` beside :func:`utils.ui.to_ics` so the
+elsewhere) — it lives in ``ui.ics`` beside :func:`ui.to_ics` so the
 movie detail page's per-screening ``.ics`` can size its blocks identically.
 """
 
@@ -37,22 +37,22 @@ import html as _html
 
 import pandas as pd
 import streamlit as st
-from utils.availability import free_time_mask
-from utils.data_loader import (
+from core.availability import free_time_mask
+from sources.geo import load_geocoded_theaters, render_theater_map
+from sources.loader import (
     build_watchlist_showtimes,
     future_showtimes,
     get_paths,
     load_showtimes,
     load_watchlist,
 )
-from utils.geo import load_geocoded_theaters, render_theater_map
-from utils.ui import (
-    _movie_card_html,
+from ui import (
     render_chip_filter,
     render_empty_state,
     screening_end,
     to_ics,
 )
+from ui.cards import _movie_card_html
 
 
 def _render_day_rails(

@@ -11,8 +11,8 @@ Required env vars (same as orchestrate.py + .env):
     OUTPUT_PATH             directory that contains the watchlist parquet files
 """
 
+from config import settings
 from dagster import Definitions, define_asset_job, load_assets_from_modules
-from modules.config import settings
 
 from . import assets
 from .resources import ScraperConfig

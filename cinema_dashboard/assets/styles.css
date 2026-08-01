@@ -1,6 +1,6 @@
 /* Cinema Dashboard — design system
  * --------------------------------------------------------------------------
- * Loaded once per session via utils.ui.inject_css().
+ * Loaded once per session via ui.theme.inject_css().
  * Uses CSS custom properties keyed by [data-theme] so light/dark adapt
  * without rerunning Streamlit. Values that need to mirror Streamlit's own
  * theme tokens fall through to system defaults when `var()` lookups miss.

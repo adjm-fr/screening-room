@@ -18,14 +18,14 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
+from chat import ChatContext, build_system_message
+from config import settings
 from deepeval.test_case import LLMTestCase
 from google import genai
 from google.genai import types
-from modules.config import settings
-from utils.chat import ChatContext, build_system_message
 
-from evals.goldens import GOLDENS, Golden
-from evals.metrics import FilmSetMembershipMetric, StreamingClaimMetric
+from tests.evals.goldens import GOLDENS, Golden
+from tests.evals.metrics import FilmSetMembershipMetric, StreamingClaimMetric
 
 # Bait titles a golden may try to lure the model into naming. Listed here so
 # the metric can detect them in the output even when they don't appear in any

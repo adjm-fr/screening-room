@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
-from modules.config import settings
-from utils.data_loader import (
+from config import settings
+from core.taste import TasteProfile, attach_match, build_affinity
+from sources.loader import (
     attach_streaming,
     build_watchlist_showtimes,
     future_showtimes,
@@ -21,8 +22,7 @@ from utils.data_loader import (
     load_showtimes,
     load_watchlist,
 )
-from utils.taste import TasteProfile, attach_match, build_affinity
-from utils.ui import (
+from ui import (
     match_chips_html,
     render_empty_state,
     render_freshness_banner,
@@ -60,12 +60,12 @@ def _streaming_rail_frame(
     rendered card, so a call site that skipped it could regress silently.
 
     ``watchlist_df`` carries ``title`` (and often ``french_title``) but not
-    ``letterboxd_title``. ``utils.ui._movie_card_html`` resolves the display
+    ``letterboxd_title``. ``ui.cards._movie_card_html`` resolves the display
     title in ``letterboxd_title`` → ``french_title`` → ``title`` → ``movie``
     order, so without the rename cards on this rail fall through to the French
     title while every other surface in the app shows the canonical Letterboxd
     title. Mirrors the same rename already applied in ``pages/streaming.py``,
-    ``pages/database.py``, and ``utils/chat.py``.
+    ``pages/database.py``, and ``chat/ui.py``.
 
     A film is "available" when it is on a ``subscribed`` flatrate provider or on
     any no-cost ``free`` one — free platforms are watchable by everyone, so they
@@ -171,7 +171,7 @@ def main() -> None:
         render_poster_rail(wl_streaming, title="Available on streaming platforms", subscribed=subscribed)
 
     # ── Top matches this week ────────────────────────────────────────────────
-    # Taste-ranked rail over this week's watchlist screenings (see utils.taste):
+    # Taste-ranked rail over this week's watchlist screenings (see core.taste):
     # % badge + "because" chips name the actual contributors, so the rail has
     # content every week — unlike a single-director coincidence gate.
     if profile is not None and not profile.is_empty:

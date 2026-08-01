@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from deepeval.test_case import LLMTestCase
 
-from evals.metrics import FilmSetMembershipMetric, StreamingClaimMetric
+from tests.evals.metrics import FilmSetMembershipMetric, StreamingClaimMetric
 
 
 def _case(output: str) -> LLMTestCase:

@@ -1,7 +1,7 @@
 """
 Movie detail page — everything the pipeline knows about one film.
 
-Reached from every card in the app: :func:`utils.ui.movie_href` renders each
+Reached from every card in the app: :func:`ui.movie_href` renders each
 poster, rail entry and hero as a link to ``?movie=<slug>``, and ``app.py``
 routes that query parameter here instead of running the selected navigation
 page. Unlike the five ``st.Page`` files this module therefore does **not** call
@@ -25,8 +25,17 @@ import logging
 
 import pandas as pd
 import streamlit as st
-from modules.config import settings
-from utils.data_loader import (
+from config import settings
+from core.movie import THEME_COLUMNS, load_movie, movie_screenings, similar_films, split_values
+from core.taste import (
+    WEIGHTS,
+    TasteProfile,
+    build_affinity,
+    contributions,
+    match_from_raw,
+    quality_prior,
+)
+from sources.loader import (
     attach_streaming,
     build_watchlist_showtimes,
     future_showtimes,
@@ -36,18 +45,7 @@ from utils.data_loader import (
     load_showtimes,
     load_watchlist,
 )
-from utils.movie import THEME_COLUMNS, load_movie, movie_screenings, similar_films, split_values
-from utils.taste import (
-    WEIGHTS,
-    TasteProfile,
-    build_affinity,
-    contributions,
-    match_from_raw,
-    quality_prior,
-)
-from utils.ui import (
-    _streaming_badges_html,
-    _user_rating_chip_html,
+from ui import (
     format_runtime,
     rating_to_hsl,
     render_empty_state,
@@ -55,6 +53,7 @@ from utils.ui import (
     screening_end,
     to_ics,
 )
+from ui.cards import _streaming_badges_html, _user_rating_chip_html
 
 log = logging.getLogger(__name__)
 
@@ -259,7 +258,7 @@ def _render_themes(movie: pd.Series) -> None:
 def _render_screenings(shows: pd.DataFrame, movie: pd.Series) -> None:
     """Upcoming screenings grouped by theater, each with a one-click ``.ics``.
 
-    Calendar blocks are sized by :func:`utils.ui.screening_end` — the same
+    Calendar blocks are sized by :func:`ui.screening_end` — the same
     helper the calendar page's ICS and CSV exports use — so a single-screening
     download and a bulk export never disagree about when a film ends.
     """

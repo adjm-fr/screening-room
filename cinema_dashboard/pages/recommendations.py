@@ -8,7 +8,7 @@ Mounts the cinema chat assistant with the full power-user surface:
 - conversation export as Markdown
 
 The same assistant is reachable from any other page via the global
-``Cmd+K`` palette (see :mod:`utils.cmdk`); both surfaces share
+``Cmd+K`` palette (see :mod:`ui.cmdk`); both surfaces share
 ``st.session_state['chat']`` (a ``ChatState``) so the conversation persists
 across them.
 """
@@ -16,7 +16,8 @@ across them.
 from __future__ import annotations
 
 import streamlit as st
-from utils.chat import build_chat_context, render_chat
+from chat import build_chat_context
+from chat.ui import render_chat
 
 
 def main() -> None:

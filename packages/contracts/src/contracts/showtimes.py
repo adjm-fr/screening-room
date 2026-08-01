@@ -1,7 +1,7 @@
 """Contract for ``showtimes.parquet``.
 
 Produced by the standalone **Allocine-Showtimes-Scraping** repo; consumed inside
-this monorepo by ``cinema_dashboard/utils/data_loader.py`` (the watchlist↔showtimes
+this monorepo by ``cinema_dashboard/sources/loader.py`` (the watchlist↔showtimes
 join) and ``movies_management/modules/allocine_enrichment.py`` (cache expansion).
 """
 

@@ -34,7 +34,7 @@ Every card shows a small badge row: subscribed services carrying the film (fille
 
 ### Movie detail (`?movie=<slug>`)
 
-Every movie rendered anywhere in the app — the Home hero, all poster rails, the calendar's day rails, the streaming rails, the Discover rail and the chat's pinned recommendations — is a link to that film's detail page at `?movie=<letterboxd-slug>`. It's a real URL: shareable, bookmarkable, and the browser back button returns you to where you were. The page has no sidebar entry; it overlays whichever section you were on, and a "← Back to the dashboard" link clears the parameter. An unknown or truncated slug renders a designed empty state, never a traceback.
+Every movie rendered anywhere in the app — the Home hero, all poster rails, the calendar's day rails, the streaming rails, the Discover rail and the chat's pinned recommendations — is a link to that film's detail page at `?movie=<letterboxd-slug>`. It's a real URL: shareable, bookmarkable, and the browser back button returns you to where you were. The page has no sidebar entry; it overlays whichever section you were on, and a "← Back to the dashboard" control clears the parameter. An unknown or truncated slug renders a designed empty state, never a traceback.
 
 The page is backed by `data_letterboxd.parquet`, which is a superset of the ratings and watchlist parquets, so **any** cached film has a page — including the few hundred Allocine-enriched films on neither list. It shows, omitting any section the cache has no data for:
 
@@ -146,7 +146,7 @@ cinema_dashboard/
 ├── .streamlit/
 │   └── config.toml               # Cinema theme: dark + light, system-driven
 ├── assets/
-│   ├── styles.css                # Design tokens, movie cards, poster rails, chips, KPI cards, motion, focus rings, mobile media queries
+│   ├── styles.css                # Design tokens, movie cards, poster rails, chips, KPI cards, detail page + contribution bars, anchor styling, motion, focus rings, mobile media queries
 │   └── provider_display_names.json  # Slug → pretty-name catalogue (auto-grown by refresh_streaming_providers)
 ├── modules/
 │   ├── config.py                 # Centralised settings via pydantic-settings (BaseSettings)

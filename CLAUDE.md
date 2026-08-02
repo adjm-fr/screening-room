@@ -50,7 +50,7 @@ uv run --no-sync --directory cinema_dashboard  python orchestrate.py   # refresh
 # Everyday shortcuts: the root Makefile wraps the four commands above
 #   make install   → uv sync --all-packages
 #   make run       → streamlit dashboard
-#   make orchestrate → refresh stale data
+#   make orchestrate → refresh stale data (ARGS="--force" / "--days 7 …" passes flags through)
 #   make update    → git pull this repo + the external Allocine repo ($ALLOCINE_DIR)
 # The quality gates below are deliberately NOT in the Makefile — CI owns them. Run them by hand.
 

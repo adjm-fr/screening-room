@@ -206,8 +206,14 @@ typecheck, security, test.
   (matched on slug, else on title) supplies fresh columns *and* the **next upcoming** screening rather than
   whichever was scraped on pin day; and when a film's screenings have all passed it leaves `wl_shows`
   entirely, so the stored snapshot is returned with a slug recovered from `ChatContext.slug_by_title` — a
-  whole-*watchlist* title→slug map (both title spellings), deliberately not derived from `wl_shows`, since
-  the detail page reads the cache and the film still has a page. Pins render through
+  whole-*watchlist* map (both title spellings), deliberately not derived from `wl_shows`, since the detail
+  page reads the cache and the film still has a page. **Both levels fall back to matching on title, and a
+  title does not identify a film** — 22 titles in the real watchlist name two different films (*King Lear*
+  is Brook's *and* Godard's, *Mandy* is Mackendrick's *and* Cosmatos'). `slug_by_title` therefore maps to a
+  **list** of `(slug, directors)`, not one slug: a plain `dict[str, str]` is last-write-wins and silently
+  opens the wrong film. Every title match is confirmed by director through the same
+  `sources.loader._directors_overlap` token containment the showtimes join uses, and anything still
+  ambiguous resolves to *no* slug — an unlinked pin beats a wrong one. Pins render through
   `render_compact_movie_card`, not `render_movie_card`: in a 1/3-width column a 2:3 poster ran several
   hundred pixels tall. Anything else that persists a row snapshot must re-resolve it the same way.
 - **The injected context blocks and the chat tools are deliberately redundant — don't "optimize" the

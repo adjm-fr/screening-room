@@ -48,7 +48,7 @@ from chat.tools import SHOWTIMES_TOOL, TASTE_TOOL, showtimes_query, top_matches
 from config import settings
 from integrations.allocine import search_theaters
 from integrations.theaters import append_theater, load_theater_ids
-from sources.loader import _normalize_title
+from sources.loader import _directors_overlap, _normalize_title
 from ui import render_compact_movie_card
 
 log = logging.getLogger(__name__)
@@ -263,7 +263,28 @@ def _render_pending_theaters(ctx: ChatContext) -> None:
     st.divider()
 
 
-def resolve_pin(stored: dict, wl_shows: pd.DataFrame, slug_by_title: dict[str, str] | None = None) -> dict:
+def _confirmed_slug(stored: dict, candidates: list[tuple[str, str]]) -> str | None:
+    """Pick the one ``(slug, directors)`` candidate this pin's director confirms.
+
+    A single candidate needs no confirmation — the title is unambiguous. Beyond
+    that the title names more than one film (remakes: *King Lear* is both Peter
+    Brook's and Godard's), so it is resolved the way
+    :func:`sources.loader.build_watchlist_showtimes` resolves the same
+    ambiguity — by director, via token containment. Anything that stays
+    ambiguous returns ``None``: an unlinked pin is a much smaller failure than
+    one that opens the wrong film.
+    """
+    if len(candidates) == 1:
+        return candidates[0][0]
+    confirmed = {slug for slug, directors in candidates if _directors_overlap(stored.get("directors"), directors)}
+    return confirmed.pop() if len(confirmed) == 1 else None
+
+
+def resolve_pin(
+    stored: dict,
+    wl_shows: pd.DataFrame,
+    slug_by_title: dict[str, list[tuple[str, str]]] | None = None,
+) -> dict:
     """Return the live row behind a stored pin, else the stored dict re-linked.
 
     Pins are persisted as a whole row snapshot, so a pin taken before a column
@@ -287,24 +308,47 @@ def resolve_pin(stored: dict, wl_shows: pd.DataFrame, slug_by_title: dict[str, s
        the whole watchlist. The detail page reads the cache, not the showtimes,
        so the film still has a page — the pin has no reason to stop linking to
        it just because the run has ended.
+
+    Both levels fall back to matching on **title, which does not identify a
+    film** — remakes share one. Every title match is therefore confirmed by
+    director (:func:`_confirmed_slug`) and abandoned when it stays ambiguous,
+    so a pin never silently opens a different film of the same name.
     """
-    match = pd.DataFrame()
     slug = stored.get("letterboxd_slug")
     title = stored.get("letterboxd_title")
+    has_title = isinstance(title, str) and bool(title)
+
+    match = pd.DataFrame()
     if not wl_shows.empty:
         if isinstance(slug, str) and slug and "letterboxd_slug" in wl_shows.columns:
             match = wl_shows[wl_shows["letterboxd_slug"] == slug]
-        if match.empty and isinstance(title, str) and title and "letterboxd_title" in wl_shows.columns:
-            match = wl_shows[wl_shows["letterboxd_title"] == title]
+        if match.empty and has_title and "letterboxd_title" in wl_shows.columns:
+            match = _disambiguate_by_director(stored, wl_shows[wl_shows["letterboxd_title"] == title])
     if not match.empty:
         if "showtimes" in match.columns:
             match = match.assign(_dt=pd.to_datetime(match["showtimes"], errors="coerce")).sort_values("_dt").drop(columns=["_dt"])
         return cast(dict, match.iloc[0].to_dict())
 
-    if slug or not slug_by_title or not isinstance(title, str) or not title:
+    if slug or not slug_by_title or not has_title:
         return stored
-    recovered = slug_by_title.get(title)
+    recovered = _confirmed_slug(stored, slug_by_title.get(cast(str, title), []))
     return {**stored, "letterboxd_slug": recovered} if recovered else stored
+
+
+def _disambiguate_by_director(stored: dict, rows: pd.DataFrame) -> pd.DataFrame:
+    """Narrow same-title ``wl_shows`` rows to the one film the pin's director confirms.
+
+    Rows for a single film pass through untouched (the common case). When the
+    title spans several films the screenings interleave, so ``.iloc[0]`` after
+    sorting by showtime could pick the wrong one; an unconfirmable title
+    yields no rows, which drops the caller to the stored snapshot.
+    """
+    if rows.empty or "letterboxd_slug" not in rows.columns or rows["letterboxd_slug"].nunique() <= 1:
+        return rows
+    if "directors" not in rows.columns:
+        return rows.iloc[0:0]
+    confirmed = rows[rows["directors"].map(lambda d: _directors_overlap(stored.get("directors"), d))]
+    return confirmed if confirmed["letterboxd_slug"].nunique() == 1 else rows.iloc[0:0]
 
 
 def _pin_caption_html(pinned: dict) -> str:

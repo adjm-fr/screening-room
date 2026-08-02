@@ -9,6 +9,12 @@
 # Mirrors the ALLOCINE_DIR env var the dashboard uses to locate it.
 ALLOCINE_DIR ?= ../Allocine-Showtimes-Scraping
 
+# Extra flags forwarded to orchestrate.py — it is staleness-aware, so without a
+# passthrough `make orchestrate` can never force a re-run:
+#   make orchestrate ARGS="--force"
+#   make orchestrate ARGS="--days 7 --reset"
+ARGS ?=
+
 .DEFAULT_GOAL := help
 .PHONY: help install run orchestrate update
 
@@ -22,8 +28,8 @@ install: ## Sync the whole workspace into one shared .venv
 run: ## Launch the Streamlit dashboard
 	uv run --no-sync --directory cinema_dashboard streamlit run app.py
 
-orchestrate: ## Refresh stale data (runs both scrapers in parallel)
-	uv run --no-sync --directory cinema_dashboard python orchestrate.py
+orchestrate: ## Refresh stale data in parallel (ARGS="--force" to re-run regardless)
+	uv run --no-sync --directory cinema_dashboard python orchestrate.py $(ARGS)
 
 update: ## Pull this monorepo + the external Allocine scraper
 	git pull

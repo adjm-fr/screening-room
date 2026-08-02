@@ -62,6 +62,9 @@ uv run --no-sync --directory cinema_dashboard python orchestrate.py --reset    #
 uv run --no-sync --directory cinema_dashboard python orchestrate.py --reset-db # pass --reset_database to movies_management
 ```
 
+`make orchestrate` forwards its `ARGS` variable to that command, so every flag above is reachable from the
+shortcut too — `make orchestrate ARGS="--force"`, `make orchestrate ARGS="--days 7 --reset"`.
+
 A Dagster-based equivalent lives in `cinema_dashboard/pipeline/` — see
 [`cinema_dashboard/README.md`](cinema_dashboard/README.md) for running it via `dagster dev`.
 

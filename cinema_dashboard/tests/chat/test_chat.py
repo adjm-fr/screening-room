@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 from google.genai import types
 
-from chat.prompt import _slug_by_title, _streaming_context
+from chat.prompt import STREAMING_CONTEXT_TOP_N, _slug_by_title, _streaming_context
 from chat.state import load_chat_state
 from chat.ui import (
     ChatContext,
@@ -97,6 +97,69 @@ def test_streaming_context_includes_free_only_film():
     out = _streaming_context(df)
     assert "Free Only" in out
     assert "; free=arte" in out
+
+
+# ── _streaming_context: top-N narrowing ─────────────────────────────────────
+
+
+def _streaming_frame(n: int, *, scored: bool) -> pd.DataFrame:
+    """``n`` distinct streaming films, descending match when ``scored``."""
+    rows = [
+        {
+            "letterboxd_title": f"Film {i:03d}",
+            "flatrate": ["mubi"],
+            "free": [],
+            **({"match": float(n - i)} if scored else {}),
+        }
+        for i in range(n)
+    ]
+    return pd.DataFrame(rows)
+
+
+def test_streaming_context_falls_back_to_full_list_without_a_match_column():
+    # No scores available (build_chat_context's fallback path) — narrowing
+    # would need a ranking it doesn't have, so the block stays uncapped.
+    df = _streaming_frame(STREAMING_CONTEXT_TOP_N + 25, scored=False)
+    out = _streaming_context(df)
+    assert out.count("Film ") == STREAMING_CONTEXT_TOP_N + 25
+    assert "streaming_query" not in out  # nothing was left out, so no marker
+
+
+def test_streaming_context_caps_to_top_n_when_scored():
+    df = _streaming_frame(STREAMING_CONTEXT_TOP_N + 25, scored=True)
+    out = _streaming_context(df)
+    lines = [line for line in out.splitlines() if line.startswith("- ")]
+    assert len(lines) == STREAMING_CONTEXT_TOP_N
+
+
+def test_streaming_context_keeps_the_highest_match_films_when_capped():
+    df = _streaming_frame(STREAMING_CONTEXT_TOP_N + 25, scored=True)  # match descends as i increases
+    out = _streaming_context(df)
+    assert "Film 000" in out  # highest match (n - 0)
+    assert f"Film {STREAMING_CONTEXT_TOP_N + 24:03d}" not in out  # lowest match, narrowed out
+
+
+def test_streaming_context_appends_marker_line_when_truncated():
+    df = _streaming_frame(STREAMING_CONTEXT_TOP_N + 25, scored=True)
+    out = _streaming_context(df)
+    assert "streaming_query" in out
+    assert "+25 more" in out
+
+
+def test_streaming_context_no_marker_line_when_under_the_cap():
+    df = _streaming_frame(STREAMING_CONTEXT_TOP_N - 5, scored=True)
+    out = _streaming_context(df)
+    assert "streaming_query" not in out
+    assert out.count("- Film ") == STREAMING_CONTEXT_TOP_N - 5
+
+
+def test_streaming_context_marker_line_is_not_in_the_pinned_line_format():
+    # The eval goldens pin "- {title} — flatrate=...": the marker must never
+    # be mistaken for a film entry by a model or a test parsing that shape.
+    df = _streaming_frame(STREAMING_CONTEXT_TOP_N + 1, scored=True)
+    out = _streaming_context(df)
+    marker = next(line for line in out.splitlines() if "streaming_query" in line)
+    assert not marker.startswith("- ")
 
 
 def test_chat_state_round_trip(tmp_path):
@@ -439,14 +502,18 @@ def ctx():
             }
         ]
     )
+    streaming = pd.DataFrame(
+        [{"letterboxd_title": "Ran", "french_title": "Ran", "flatrate": ["mubi"], "free": [], "match": 91.0}]
+    )
     return ChatContext(
         taste="Average rating given: 2.5/5 across 10 films",
         showtimes_md="| Ran |",
-        streaming_md="",
+        streaming_md="- Ran — flatrate=mubi",
         known_theaters=["Le Champo"],
         theaters_csv=None,
         wl_shows=wl,
         wl_scored=wl,
+        streaming_df=streaming,
         slug_by_title={"Ran": [("ran", "Akira Kurosawa")]},
         n_movies=1,
         n_screenings=1,
@@ -463,18 +530,28 @@ def fake_gemini(mocker):
 
 
 @pytest.mark.parametrize(
-    ("tool_name", "args", "handler", "expected_kwargs"),
+    ("tool_name", "args", "handler", "expected_kwargs", "expected_frame_attr"),
     [
-        ("top_matches", {"n": 3, "genre": "Drama"}, "top_matches", {"n": 3, "genre": "Drama"}),
+        ("top_matches", {"n": 3, "genre": "Drama"}, "top_matches", {"n": 3, "genre": "Drama"}, "wl_scored"),
         (
             "showtimes_query",
             {"title": "Ran", "theater": "Champo", "day": "2026-07-25"},
             "showtimes_query",
             {"title": "Ran", "theater": "Champo", "day": "2026-07-25"},
+            "wl_scored",
+        ),
+        (
+            "streaming_query",
+            {"title": "Ran", "provider": "mubi"},
+            "streaming_query",
+            {"title": "Ran", "provider": "mubi"},
+            "streaming_df",
         ),
     ],
 )
-def test_ask_gemini_dispatches_new_tools(mocker, ctx, fake_gemini, tool_name, args, handler, expected_kwargs):
+def test_ask_gemini_dispatches_new_tools(
+    mocker, ctx, fake_gemini, tool_name, args, handler, expected_kwargs, expected_frame_attr
+):
     spy = mocker.patch(f"chat.ui.{handler}", return_value=[{"title": "Ran"}])
     fake_gemini.models.generate_content_stream.side_effect = [
         iter([_call_chunk(tool_name, args)]),
@@ -486,7 +563,7 @@ def test_ask_gemini_dispatches_new_tools(mocker, ctx, fake_gemini, tool_name, ar
 
     spy.assert_called_once()
     frame, kwargs = spy.call_args.args[0], spy.call_args.kwargs
-    assert frame is ctx.wl_scored  # handlers query the scored frame, nothing else
+    assert frame is getattr(ctx, expected_frame_attr)  # handlers query the matching pre-built frame, nothing else
     assert kwargs == expected_kwargs
     assert pending_ref[0] is None  # only search_theater feeds the "add theater?" flow
 

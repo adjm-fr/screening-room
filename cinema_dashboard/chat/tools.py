@@ -1,27 +1,33 @@
 """
-Pure data-query handlers behind the Gemini chat's taste/showtime tools.
+Pure data-query handlers behind the Gemini chat's taste/showtime/streaming tools.
 
-Two tools live here, beside ``chat.ui``'s ``search_theater``:
+Three tools live here, beside ``chat.ui``'s ``search_theater``:
 
 - ``top_matches``     — the user's own watchlist films ranked by taste match
 - ``showtimes_query`` — targeted showtime lookup (title / theater / day)
+- ``streaming_query`` — FR streaming lookup (title / provider), recovering the
+  precision ``chat.prompt._streaming_context``'s top-N taste-match cap costs
+  the injected streaming block
 
-**CLOSED-SET INVARIANT.** Both handlers are *filters*, never generators: every
-row they return is drawn from the DataFrame they are passed (``ChatContext.
-wl_scored``, i.e. the same watchlist×showtimes data already injected into the
-system prompt). They never synthesize a film, theater, provider or showtime,
-and they never reach outside the frame — no parquet reads, no network, no
-model knowledge. Any tool added here must preserve that by construction, so
-the LLM's closed set stays exactly the injected context (see ``CLAUDE.md``).
+**CLOSED-SET INVARIANT.** All three handlers are *filters*, never generators:
+every row they return is drawn from the DataFrame they are passed
+(``ChatContext.wl_scored`` for ``top_matches``/``showtimes_query``,
+``ChatContext.streaming_df`` for ``streaming_query`` — the same
+watchlist×showtimes and watchlist×streaming data already injected into the
+system prompt, just not truncated to the prompt's top-N line cap). They never
+synthesize a film, theater, provider or showtime, and they never reach outside
+the frame — no parquet reads, no network, no model knowledge. Any tool added
+here must preserve that by construction, so the LLM's closed set stays exactly
+the injected context (see ``CLAUDE.md``).
 
 The handlers deliberately take the **DataFrame**, not ``ChatContext``: that
 type lives in ``chat.ui``, which imports this module, so taking the frame
 keeps this module import-cycle-free, Streamlit-free and directly unit-testable.
-``chat.ui``'s dispatch passes ``ctx.wl_scored``.
+``chat.ui``'s dispatch passes ``ctx.wl_scored`` / ``ctx.streaming_df``.
 
-Both handlers are total: an empty frame, missing columns, NaN cells or junk
-arguments yield ``[]`` rather than an exception — a tool that raises would
-abort the assistant's reply mid-stream.
+All three handlers are total: an empty frame, missing columns, NaN cells or
+junk arguments yield ``[]`` rather than an exception — a tool that raises
+would abort the assistant's reply mid-stream.
 """
 
 from __future__ import annotations
@@ -40,6 +46,7 @@ log = logging.getLogger(__name__)
 # broad query ("everything at the MK2") must not blow up the context window.
 MAX_TOP_MATCHES = 20
 MAX_SHOWTIME_ROWS = 20
+MAX_STREAMING_ROWS = 20
 
 TASTE_TOOL = types.Tool(
     function_declarations=[
@@ -108,6 +115,44 @@ SHOWTIMES_TOOL = types.Tool(
                             "Resolve relative wording like 'tonight' or 'this Saturday' to an ISO date "
                             "yourself before calling; an unparseable value is ignored (the results then "
                             "span every upcoming day, and each row states its own date)."
+                        ),
+                    ),
+                },
+                required=[],
+            ),
+        )
+    ]
+)
+
+
+STREAMING_TOOL = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="streaming_query",
+            description=(
+                "Look up FR streaming availability for the user's watchlist films, filtered by film "
+                "title and/or provider. The streaming block already in context only lists the user's "
+                "TOP taste-matched films to keep it short, so call this tool whenever the user asks "
+                "about streaming for a film or provider that might not be in that block — 'what's on "
+                "Mubi?', 'is X streaming anywhere?', 'where can I watch Y?'. All filters are optional "
+                f"and combine with AND; results are capped at {MAX_STREAMING_ROWS} rows."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "title": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Optional film title (or a distinctive part of it). Matched "
+                            "accent/case-insensitively as a substring against both the original and the "
+                            "French title."
+                        ),
+                    ),
+                    "provider": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Optional streaming provider name, matched case-insensitively as a substring "
+                            "against the film's providers, e.g. 'mubi' or 'netflix'."
                         ),
                     ),
                 },
@@ -272,4 +317,73 @@ def showtimes_query(
         return [_row_entry(row, title_col) for _, row in df.head(MAX_SHOWTIME_ROWS).iterrows()]
     except Exception:  # a raising tool would abort the assistant reply mid-stream
         log.exception("showtimes_query failed — returning no rows")
+        return []
+
+
+def streaming_query(
+    streaming_df: pd.DataFrame,
+    *,
+    title: str | None = None,
+    provider: str | None = None,
+) -> list[dict]:
+    """Return watchlist films with FR streaming availability, filtered by ``title`` and/or ``provider``.
+
+    Queries the same frame :func:`chat.prompt._streaming_context` renders the injected streaming block
+    from — including films the block's top-N taste-match cap left out (``chat.prompt.
+    STREAMING_CONTEXT_TOP_N``) — so this tool recovers the precision narrowing that block costs.
+
+    ``title`` is matched as a substring of the normalized (accent- and case-folded, see
+    :func:`sources.loader._normalize_title`) original *and* French titles, mirroring
+    :func:`showtimes_query`. ``provider`` is matched case-insensitively as a substring against every
+    provider name in the film's ``flatrate``/``free`` lists. A film with neither list populated is never
+    returned, same as :func:`chat.prompt._streaming_context`'s own filter. Results are deduplicated by
+    title and capped at :data:`MAX_STREAMING_ROWS`.
+
+    Returns ``[]`` — never raises — for an empty frame, a frame with no ``flatrate`` column, or any
+    unexpected argument value.
+    """
+    try:
+        if streaming_df is None or streaming_df.empty or "flatrate" not in streaming_df.columns:
+            return []
+        df = streaming_df
+
+        if title:
+            title_cols = [c for c in ("letterboxd_title", "french_title") if c in df.columns]
+            if not title_cols:
+                log.info("streaming_query(title=%r): no title column — returning no rows", title)
+                return []
+            needle = _normalize_title(title)
+            if needle:
+                mask = pd.Series(False, index=df.index)
+                for col in title_cols:
+                    mask |= df[col].map(lambda cell: needle in _normalize_title(cell))
+                df = df[mask]
+
+        needle_provider = provider.strip().lower() if isinstance(provider, str) else None
+
+        title_col = _title_column(df)
+        rows: list[dict] = []
+        seen: set[str] = set()
+        for _, row in df.iterrows():
+            entry_title = row.get(title_col) if title_col else None
+            if not isinstance(entry_title, str) or entry_title in seen:
+                continue
+            flat = row.get("flatrate") if isinstance(row.get("flatrate"), list) else []
+            free = row.get("free") if isinstance(row.get("free"), list) else []
+            if not flat and not free:
+                continue
+            if needle_provider and not any(needle_provider in p.lower() for p in (*flat, *free) if isinstance(p, str)):
+                continue
+            seen.add(entry_title)
+            entry: dict[str, Any] = {"title": entry_title}
+            if flat:
+                entry["flatrate"] = flat
+            if free:
+                entry["free"] = free
+            rows.append(entry)
+            if len(rows) >= MAX_STREAMING_ROWS:
+                break
+        return rows
+    except Exception:  # a raising tool would abort the assistant reply mid-stream
+        log.exception("streaming_query failed — returning no rows")
         return []

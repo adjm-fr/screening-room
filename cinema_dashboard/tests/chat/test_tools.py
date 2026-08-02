@@ -11,7 +11,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from chat.tools import MAX_SHOWTIME_ROWS, MAX_TOP_MATCHES, showtimes_query, top_matches
+from chat.tools import MAX_SHOWTIME_ROWS, MAX_STREAMING_ROWS, MAX_TOP_MATCHES, showtimes_query, streaming_query, top_matches
 
 
 @pytest.fixture
@@ -215,3 +215,142 @@ def test_handlers_never_raise_on_a_malformed_frame():
     df = pd.DataFrame({"letterboxd_title": ["Ran"], "showtimes": [object()], "match": ["not a number"]})
     assert isinstance(top_matches(df), list)
     assert isinstance(showtimes_query(df, day="2026-07-25"), list)
+
+
+# ── streaming_query ──────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def streaming():
+    """Four watchlist films, mirroring the frame ``chat.prompt._streaming_context`` reads."""
+    return pd.DataFrame(
+        [
+            {
+                "letterboxd_title": "Perfect Days",
+                "french_title": "Perfect Days",
+                "flatrate": ["mubi"],
+                "free": [],
+            },
+            {
+                "letterboxd_title": "Aftersun",
+                "french_title": "Aftersun",
+                "flatrate": ["mubi", "netflix"],
+                "free": ["arte"],
+            },
+            {
+                "letterboxd_title": "Sudden Fear",
+                "french_title": "Le Masque arraché",
+                "flatrate": [],
+                "free": [],
+            },
+            {
+                "letterboxd_title": "Past Lives",
+                "french_title": "Past Lives",
+                "flatrate": [],
+                "free": ["france.tv"],
+            },
+            {
+                "letterboxd_title": "The Zone of Interest",
+                "french_title": "La Zone d'intérêt",
+                "flatrate": ["netflix"],
+                "free": [],
+            },
+        ]
+    )
+
+
+def test_streaming_query_no_filters_returns_every_film_with_availability(streaming):
+    titles = {r["title"] for r in streaming_query(streaming)}
+    # Sudden Fear has neither list populated, so it's excluded.
+    assert titles == {"Perfect Days", "Aftersun", "Past Lives", "The Zone of Interest"}
+
+
+def test_streaming_query_filters_by_title(streaming):
+    assert [r["title"] for r in streaming_query(streaming, title="perfect")] == ["Perfect Days"]
+
+
+def test_streaming_query_matches_the_french_title_too(streaming):
+    # Accent- and case-insensitive, via sources.loader._normalize_title.
+    assert [r["title"] for r in streaming_query(streaming, title="zone d interet")] == ["The Zone of Interest"]
+
+
+def test_streaming_query_title_match_without_streaming_is_still_excluded(streaming):
+    # Sudden Fear's French title matches, but it has neither flatrate nor free.
+    assert streaming_query(streaming, title="masque arrache") == []
+
+
+def test_streaming_query_filters_by_provider_case_insensitively(streaming):
+    assert [r["title"] for r in streaming_query(streaming, provider="MUBI")] == ["Perfect Days", "Aftersun"]
+
+
+def test_streaming_query_filters_by_free_provider(streaming):
+    assert [r["title"] for r in streaming_query(streaming, provider="france")] == ["Past Lives"]
+
+
+def test_streaming_query_combines_title_and_provider(streaming):
+    assert [r["title"] for r in streaming_query(streaming, title="after", provider="netflix")] == ["Aftersun"]
+
+
+def test_streaming_query_entry_shape_omits_empty_lists(streaming):
+    rows = {r["title"]: r for r in streaming_query(streaming)}
+    assert rows["Perfect Days"] == {"title": "Perfect Days", "flatrate": ["mubi"]}
+    assert rows["Aftersun"] == {"title": "Aftersun", "flatrate": ["mubi", "netflix"], "free": ["arte"]}
+    assert rows["Past Lives"] == {"title": "Past Lives", "free": ["france.tv"]}
+
+
+def test_streaming_query_no_provider_match_returns_empty(streaming):
+    assert streaming_query(streaming, provider="disney+") == []
+
+
+def test_streaming_query_no_title_match_returns_empty(streaming):
+    assert streaming_query(streaming, title="Oppenheimer") == []
+
+
+def test_streaming_query_empty_frame():
+    assert streaming_query(pd.DataFrame(), title="Ran") == []
+
+
+def test_streaming_query_none_frame():
+    assert streaming_query(None) == []
+
+
+def test_streaming_query_missing_flatrate_column_returns_nothing():
+    assert streaming_query(pd.DataFrame({"letterboxd_title": ["Ran"]})) == []
+
+
+def test_streaming_query_missing_title_columns_with_title_filter_returns_nothing(streaming):
+    assert streaming_query(streaming.drop(columns=["letterboxd_title", "french_title"]), title="Ran") == []
+
+
+def test_streaming_query_junk_provider_arg_is_ignored_not_raised(streaming):
+    # A non-string provider (e.g. the model passing a list) must degrade gracefully.
+    rows = streaming_query(streaming, provider=["mubi"])  # type: ignore[arg-type]
+    assert isinstance(rows, list)
+
+
+def test_streaming_query_closed_set_containment(streaming):
+    # Every returned row is drawn from the passed frame — never a film outside it.
+    known = set(streaming["letterboxd_title"])
+    assert {r["title"] for r in streaming_query(streaming)} <= known
+
+
+def test_streaming_query_caps_result_size():
+    df = pd.DataFrame(
+        [{"letterboxd_title": f"Film {i}", "flatrate": ["mubi"], "free": []} for i in range(MAX_STREAMING_ROWS + 10)]
+    )
+    assert len(streaming_query(df)) == MAX_STREAMING_ROWS
+
+
+def test_streaming_query_dedupes_by_title():
+    df = pd.DataFrame(
+        [
+            {"letterboxd_title": "Same", "flatrate": ["mubi"], "free": []},
+            {"letterboxd_title": "Same", "flatrate": ["mubi"], "free": []},
+        ]
+    )
+    assert len(streaming_query(df)) == 1
+
+
+def test_streaming_query_never_raises_on_a_malformed_frame():
+    df = pd.DataFrame({"letterboxd_title": ["Ran"], "flatrate": [object()], "free": [object()]})
+    assert streaming_query(df) == []

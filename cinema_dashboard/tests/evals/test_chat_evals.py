@@ -57,8 +57,9 @@ def _ctx_from_golden(g: Golden) -> ChatContext:
         known_theaters=g.known_theaters,
         theaters_csv=None,
         wl_shows=pd.DataFrame(),
-        # The evals call Gemini without tools, so the tool-query frame is unused.
+        # The evals call Gemini without tools, so the tool-query frames are unused.
         wl_scored=pd.DataFrame(),
+        streaming_df=pd.DataFrame(),
         # Pin re-linking is a UI concern; the evals only exercise the prompt.
         slug_by_title={},
         n_movies=len(g.allowed_films),

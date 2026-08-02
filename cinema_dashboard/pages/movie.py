@@ -373,7 +373,11 @@ def main(slug: str | None) -> None:
     watchlist_df = (
         load_watchlist(str(movies_path)) if (movies_path / "watchlist_with_letterboxd.parquet").exists() else pd.DataFrame()
     )
-    on_watchlist = "slug" in watchlist_df.columns and bool((watchlist_df["slug"] == movie["slug"]).any())
+    has_watchlist = "slug" in watchlist_df.columns
+    on_watchlist = has_watchlist and bool((watchlist_df["slug"] == movie["slug"]).any())
+    # ``None`` (no watchlist parquet) means "don't filter"; an empty set means
+    # "watchlist is empty", which correctly empties the "More like this" rail.
+    watchlist_slugs = set(watchlist_df["slug"].dropna()) if has_watchlist else None
     profile = build_affinity(ratings_df) if not ratings_df.empty else None
 
     poster_col, detail_col = st.columns([1, 2], gap="large")
@@ -407,6 +411,10 @@ def main(slug: str | None) -> None:
 
     _render_trailer(movie)
 
-    similar = similar_films(cache_df, movie)
+    # "More like this" is a what-to-watch-next rail, so it draws from the
+    # watchlist rather than the whole cache — the cache also holds every rated
+    # film, which would otherwise fill most of the rail with films already seen.
+    # No watchlist parquet (fresh install) falls back to the unfiltered cache.
+    similar = similar_films(cache_df, movie, watchlist_slugs=watchlist_slugs)
     if not similar.empty:
         render_poster_rail(similar.rename(columns={"title": "letterboxd_title"}), title="More like this")

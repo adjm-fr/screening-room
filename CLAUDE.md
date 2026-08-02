@@ -161,6 +161,12 @@ typecheck, security, test.
   `build_watchlist_showtimes` keyed on the *cache* so rated/cache-only films list screenings too. Sections
   are omitted, never rendered empty — cache coverage is uneven (`trailer_url` ~67% null, `cast` ~41%,
   `themes` ~31%, `tagline` ~30%; the first two are an in-flight TMDB backfill).
+  **The one section that does *not* read the whole cache is "More like this":** the page passes
+  `watchlist_slugs` into `similar_films`, because that same superset property means an unfiltered rail is
+  78% films already rated (already seen) against 20% watchlisted — the inverse of a what-to-watch-next
+  rail. The watchlist alone leaves a median ~99 candidates per film (limit is 12), and the ~19% of films it
+  empties fall through to the omit-the-section rule. `watchlist_slugs=None` (no watchlist parquet) means
+  "don't filter"; an empty set is a real empty watchlist and correctly yields no rail.
 - **The Gemini chat assistant has two surfaces, one state.** `chat/ui.py` owns the LLM transport and
   UI (`render_chat()`); context assembly (`ChatContext`, `build_chat_context()`, the system prompt) lives
   in `chat/prompt.py`, and conversation state + disk persistence (`ChatState`, `save_chat_state()` /

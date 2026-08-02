@@ -15,12 +15,14 @@ duplicates and would collide as a route parameter.
 Public API:
     load_movie(cache, ratings, slug)   -> the film's row + user_rating, or None
     movie_screenings(shows, slug)      -> that film's upcoming screenings
-    similar_films(cache, movie, …)     -> same-director / shared-theme films
+    similar_films(cache, movie, …)     -> same-director / shared-theme films,
+                                          narrowed to the watchlist by the page
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 
 import pandas as pd
 
@@ -100,7 +102,13 @@ def movie_screenings(shows_df: pd.DataFrame, slug: str) -> pd.DataFrame:
     return rows.assign(_dt=pd.to_datetime(rows["showtimes"], errors="coerce")).sort_values("_dt").drop(columns=["_dt"])
 
 
-def similar_films(cache_df: pd.DataFrame, movie: pd.Series, *, limit: int = 12) -> pd.DataFrame:
+def similar_films(
+    cache_df: pd.DataFrame,
+    movie: pd.Series,
+    *,
+    limit: int = 12,
+    watchlist_slugs: Collection[str] | None = None,
+) -> pd.DataFrame:
     """Return films from the cache sharing this one's director or themes.
 
     A row qualifies on a shared director (the strongest personal signal, and
@@ -111,6 +119,15 @@ def similar_films(cache_df: pd.DataFrame, movie: pd.Series, *, limit: int = 12) 
     The film itself is always excluded. Returns an empty frame when the film
     has no usable director/theme metadata, so the caller omits the section
     rather than rendering an empty rail.
+
+    ``watchlist_slugs`` narrows the pool to films the user still intends to
+    watch, and the page always passes it when the watchlist parquet is there.
+    It matters because the cache is a superset of the *ratings* parquet: left
+    unfiltered on the real data, 78% of a rail is films already rated (i.e.
+    already seen) against 20% watchlisted — the inverse of what a "more like
+    this" rail is for. The watchlist alone still leaves a median ~99 candidates
+    per film, well above ``limit``, and the ~19% of films it empties are ones
+    the caller already omits the section for.
     """
     if cache_df.empty or "slug" not in cache_df.columns:
         return cache_df.iloc[0:0]
@@ -120,7 +137,10 @@ def similar_films(cache_df: pd.DataFrame, movie: pd.Series, *, limit: int = 12) 
     if not directors and not themes:
         return cache_df.iloc[0:0]
 
-    candidates = cache_df[cache_df["slug"] != movie.get("slug")].copy()
+    candidates = cache_df[cache_df["slug"] != movie.get("slug")]
+    if watchlist_slugs is not None:
+        candidates = candidates[candidates["slug"].isin(watchlist_slugs)]
+    candidates = candidates.copy()
     if candidates.empty:
         return candidates
 

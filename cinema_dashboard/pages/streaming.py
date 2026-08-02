@@ -9,7 +9,7 @@ Arte.tv, France.tv), which always get a rail regardless of
 ``STREAMING_SERVICES`` — they're watchable by everyone. The chip filter at
 the top operates on display names (``Canal+``, ``MUBI``…) over the union of
 both, not raw slugs. When a ratings profile exists, each rail is taste-ranked
-(see ``utils.taste``) and cards carry the match badge plus "because" chips;
+(see ``core.taste``) and cards carry the match badge plus "because" chips;
 otherwise rails fall back to community-rating order.
 """
 
@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
-from modules.config import settings
-from utils.data_loader import attach_streaming, get_paths, load_ratings, load_watchlist
-from utils.streaming import display_name, load_display_names_catalog
-from utils.taste import attach_match, build_affinity
-from utils.ui import match_chips_html, render_chip_filter, render_empty_state, render_poster_rail
+
+from config import settings
+from core.taste import attach_match, build_affinity
+from sources.loader import attach_streaming, get_paths, load_ratings, load_watchlist
+from sources.streaming import display_name, load_display_names_catalog
+from ui import match_chips_html, render_chip_filter, render_empty_state, render_poster_rail
 
 
 def main() -> None:

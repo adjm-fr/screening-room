@@ -1,9 +1,10 @@
-"""Unit tests for modules/config.py."""
+"""Unit tests for config.py."""
 
 from pathlib import Path
 
 import pytest
-from modules.config import Settings
+
+from config import Settings
 
 _SETTINGS_ENV_VARS = (
     "LOG_LEVEL",

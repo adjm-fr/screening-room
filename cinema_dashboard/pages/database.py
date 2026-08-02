@@ -21,8 +21,9 @@ import re
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from modules.config import settings
-from utils.data_loader import (
+
+from config import settings
+from sources.loader import (
     attach_streaming,
     build_taste_profile,
     get_paths,
@@ -30,7 +31,7 @@ from utils.data_loader import (
     load_ratings,
     load_watchlist,
 )
-from utils.ui import (
+from ui import (
     format_runtime,
     movie_href,
     rating_to_hsl,
@@ -86,7 +87,7 @@ def _with_detail_url(df: pd.DataFrame) -> pd.DataFrame:
     """Prepend a ``detail_url`` column linking each row to its movie detail page.
 
     The value is the same relative ``?movie=<slug>`` href the cards use
-    (:func:`utils.ui.movie_href`), which ``st.column_config.LinkColumn`` opens
+    (:func:`ui.movie_href`), which ``st.column_config.LinkColumn`` opens
     against the current document — no base URL to configure. Rows without a
     slug get an empty cell, which the link column renders as blank. Returns the
     frame untouched when there is no ``slug`` column at all.

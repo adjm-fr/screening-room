@@ -1,7 +1,7 @@
 """
 Backtest CLI for the taste ranker: reports held-out Spearman correlation and
-quartile lift for the current ``utils.taste`` constants (default), or
-grid-searches candidate values (``--sweep``). See ``utils/backtest.py`` for
+quartile lift for the current ``core.taste`` constants (default), or
+grid-searches candidate values (``--sweep``). See ``core/backtest.py`` for
 the evaluation methodology (repeated random holdout, raw pre-logistic
 scores, quantile-based lift).
 
@@ -17,15 +17,16 @@ from pathlib import Path
 import click
 import pandas as pd
 from common import configure_logging
-from modules.config import settings
-from utils import backtest as backtest_utils
-from utils import taste
+
+from config import settings
+from core import backtest as backtest_utils
+from core import taste
 
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 # Grid swept by --sweep. Only the "cast" entry of WEIGHTS is varied; every
-# other WEIGHTS entry is held at its current utils.taste.WEIGHTS value.
+# other WEIGHTS entry is held at its current core.taste.WEIGHTS value.
 _SHRINKAGE_K_GRID = (2.0, 5.0, 10.0)
 _CAST_WEIGHT_GRID = (0.2, 0.4, 0.6)
 _QUALITY_WEIGHT_GRID = (0.1, 0.2, 0.3)

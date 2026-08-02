@@ -24,7 +24,7 @@ The dashboard is mostly read-only — it reads parquet files written by the othe
 
 Lead-with-the-answer overview hub: a hero card for tonight's next watchlist screening, horizontal poster rails ("screening next on your watchlist", "available on streaming platforms", "top matches this week"), and a small KPI strip at the bottom. Uses the cinema theme + Inter/Playfair editorial typography. Renders a designed empty state with CTA when no upcoming watchlist screenings exist.
 
-The "top matches this week" rail ranks this week's watchlist screenings against a taste profile induced from your ratings history (`utils/taste.py`): each rated director, genre, theme, actor, country, language, and decade gets a signed, shrunk affinity centered on *your* average rating; candidate films blend those affinities through fixed weights plus a small Letterboxd-rating prior, mapped to a stable 0–100 match value. Cards show a "◎ {n}% match" badge (amber heatmap) and up to two "✓ because" chips naming the strongest liked contributors (liked/disliked follows the rating ladder's 2.25 sentiment pivot, not the sign of the mean-relative affinity).
+The "top matches this week" rail ranks this week's watchlist screenings against a taste profile induced from your ratings history (`core/taste.py`): each rated director, genre, theme, actor, country, language, and decade gets a signed, shrunk affinity centered on *your* average rating; candidate films blend those affinities through fixed weights plus a small Letterboxd-rating prior, mapped to a stable 0–100 match value. Cards show a "◎ {n}% match" badge (amber heatmap) and up to two "✓ because" chips naming the strongest liked contributors (liked/disliked follows the rating ladder's 2.25 sentiment pivot, not the sign of the mean-relative affinity).
 
 The "available on streaming platforms" rail is drawn from the full watchlist (not the cinema join), ranked by taste match (Letterboxd rating as tie-break, and as fallback before any films are rated). A film counts as "available" when it's on a subscribed provider in `STREAMING_SERVICES` (or on any provider when that's unset) **or** on a no-cost provider (Arte.tv, France.tv, …) — free platforms always count, regardless of `STREAMING_SERVICES`.
 
@@ -69,7 +69,7 @@ The free-time toggle (which replaced the old weekend toggle) narrows to screenin
 
 ### Streaming (📺)
 
-One horizontal poster rail per FR streaming provider, populated from the TMDB watch-providers cache. Films are taken from your full watchlist (not only those with upcoming showtimes). When a ratings history exists each rail is taste-ranked (`utils/taste.py`) and every card carries the same "◎ {n}% match" badge and "✓ because" chips as the Home rails, with the Letterboxd average breaking ties; before any films are rated, rails fall back to Letterboxd average order. A multi-select chip filter at the top (with an inclusive *All* sentinel) lets you focus on one or more providers using human-readable provider names (e.g. *Canal+*, *MUBI*). The slug → pretty-name map is persisted at `assets/provider_display_names.json` and auto-grows every time `orchestrate.py` refreshes the cache and TMDB returns a new provider.
+One horizontal poster rail per FR streaming provider, populated from the TMDB watch-providers cache. Films are taken from your full watchlist (not only those with upcoming showtimes). When a ratings history exists each rail is taste-ranked (`core/taste.py`) and every card carries the same "◎ {n}% match" badge and "✓ because" chips as the Home rails, with the Letterboxd average breaking ties; before any films are rated, rails fall back to Letterboxd average order. A multi-select chip filter at the top (with an inclusive *All* sentinel) lets you focus on one or more providers using human-readable provider names (e.g. *Canal+*, *MUBI*). The slug → pretty-name map is persisted at `assets/provider_display_names.json` and auto-grows every time `orchestrate.py` refreshes the cache and TMDB returns a new provider.
 
 Rails cover two kinds of availability: subscription (`flatrate`) providers, limited to your `STREAMING_SERVICES` when set (every flatrate provider TMDB returns when it's unset), and no-cost `free` providers (e.g. Arte.tv, France.tv) — free platforms always get a rail, regardless of `STREAMING_SERVICES`, since they're watchable by everyone. The chip filter operates over the union of both. The page is explicitly FR-scoped — availability comes from TMDB's France region, and only `flatrate`/`free` are tracked (rent/buy/ads listings are intentionally not surfaced).
 
@@ -89,7 +89,7 @@ Power-user surface: prompt-suggestion chips, streaming spinner with transparent 
 
 The same assistant is reachable from any page via the global **`Cmd+K`** command palette (or the "✦ Ask AI" sidebar button). Both surfaces share a single `st.session_state['chat']` (a `ChatState` dataclass) so the conversation persists across them. The transcript and pinned recommendations are also persisted to `data/chat_state.json` (gitignored, beside the streaming/geo caches) and reloaded on the next launch, so they survive app restarts — saved after each assistant reply and pin change; **🗑 Clear conversation** deletes the file. A corrupt or missing file falls back to a fresh conversation.
 
-The page derives a taste profile from your Letterboxd ratings (favourite *and least favourite* genres, themes, directors, plus favourite actors and eras — ranked by the signed affinities in `utils/taste.py`, with liked/disliked classified against the ladder's 2.25 sentiment pivot) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted. Because ratings follow a tier ladder rather than a conventional satisfaction scale (2.5–3/5 already means a good film, 3.5+/5 a must-watch), the profile carries a `Rating scale:` legend line and the system prompt is reminded not to read the ~2.5/5 average as dissatisfaction. When the FR streaming-providers cache is populated, per-film availability is injected into the system prompt as `flatrate={a, b}` (subscription providers) plus, when the film also has one, `; free={c}` (no-cost providers) — and the model is rule-bound to only reference providers from those lists (no hallucinated availability).
+The page derives a taste profile from your Letterboxd ratings (favourite *and least favourite* genres, themes, directors, plus favourite actors and eras — ranked by the signed affinities in `core/taste.py`, with liked/disliked classified against the ladder's 2.25 sentiment pivot) and sends only the matched watchlist-showtime rows to the model — no full parquets are transmitted. Because ratings follow a tier ladder rather than a conventional satisfaction scale (2.5–3/5 already means a good film, 3.5+/5 a must-watch), the profile carries a `Rating scale:` legend line and the system prompt is reminded not to read the ~2.5/5 average as dissatisfaction. When the FR streaming-providers cache is populated, per-film availability is injected into the system prompt as `flatrate={a, b}` (subscription providers) plus, when the film also has one, `; free={c}` (no-cost providers) — and the model is rule-bound to only reference providers from those lists (no hallucinated availability).
 
 #### Tool use
 
@@ -97,11 +97,11 @@ The model can call three read-only tools, each surfaced in the chat as a collaps
 
 | Tool | What it does |
 | --- | --- |
-| `top_matches` | Ranks your **own** watchlist films that have upcoming screenings by taste match (`utils/taste.py`), optionally narrowed to a genre — "what are my top matches tonight?" |
+| `top_matches` | Ranks your **own** watchlist films that have upcoming screenings by taste match (`core/taste.py`), optionally narrowed to a genre — "what are my top matches tonight?" |
 | `showtimes_query` | Targeted screening lookup filtered by title (original *or* French), theater, and/or day — "when is X playing?", "what's on at the Champo on Saturday?" |
 | `search_theater` | Searches Allocine for a Paris cinema you haven't tracked yet (see below) |
 
-`top_matches` and `showtimes_query` live in `utils/chat_tools.py` and are pure filters over the same watchlist×showtimes frame already injected into the prompt: they can only ever return rows that are in it, so tool use never widens the model's closed set.
+`top_matches` and `showtimes_query` live in `chat/tools.py` and are pure filters over the same watchlist×showtimes frame already injected into the prompt: they can only ever return rows that are in it, so tool use never widens the model's closed set.
 
 #### Auto-adding theaters
 
@@ -130,10 +130,10 @@ movies_management          Allocine-Showtimes-Scraping
      every movie card → ?movie=<slug>                Gemini API
      (pages/movie.py — detail overlay)          (google-genai SDK)
                                                          │
-                               utils/data_loader.py       ← cached parquet readers
-                               utils/streaming.py         ← TMDB FR providers cache
-                               utils/allocine_search.py   ← theater lookup
-                               utils/theater_manager.py   ← CSV append
+                               sources/loader.py          ← cached parquet readers
+                               sources/streaming.py       ← TMDB FR providers cache
+                               integrations/allocine.py   ← theater lookup
+                               integrations/theaters.py   ← CSV append
 ```
 
 ## Project structure
@@ -141,18 +141,16 @@ movies_management          Allocine-Showtimes-Scraping
 ```
 cinema_dashboard/
 ├── app.py                        # Streamlit entry point — registers pages, injects CSS, mounts Cmd+K, routes ?movie=<slug>
-├── orchestrate.py                # Lightweight CLI to refresh all data (consumes modules/scrapers.py)
+├── config.py                     # Centralised settings via pydantic-settings (BaseSettings)
+├── orchestrate.py                # Lightweight CLI to refresh all data (consumes integrations/scrapers.py)
 ├── backtest.py                   # CLI to evaluate/sweep the taste-ranker constants against held-out ratings
 ├── .streamlit/
 │   └── config.toml               # Cinema theme: dark + light, system-driven
 ├── assets/
 │   ├── styles.css                # Design tokens, movie cards, poster rails, chips, KPI cards, detail page + contribution bars, anchor styling, motion, focus rings, mobile media queries
 │   └── provider_display_names.json  # Slug → pretty-name catalogue (auto-grown by refresh_streaming_providers)
-├── modules/
-│   ├── config.py                 # Centralised settings via pydantic-settings (BaseSettings)
-│   └── scrapers.py               # Shared scraper command builders + staleness rules (single source of truth)
 ├── pipeline/                     # Dagster pipeline (alternative to orchestrate.py)
-│   ├── assets.py                 # @asset definitions for showtimes + watchlist (consume modules/scrapers.py)
+│   ├── assets.py                 # @asset definitions for showtimes + watchlist (consume integrations/scrapers.py)
 │   ├── resources.py              # ScraperConfig resource (ScraperConfig.from_settings)
 │   └── definitions.py            # Dagster Definitions entry point
 ├── pages/
@@ -162,27 +160,36 @@ cinema_dashboard/
 │   ├── calendar.py               # Watchlist Showtimes page (theater dropdown, runtime/time-of-day/free-time/search filters, day rails, map, ICS export)
 │   ├── movie.py                  # Movie detail page — routed by ?movie=<slug>, not by st.navigation (no import-time main())
 │   ├── streaming.py              # Streaming page — one poster rail per FR provider
-│   └── recommendations.py        # Recommendations chat page (calls utils/chat.render_chat)
-├── utils/
-│   ├── data_loader.py            # Cached parquet readers + watchlist↔showtimes join + attach_streaming
+│   └── recommendations.py        # Recommendations chat page (calls chat.ui.render_chat)
+├── core/                         # Streamlit-free domain logic
 │   ├── taste.py                  # Taste ranker — affinity profile, 0–100 match scorer, "because" explanations + full contribution breakdown
-│   ├── movie.py                  # Movie detail data assembly (load_movie, movie_screenings, similar_films) — Streamlit-free
-│   ├── streaming.py              # TMDB FR watch-providers cache + display-name catalogue loader/updater
-│   ├── ui.py                     # Shared rendering helpers (movie cards + detail links, rails, hero card, KPIs, chips, ICS + screening_end, runtime/rating formatting)
+│   ├── movie.py                  # Movie detail data assembly (load_movie, movie_screenings, similar_films)
 │   ├── availability.py           # Free-time mask (weekend/holiday/day-off/after-cutoff, minus unavailable days)
-│   ├── geo.py                    # Theater geocoding (Nominatim + RateLimiter, cached parquet) + pydeck map renderer
-│   ├── chat.py                   # Gemini transport + chat UI (render_chat); re-exports the public API below
-│   ├── chat_prompt.py            # ChatContext assembly + the pinned system prompt (build_chat_context, build_system_message)
-│   ├── chat_state.py             # ChatState dataclass + transcript/pins persistence to data/chat_state.json
-│   ├── chat_tools.py             # Pure handlers + declarations for the top_matches / showtimes_query tools
-│   ├── backtest.py               # Held-out evaluation of the taste-ranker constants (used by backtest.py)
-│   ├── cmdk.py                   # Global Cmd+K command palette (st.dialog + streamlit-shortcuts)
-│   ├── allocine_search.py        # Searches Paris theaters via the Allocine API
-│   └── theater_manager.py        # Reads/appends to the theaters CSV
+│   └── backtest.py               # Held-out evaluation of the taste-ranker constants (used by backtest.py)
+├── sources/                      # Cached parquet readers + joins. Named `sources`, not `data` — the
+│   │                              # runtime `data/` dir is gitignored, so a package there would never commit.
+│   ├── loader.py                  # Cached parquet readers + watchlist↔showtimes join + attach_streaming
+│   ├── streaming.py               # TMDB FR watch-providers cache + display-name catalogue loader/updater
+│   └── geo.py                     # Theater geocoding (Nominatim + RateLimiter, cached parquet) + pydeck map renderer
+├── integrations/                 # External-system integrations
+│   ├── allocine.py                # Searches Paris theaters via the Allocine API
+│   ├── theaters.py                # Reads/appends to the theaters CSV
+│   └── scrapers.py                # Shared scraper command builders + staleness rules (single source of truth)
+├── chat/                         # The Gemini recommendations assistant
+│   ├── ui.py                      # Gemini transport + chat UI (render_chat)
+│   ├── prompt.py                  # ChatContext assembly + the pinned system prompt (build_chat_context, build_system_message)
+│   ├── state.py                   # ChatState dataclass + transcript/pins persistence to data/chat_state.json
+│   └── tools.py                   # Pure handlers + declarations for the top_matches / showtimes_query tools
+├── ui/                           # Streamlit rendering — split from a single 641-line utils/ui.py
+│   ├── theme.py                   # CSS injection, format_runtime/rating_to_hsl, movie_href/row_slug
+│   ├── cards.py                    # render_movie_card, render_poster_rail, render_hero_card
+│   ├── chips.py                    # match_chips_html, render_chip_filter, render_kpi_strip, render_empty_state, render_freshness_banner
+│   ├── ics.py                      # screening_end, to_ics, ad-block sizing
+│   └── cmdk.py                     # Global Cmd+K command palette (st.dialog + streamlit-shortcuts)
 ├── tests/
-│   ├── conftest.py               # Shared fixtures + @st.cache_data no-op patch
-│   ├── test_*.py                 # Unit tests for data_loader, taste, ui, movie, chat, streaming, database, geo, scrapers, config, allocine_search
-│   ├── test_movie_page.py        # ?movie=<slug> routing, driven through streamlit.testing.v1.AppTest
+│   ├── conftest.py                # Shared fixtures + @st.cache_data no-op patch
+│   ├── test_config.py             # Covers the root config.py
+│   ├── core/ sources/ integrations/ chat/ ui/ pages/   # mirror the packages above, one test_*.py per module
 │   └── evals/                    # LLM hallucination evals (opt-in via `-m evals`)
 │       ├── goldens.py            # Bait prompts + allowed film/provider sets
 │       ├── metrics.py            # FilmSetMembership + StreamingClaim DeepEval metrics
@@ -190,9 +197,14 @@ cinema_dashboard/
 │       └── test_chat_evals.py    # Parameterized harness (hits live Gemini API)
 ```
 
+`movies_management` deliberately keeps its own `modules/` package — there it *is* the implementation (one
+CLI, one flat module tree). `cinema_dashboard`'s equivalent code used to be a flat `utils/` (13 files, 3.7k
+lines) plus a two-file `modules/`; it is now split by responsibility into the layered packages above, so the
+divergence between the two members is intentional, not an oversight.
+
 > Environment variables live in a single shared `.env` at the **workspace root**, not in this folder. See [Configuration](#configuration).
 
-All pages share `utils/data_loader.py` for parquet I/O and the watchlist↔showtimes join. Centralising the loaders means Streamlit's `@st.cache_data` keys on a single qualified function name, so each parquet is read once across all pages within the cache TTL — navigating between pages is a cache hit.
+All pages share `sources/loader.py` for parquet I/O and the watchlist↔showtimes join. Centralising the loaders means Streamlit's `@st.cache_data` keys on a single qualified function name, so each parquet is read once across all pages within the cache TTL — navigating between pages is a cache hit.
 
 All pages are read-only with respect to parquet data. The only file the dashboard ever **writes** is the theaters CSV (`ALLOCINE_INPUT_PATH`), and only when the user explicitly confirms adding a theater via the Recommendations chat.
 
@@ -289,16 +301,16 @@ uv run --no-sync --directory movies_management python main.py --username <letter
 uv run --directory ../Allocine-Showtimes-Scraping python main.py
 ```
 
-Streamlit cache TTL is **5 minutes**, shared across all pages (`DATA_TTL_SECONDS` in [`utils/data_loader.py`](utils/data_loader.py)). Conversation history on the Recommendations page is session-scoped and not affected by the cache.
+Streamlit cache TTL is **5 minutes**, shared across all pages (`DATA_TTL_SECONDS` in [`sources/loader.py`](sources/loader.py)). Conversation history on the Recommendations page is session-scoped and not affected by the cache.
 
 ### Backtesting the taste ranker
 
-`backtest.py` measures how well the taste ranker (`utils/taste.py`) actually predicts held-out ratings,
+`backtest.py` measures how well the taste ranker (`core/taste.py`) actually predicts held-out ratings,
 instead of trusting the shrinkage/weight/quality constants on eyeball alone. It repeatedly holds out a
 random slice of your rated films, retrains an affinity profile on the rest, and reports the held-out
 Spearman rank correlation and top-vs-bottom-quartile rating lift — both compared against a quality-prior-only
 baseline (i.e. "just trust Letterboxd's community rating"), so it's clear whether the ranker earns its keep.
-See [`utils/backtest.py`](utils/backtest.py) for the full methodology. Like other data-dependent commands,
+See [`core/backtest.py`](core/backtest.py) for the full methodology. Like other data-dependent commands,
 it requires `OUTPUT_PATH` (real ratings data) to be set.
 
 ```bash

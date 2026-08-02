@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from dagster import ConfigurableResource
 
 if TYPE_CHECKING:
-    from modules.config import Settings
+    from config import Settings
 
 
 class ScraperConfig(ConfigurableResource):

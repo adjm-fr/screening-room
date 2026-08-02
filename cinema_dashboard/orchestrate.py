@@ -20,8 +20,9 @@ from pathlib import Path
 
 import click
 from common import configure_logging
-from modules.config import settings
-from modules.scrapers import (
+
+from config import settings
+from integrations.scrapers import (
     WATCHLIST_MAX_AGE_DAYS,
     _last_tuesday,
     _mtime,
@@ -31,7 +32,7 @@ from modules.scrapers import (
     is_watchlist_stale,
     letterboxd_command,
 )
-from utils.streaming import refresh_streaming_providers
+from sources.streaming import refresh_streaming_providers
 
 # ── Config ────────────────────────────────────────────────────────────────────
 

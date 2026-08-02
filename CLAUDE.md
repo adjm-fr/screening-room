@@ -18,14 +18,21 @@ screening-room/
 │   ├── common/    src/common/     # AppSettings, configure_logging, validated parquet IO
 │   └── contracts/ src/contracts/  # SHOWTIMES parquet schema (the integration contract)
 ├── movies_management/      # Letterboxd fetcher/enricher (CLI: main.py + modules/)
-└── cinema_dashboard/       # Streamlit app (app.py + pages/ utils/ modules/ pipeline/ + orchestrate.py)
+└── cinema_dashboard/       # Streamlit app (app.py config.py + core/ sources/ integrations/ chat/ ui/ pages/ pipeline/ + orchestrate.py)
 ```
+
+`movies_management/modules/` and `cinema_dashboard`'s layered packages are deliberately different shapes, not an
+oversight: in `movies_management`, `modules/` *is* the implementation package (one CLI, one flat module tree). In
+`cinema_dashboard`, the equivalent code was one 3.7k-line `utils/` plus a two-file `modules/`, split by
+responsibility into `core/` (Streamlit-free domain logic), `sources/` (cached parquet readers/joins), `integrations/`
+(external systems), `chat/` (the LLM assistant), and `ui/` (Streamlit rendering) — see "cinema_dashboard
+architecture" below.
 
 ### Role in the wider pipeline
 
 The third sibling, **`../Allocine-Showtimes-Scraping`**, is intentionally kept as a separate, standalone,
 publishable repo (a reusable French-cinema scraper). It writes `showtimes.parquet`, consumed here by **both**
-members: `cinema_dashboard/utils/data_loader.py` (the watchlist↔showtimes join) and
+members: `cinema_dashboard/sources/loader.py` (the watchlist↔showtimes join) and
 `movies_management/modules/allocine_enrichment.py` (cache expansion). The dashboard locates that external
 checkout via the `ALLOCINE_DIR` env var (default: a sibling of this repo).
 
@@ -59,13 +66,14 @@ uv lock --check
 # Type check (per area, mirroring CI)
 uv run --no-sync mypy packages/common/src/common packages/contracts/src/contracts
 uv run --no-sync --directory movies_management mypy main.py modules/
-uv run --no-sync --directory cinema_dashboard  mypy app.py pages/ utils/ modules/ pipeline/ orchestrate.py
+uv run --no-sync --directory cinema_dashboard  mypy app.py config.py core/ sources/ integrations/ chat/ ui/ pages/ pipeline/ orchestrate.py backtest.py
 
 # Security: bandit on source; pip-audit on SHIPPED runtime deps only
 uv run --no-sync bandit -r -ll packages/common/src packages/contracts/src \
   movies_management/main.py movies_management/modules \
-  cinema_dashboard/app.py cinema_dashboard/orchestrate.py cinema_dashboard/modules \
-  cinema_dashboard/pages cinema_dashboard/pipeline cinema_dashboard/utils
+  cinema_dashboard/app.py cinema_dashboard/config.py cinema_dashboard/orchestrate.py cinema_dashboard/backtest.py \
+  cinema_dashboard/core cinema_dashboard/sources cinema_dashboard/integrations cinema_dashboard/chat \
+  cinema_dashboard/ui cinema_dashboard/pages cinema_dashboard/pipeline
 uv export --all-packages --no-dev --no-emit-workspace --format requirements-txt -o /tmp/req.txt
 uv run --no-sync pip-audit -r /tmp/req.txt
 
@@ -89,19 +97,20 @@ typecheck, security, test.
 
 - **`common`** (`packages/common`) — the de-duplicated boilerplate that all members shared:
   - `settings.py`: `AppSettings(BaseSettings)` + `make_settings_config()` + `find_workspace_root()`. Each
-    member's `modules/config.py` is `class Settings(AppSettings): model_config = make_settings_config(); ...`
+    member's `Settings` class (`movies_management/modules/config.py`, `cinema_dashboard/config.py`) is
+    `class Settings(AppSettings): model_config = make_settings_config(); ...`
     — no argument, so every member loads the **single workspace-root `.env`** (see Non-obvious behaviors).
   - `logging.py`: `configure_logging(level, *, quiet=...)` — wraps `basicConfig`, also sets the root level
     explicitly (so it takes effect under pytest's log capture), and quiets noisy network loggers. Used by
     `movies_management/main.py`, `cinema_dashboard/app.py`, and `orchestrate.py`.
   - `parquet_io.py`: `read_parquet_validated` / `write_parquet_validated` + `SchemaValidationError`.
 - **`contracts`** (`packages/contracts`) — `SHOWTIMES` (a frozen `ParquetContract`) declares the 8 columns
-  consumed from `showtimes.parquet`. Enforced at the seam: `data_loader.load_showtimes` reads via
+  consumed from `showtimes.parquet`. Enforced at the seam: `sources.loader.load_showtimes` reads via
   `read_parquet_validated(..., required_columns=SHOWTIMES.required_columns)`, so upstream drift fails loud.
 
 ## cinema_dashboard architecture
 
-- **Entry point `app.py`** sets up logging, injects the CSS layer (`utils/ui.inject_css` — editorial
+- **Entry point `app.py`** sets up logging, injects the CSS layer (`ui.theme.inject_css` — editorial
   typography, movie cards, poster rails, chips; called once globally, so page code can assume the classes
   exist), mounts the global `Cmd+K` palette, then routes via `st.navigation` to the five `pages/` files
   (home, database, calendar, streaming, recommendations).
@@ -113,7 +122,7 @@ typecheck, security, test.
   process. It can't be an `st.Page` either — `StreamlitPage.run()` only works on the page `st.navigation`
   itself returns, and the overlay shares its URL path with every section. `pages/__init__.py` exists only
   so mypy resolves that file as `pages.movie` (matching the import) rather than twice under two names.
-- **Every movie rendered anywhere is a link to its detail page.** `utils/ui._movie_card_html` and
+- **Every movie rendered anywhere is a link to its detail page.** `ui.cards._movie_card_html` and
   `render_hero_card` emit an anchor to `movie_href(slug)` whenever the row carries a slug (`row_slug`
   accepts both the `slug` and `letterboxd_slug` spellings), so home/streaming/discover rails, calendar day
   rails and chat's pinned recs became clickable without touching their call sites — keep new surfaces on
@@ -132,11 +141,18 @@ typecheck, security, test.
   to any new anchor class or it will look unstyled.** Hover affordances deliberately avoid
   `text-decoration: underline` — the card's lift/shadow and the back pill's fill carry the affordance
   instead.
-- **Shared UI vocabulary lives in `utils/ui.py`** (`render_movie_card`, `render_poster_rail`,
-  `render_hero_card`, `movie_href`/`row_slug`, chip/KPI/empty-state/freshness helpers, plus `to_ics` and
-  the `screening_end` calendar-block sizing shared with the detail page). New movie displays should reuse
-  these, not hand-roll `st.image`/HTML.
-- **The detail page reads the cache, not the watchlist.** `utils/movie.py` (Streamlit-free, pure pandas)
+- **Shared UI vocabulary lives in the `ui/` package**, split by responsibility along the same boundary the
+  old 641-line `utils/ui.py` grew: `ui/theme.py` (CSS injection, `format_runtime`/`rating_to_hsl`,
+  `movie_href`/`row_slug`), `ui/cards.py` (`render_movie_card`, `render_poster_rail`, `render_hero_card` —
+  imports the primitives it needs from `ui.theme` and `render_empty_state` from `ui.chips`), `ui/chips.py`
+  (`match_chips_html`, `render_chip_filter`, `render_kpi_strip`, `render_empty_state`,
+  `render_freshness_banner`), and `ui/ics.py` (`screening_end`, `to_ics`, the ad-block sizing). `ui/__init__.py`
+  re-exports the full public surface with an explicit `__all__`, so existing `from utils.ui import (...)`
+  call sites became `from ui import (...)` — a one-token change; the handful of call sites that need a
+  private helper (e.g. `pages/calendar.py`'s `_movie_card_html`, `pages/movie.py`'s `_streaming_badges_html`)
+  import it from the owning submodule directly (`ui.cards`), not the package. New movie displays should reuse
+  these renderers, not hand-roll `st.image`/HTML.
+- **The detail page reads the cache, not the watchlist.** `core/movie.py` (Streamlit-free, pure pandas)
   holds `load_movie` / `movie_screenings` / `similar_films`; `load_movie` keys `data_letterboxd.parquet` by
   `slug` — unique and non-null there, whereas `tmdb_id` has nulls and duplicates and would collide as a
   route key — and left-joins `user_rating` from the ratings parquet (the cache has no such column; the
@@ -145,20 +161,27 @@ typecheck, security, test.
   `build_watchlist_showtimes` keyed on the *cache* so rated/cache-only films list screenings too. Sections
   are omitted, never rendered empty — cache coverage is uneven (`trailer_url` ~67% null, `cast` ~41%,
   `themes` ~31%, `tagline` ~30%; the first two are an in-flight TMDB backfill).
-- **The Gemini chat assistant has two surfaces, one state.** `utils/chat.py` owns the LLM transport and
+- **The Gemini chat assistant has two surfaces, one state.** `chat/ui.py` owns the LLM transport and
   UI (`render_chat()`); context assembly (`ChatContext`, `build_chat_context()`, the system prompt) lives
-  in `utils/chat_prompt.py`, and conversation state + disk persistence (`ChatState`, `save_chat_state()` /
-  `load_chat_state()` / `delete_chat_state()`) lives in `utils/chat_state.py` — both re-exported from
-  `utils/chat.py` so existing `from utils.chat import ...` call sites are unaffected. It is mounted
+  in `chat/prompt.py`, and conversation state + disk persistence (`ChatState`, `save_chat_state()` /
+  `load_chat_state()` / `delete_chat_state()`) lives in `chat/state.py`. **`chat/__init__.py` re-exports
+  nothing** — every name is imported from its owning submodule (`from chat.prompt import
+  build_chat_context`), because importing *any* `chat.*` submodule executes the package `__init__` first:
+  a convenience re-export there would make the deliberately-leaf `chat.tools` pull in `chat.prompt` and,
+  through it, `config`/`core.taste`/`integrations.allocine`/`sources.loader` (measured: 2171 → 2202
+  modules), and would put an import cycle one edit away the moment `chat/prompt.py` wanted a helper from
+  `chat/tools.py`. `chat/ui.py` likewise imports only the names its own code calls, so callers needing
+  both (e.g. `pages/recommendations.py`, `ui/cmdk.py`) take `render_chat` from `chat.ui` and
+  `build_chat_context` from `chat.prompt`. It is mounted
   full-page by `pages/recommendations.py` (prompt chips, pinned-recs column, export) and compact by
-  `utils/cmdk.py` (the `Cmd+K` `st.dialog`, no pinned column). Both share `st.session_state["chat"]` (a
+  `ui/cmdk.py` (the `Cmd+K` `st.dialog`, no pinned column). Both share `st.session_state["chat"]` (a
   `ChatState` dataclass) so the conversation persists
   across surfaces; the transcript + pinned recs are also persisted to `data/chat_state.json`
   (`CHAT_STATE_PATH`, patchable in tests) and reloaded on launch — corrupt/absent file falls back to a
   fresh state, and "Clear conversation" deletes the file. The model gets taste profile + showtimes +
   streaming availability as markdown context, plus three tools: `search_theater` (live Allocine lookup,
-  declared in `chat.py`) and `top_matches` / `showtimes_query` (declared with their pure handlers in
-  `utils/chat_tools.py`). `_ask_gemini` dispatches them through a bounded loop (`MAX_TOOL_ROUNDS = 2`,
+  declared in `chat/ui.py`) and `top_matches` / `showtimes_query` (declared with their pure handlers in
+  `chat/tools.py`). `_ask_gemini` dispatches them through a bounded loop (`MAX_TOOL_ROUNDS = 2`,
   plus one final pass to stream the answer); only `search_theater` sets `pending_ref`. The system prompt is
   strictly **closed-set** — the model may only name films/providers present in the injected context or
   returned by a tool — and any new tool must preserve that by construction (return rows drawn from the same
@@ -174,17 +197,21 @@ typecheck, security, test.
   guessing an order. `ctx.taste` is a ~200-token profile distilled from a 4k-row ratings history that is
   never in the prompt; it drives style-matching and carries the rating-ladder legend, so no tool replaces
   it. `showtimes_query` only adds precision (exact day filtering) over data already in context.
-- **`utils/chat_tools.py` is Streamlit-free and imports only pandas, `google.genai.types`, and
+- **`chat/tools.py` is Streamlit-free and imports only pandas, `google.genai.types`, and
   `_normalize_title`** — that purity is what keeps the closed set true by construction. Its handlers take
-  the scored DataFrame, *not* `ChatContext` (which would also cycle the import back into `chat.py`). New
+  the scored DataFrame, *not* `ChatContext` (which would also cycle the import back into `chat.ui`). New
   tools belong here and must follow both rules; they must also be total (missing columns / NaN / junk args
   return `[]`, never raise) since a raised exception would kill the streaming generator mid-reply.
-- **Data flow:** `utils/data_loader.py` loads the parquets, validates `showtimes.parquet` against
+- **Data flow:** `sources/loader.py` loads the parquets, validates `showtimes.parquet` against
   `contracts.SHOWTIMES`, and `build_watchlist_showtimes` produces `wl_shows` — the watchlist↔showtimes join
   every page consumes (one row per movie×showtime, carrying titles, directors, runtime, rating, genres,
   poster, theater, `letterboxd_slug` — the movie-detail route key — and the streaming list-columns —
-  `utils/streaming.STREAMING_COLUMNS`, i.e. `flatrate` plus `free`).
-- **Taste ranker lives in `utils/taste.py`** (all formulas + constants in one place). `build_affinity`
+  `sources.streaming.STREAMING_COLUMNS`, i.e. `flatrate` plus `free`). `sources/` is the layer's name
+  instead of the more obvious `data/` because `cinema_dashboard/data/` is a *runtime* directory
+  (`data/chat_state.json`, `data/streaming_providers.parquet`) listed in both this project's and the
+  workspace root's `.gitignore` — a Python package placed there would be silently untracked and never
+  committed.
+- **Taste ranker lives in `core/taste.py`** (all formulas + constants in one place). `build_affinity`
   derives signed, shrunk affinities per director/genre/theme/cast/country/language/decade from the
   ratings history (`_DIM_COLUMNS` + `WEIGHTS` are the single place new dimensions plug in; `_CARRY_COLUMNS`
   must mirror any dimension column the showtimes join strips, or "because" chips silently vanish on joined
@@ -196,9 +223,9 @@ typecheck, security, test.
   with `quality_prior` sum back to `_raw_score` exactly, so the breakdown always reconciles with the badge;
   `attach_match` joins scores onto candidate rows. Home's "Top matches this week" rail, home's streaming
   rail (ordering), and the streaming page's per-provider rails (ordering, plus the match badge/"because"
-  chips on each card) consume it. `data_loader.build_taste_profile` (the chat-prompt string) is a thin formatter
+  chips on each card) consume it. `sources.loader.build_taste_profile` (the chat-prompt string) is a thin formatter
   over the same profile — its line prefixes ("Average rating given:", "Favourite genres:", …) are a
-  contract pinned by `tests/test_data_loader.py` and the eval goldens: extend with new lines, don't reword.
+  contract pinned by `tests/sources/test_loader.py` and the eval goldens: extend with new lines, don't reword.
 - **Two orchestrators, both intentional.** `orchestrate.py` (CLI, staleness-aware, runs both scrapers in
   parallel) is the everyday path; `pipeline/` is a deliberate Dagster equivalent kept as an experiment
   (`dagster dev -m pipeline.definitions`) — it is not dead code, don't remove it.
@@ -221,7 +248,8 @@ typecheck, security, test.
   [apache/arrow#50471](https://github.com/apache/arrow/issues/50471) and lift ours only once Streamlit
   relaxes its cap.
 - **`common.__init__` is deliberately pandas-free.** It re-exports only settings + logging (cheap), because
-  `modules.config` is on a very-hot import path. The parquet helpers (which import pandas) are imported from
+  each member's `Settings` subclass (`movies_management/modules/config.py`, `cinema_dashboard/config.py`) is
+  on a very-hot import path. The parquet helpers (which import pandas) are imported from
   `common.parquet_io` directly by data loaders, not via the package root.
 - **One shared workspace-root `.env`, loaded via `find_workspace_root()`.** `make_settings_config()` (no
   arg) walks up from `common/settings.py` to the `pyproject.toml` declaring `[tool.uv.workspace]` and reads
@@ -238,7 +266,7 @@ typecheck, security, test.
   diff does **not** propagate to sibling worktrees or the main checkout — commit the refresh on `main` and let
   branches pick it up, rather than expecting a worktree to see another checkout's uncommitted change.
 - **Free streaming providers are never gated by `STREAMING_SERVICES`.**
-  `utils/streaming.STREAMING_COLUMNS = ("flatrate", "free")` is the single source of truth for the
+  `sources.streaming.STREAMING_COLUMNS = ("flatrate", "free")` is the single source of truth for the
   provider list-columns consumers join on. Free platforms (Arte.tv, France.tv, …) are watchable by
   everyone regardless of subscriptions; TMDB's `rent`/`buy`/`ads` blocks are deliberately not tracked.
   Cache schema changes to `data/streaming_providers.parquet` ship **without** migration guards — force a
@@ -260,10 +288,13 @@ typecheck, security, test.
 - **`OUTPUT_PATH` is shared by both members; there is no `MOVIES_OUTPUT_PATH`.** `movies_management` writes
   its parquets to `OUTPUT_PATH` (required field); `cinema_dashboard`'s `movies_output_path` reads the *same*
   key via `Field(validation_alias="OUTPUT_PATH")`. The dashboard's scraper-dir defaults are still computed
-  from `_ROOT = Path(__file__).resolve().parents[1]`: `allocine_dir` points *outside* the monorepo
+  from `_ROOT = Path(__file__).resolve().parents[0]` in `cinema_dashboard/config.py` (the file's own
+  directory, i.e. `cinema_dashboard/` — note the index: `config.py` lives at the package root now, not one
+  level down in a `modules/` subpackage, so this is `parents[0]`, not the `parents[1]` a nested location
+  would need): `allocine_dir` points *outside* the monorepo
   (`_ROOT.parent.parent / "Allocine-Showtimes-Scraping"`, override with `ALLOCINE_DIR`), `movies_dir` is the
   in-repo sibling. `movies_management/config.py` no longer uses `_ROOT` at all.
-- **`cinema_dashboard/modules/scrapers.py` is unchanged.** Its subprocess argv (`uv run python main.py`) is
+- **`cinema_dashboard/integrations/scrapers.py` is unchanged.** Its subprocess argv (`uv run python main.py`) is
   run with `cwd` set to the target member/repo, so cwd-based resolution works for both the in-repo movies
   member and the external Allocine repo. No `--package` needed given the shared venv.
 - **pip-audit scopes to runtime deps (`--no-dev`).** The dev-only eval tooling tree
@@ -278,12 +309,12 @@ typecheck, security, test.
   (`_build_ics_events(filtered)`) reads that *same* frame — so every filter flows into the download
   automatically. Add a new filter by narrowing `filtered` before the export block; don't rebuild the export
   off the unfiltered `wl_shows` or the two will silently diverge. Both exports size their blocks with the
-  shared `utils.ui.screening_end` (promoted out of the page module so the movie detail page's per-screening
+  shared `ui.ics.screening_end` (promoted out of the page module so the movie detail page's per-screening
   `.ics` uses the identical helper), which pads the film's runtime (120min when `runtime_minutes` is
   missing/junk) with the pre-feature ad block — `ADS_MINUTES_CHAIN` (20) when the theater name
   case-insensitively contains `mk2`/`ugc`, else `ADS_MINUTES_DEFAULT` (10). Keep all three downloads on that
   one helper so they can't drift.
-- **The free-time filter distinguishes "day off" from "unavailable".** `utils/availability.py` (Streamlit-
+- **The free-time filter distinguishes "day off" from "unavailable".** `core/availability.py` (Streamlit-
   free, unit-tested) computes `watchable = (weekend | FR holiday | day-off | weekday ≥ cutoff) & ~unavailable`.
   A *day off* is free all day (includes daytime screenings); an *unavailable* day (away/vacation) excludes the
   whole day and **overrides everything**, even weekends and holidays — don't merge the two pickers. Holidays
@@ -310,7 +341,7 @@ typecheck, security, test.
   this back to exact-key equality — that silently drops legitimately-screening films (the bug that motivated
   the containment relaxation). A missing/blank director on *either* side rejects the row.
 - **Ratings are on a 0–5 scale, not 0–10.** Both `user_rating` (0.5–5.0, half-star steps) and
-  `letterboxd_avg_rating` (community weighted average, ~1.2–4.7 in practice) are 0–5. `utils/ui.rating_to_hsl`
+  `letterboxd_avg_rating` (community weighted average, ~1.2–4.7 in practice) are 0–5. `ui.theme.rating_to_hsl`
   takes a `scale_max` (default 10 for the 0–100 match heatmap) — the rating chips pass `scale_max=5.0`, and
   the "Min Letterboxd rating" sliders (database + calendar) cap at 5. Treating either column as /10 mis-scales
   the amber heatmap and lets the sliders reach unreachable values. On cards the user's own rating shows as a
@@ -323,7 +354,7 @@ typecheck, security, test.
   favourite-actors guard, and the "because" chips classify liked/disliked by whether a value's mean rating
   crosses `SENTIMENT_PIVOT = 2.25` (the ladder's watchable/good boundary — semantic, not tuned), so a
   [2.25, μ) "watchable-to-good" value is never branded disliked despite its negative affinity. The
-  shrinkage k, dimension weights, and logistic τ in `utils/taste.py` were tuned
+  shrinkage k, dimension weights, and logistic τ in `core/taste.py` were tuned
   against the real parquets; changing them shifts every badge. The `liked` column in
   `ratings_with_letterboxd.parquet` is all-zero (pulled from letterboxdpy but never populated) — don't
   build features on it. The LLM taste-profile string (`format_taste_profile`) carries a pinned "Rating
@@ -342,14 +373,26 @@ typecheck, security, test.
 ## Testing patterns
 
 - Tests run **per member** from each member's directory (their pytest configs set `pythonpath=["."]`).
-- `cinema_dashboard/tests/conftest.py` patches `st.cache_data` to a no-op before imports so coverage can see
-  inside decorated functions; `deepeval` is imported by `tests/evals/` (incl. the default-suite
+- `cinema_dashboard/tests/` mirrors the `core/`/`sources/`/`integrations/`/`chat/`/`ui/`/`pages/` layout
+  (`tests/core/`, `tests/sources/`, `tests/integrations/`, `tests/chat/`, `tests/ui/`, `tests/pages/`), each
+  with its own `__init__.py` — required both to keep same-basename test modules from colliding across
+  directories, and because `tests/` itself needs an `__init__.py` too: without it, pytest's import-mode
+  climbs the directory tree only until it finds a directory with no `__init__.py`, then inserts *that*
+  directory onto `sys.path` and imports the test module under its bare subdirectory name — e.g.
+  `tests/ui/test_cards.py` would import as top-level `ui.test_cards`, shadowing the real `ui` package for
+  every subsequent import in the process. `tests/__init__.py` makes pytest climb one level further (to
+  `cinema_dashboard/`, which has no `__init__.py`), so modules import as `tests.ui.test_cards` instead — no
+  collision with `core`/`sources`/`integrations`/`chat`/`ui`. `tests/evals/`'s own `from evals.X import ...`
+  imports were adjusted to `from tests.evals.X import ...` for the same reason (they relied on the pre-fix
+  climbing behavior). `tests/conftest.py` patches `st.cache_data` to a no-op before imports so coverage can
+  see inside decorated functions; `deepeval` is imported by `tests/evals/` (incl. the default-suite
   `test_metrics.py`), which is why it stays in the workspace lock.
 - `movies_management` and `packages/*` use plain pytest; `asyncio_mode="auto"` where async tests exist.
 - **`pages/*.py` call `main()` unconditionally at import time** (the Streamlit multipage convention —
   `st.Page` executes each file's source). To import a page module in a test, patch
-  `modules.config.settings.movies_output_path` to `None` *before the first import* so `main()` hits its
-  early return instead of running against the real on-disk parquets (see `tests/test_database.py`).
+  `config.settings.movies_output_path` to `None` *before the first import* so `main()` hits its
+  early return instead of running against the real on-disk parquets (see `tests/pages/test_database.py`).
 - **Coverage counts only imported modules** (`pytest --cov` has no source argument), which is why the
   import-time `pages/*.py` don't drag the gate down and why thin CLI entry points beside `orchestrate.py`
-  stay outside the report — put testable logic in `utils/` and keep entry points thin.
+  stay outside the report — put testable logic in `core/`/`sources/`/`integrations/`/`chat/`/`ui/` and keep
+  entry points thin.

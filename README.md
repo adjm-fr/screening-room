@@ -74,11 +74,12 @@ uv lock --check
 uv run ruff check . --fix && uv run ruff format .
 uv run --no-sync mypy packages/common/src/common packages/contracts/src/contracts
 uv run --no-sync --directory movies_management mypy main.py modules/
-uv run --no-sync --directory cinema_dashboard  mypy app.py pages/ utils/ modules/ pipeline/ orchestrate.py
+uv run --no-sync --directory cinema_dashboard  mypy app.py config.py core/ sources/ integrations/ chat/ ui/ pages/ pipeline/ orchestrate.py backtest.py
 uv run --no-sync bandit -r -ll packages/common/src packages/contracts/src \
   movies_management/main.py movies_management/modules \
-  cinema_dashboard/app.py cinema_dashboard/orchestrate.py cinema_dashboard/modules \
-  cinema_dashboard/pages cinema_dashboard/pipeline cinema_dashboard/utils
+  cinema_dashboard/app.py cinema_dashboard/config.py cinema_dashboard/orchestrate.py cinema_dashboard/backtest.py \
+  cinema_dashboard/core cinema_dashboard/sources cinema_dashboard/integrations cinema_dashboard/chat \
+  cinema_dashboard/ui cinema_dashboard/pages cinema_dashboard/pipeline
 # pip-audit scans shipped runtime deps only — dev-only eval tooling is excluded
 uv export --all-packages --no-dev --no-emit-workspace --format requirements-txt -o /tmp/req.txt
 uv run --no-sync pip-audit -r /tmp/req.txt
@@ -92,7 +93,7 @@ One root `.github/workflows/ci.yml` runs lint / typecheck / security / test for 
 
 - **`common`** — `AppSettings` + `make_settings_config` (each member's `Settings` subclasses these),
   `configure_logging` (used by every entry point), and `read_parquet_validated` / `write_parquet_validated`.
-  The package `__init__` is intentionally pandas-free so `modules.config` stays cheap to import; import the
+  The package `__init__` is intentionally pandas-free so `cinema_dashboard/config.py` stays cheap to import; import the
   parquet helpers from `common.parquet_io` directly.
 - **`contracts`** — `SHOWTIMES` declares the columns consumed from `showtimes.parquet`. The dashboard's
   `load_showtimes` validates against it, so an upstream column rename fails loudly instead of silently

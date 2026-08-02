@@ -13,9 +13,9 @@ dataclass, defined in :mod:`chat.state`) so the conversation persists
 across them; that module also owns the ``data/chat_state.json`` disk
 persistence. Context assembly — :class:`ChatContext`, ``build_chat_context``,
 and the pinned ``build_system_message`` prompt — lives in
-:mod:`chat.prompt`. The backward-compatible ``from chat import ...`` surface
-for both modules' names is provided by :mod:`chat` (the package ``__init__``),
-not by this module.
+:mod:`chat.prompt`. Callers import each name from its owning submodule; the
+package ``__init__`` re-exports nothing, so that importing the leaf
+:mod:`chat.tools` cannot drag this transport's dependencies in with it.
 
 This module itself owns the LLM transport and the UI:
     render_chat(ctx, ...) -> None      (the UI: history, streaming reply, pins)

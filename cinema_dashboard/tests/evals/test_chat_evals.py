@@ -22,7 +22,7 @@ from deepeval.test_case import LLMTestCase
 from google import genai
 from google.genai import types
 
-from chat import ChatContext, build_system_message
+from chat.prompt import ChatContext, build_system_message
 from config import settings
 from tests.evals.goldens import GOLDENS, Golden
 from tests.evals.metrics import FilmSetMembershipMetric, StreamingClaimMetric

@@ -21,7 +21,7 @@ import logging
 import streamlit as st
 import streamlit_shortcuts  # type: ignore[import-untyped]
 
-from chat import build_chat_context
+from chat.prompt import build_chat_context
 from chat.ui import render_chat
 
 log = logging.getLogger(__name__)

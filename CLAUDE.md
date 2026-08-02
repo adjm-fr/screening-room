@@ -164,11 +164,15 @@ typecheck, security, test.
 - **The Gemini chat assistant has two surfaces, one state.** `chat/ui.py` owns the LLM transport and
   UI (`render_chat()`); context assembly (`ChatContext`, `build_chat_context()`, the system prompt) lives
   in `chat/prompt.py`, and conversation state + disk persistence (`ChatState`, `save_chat_state()` /
-  `load_chat_state()` / `delete_chat_state()`) lives in `chat/state.py` — both re-exported from
-  `chat/__init__.py` so existing `from utils.chat import ...` call sites became `from chat import ...`
-  unchanged; `chat/ui.py` itself only imports the names its own code calls (`render_chat`'s callers that
-  also need it, e.g. `pages/recommendations.py`, import `render_chat` from `chat.ui` directly alongside
-  `build_chat_context` from the `chat` package). It is mounted
+  `load_chat_state()` / `delete_chat_state()`) lives in `chat/state.py`. **`chat/__init__.py` re-exports
+  nothing** — every name is imported from its owning submodule (`from chat.prompt import
+  build_chat_context`), because importing *any* `chat.*` submodule executes the package `__init__` first:
+  a convenience re-export there would make the deliberately-leaf `chat.tools` pull in `chat.prompt` and,
+  through it, `config`/`core.taste`/`integrations.allocine`/`sources.loader` (measured: 2171 → 2202
+  modules), and would put an import cycle one edit away the moment `chat/prompt.py` wanted a helper from
+  `chat/tools.py`. `chat/ui.py` likewise imports only the names its own code calls, so callers needing
+  both (e.g. `pages/recommendations.py`, `ui/cmdk.py`) take `render_chat` from `chat.ui` and
+  `build_chat_context` from `chat.prompt`. It is mounted
   full-page by `pages/recommendations.py` (prompt chips, pinned-recs column, export) and compact by
   `ui/cmdk.py` (the `Cmd+K` `st.dialog`, no pinned column). Both share `st.session_state["chat"]` (a
   `ChatState` dataclass) so the conversation persists

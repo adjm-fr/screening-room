@@ -17,7 +17,8 @@ import pandas as pd
 import pytest
 from google.genai import types
 
-from chat import _streaming_context, load_chat_state
+from chat.prompt import _streaming_context
+from chat.state import load_chat_state
 from chat.ui import (
     ChatContext,
     ChatState,

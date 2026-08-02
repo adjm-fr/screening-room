@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from chat import build_chat_context
+from chat.prompt import build_chat_context
 from chat.ui import render_chat
 
 

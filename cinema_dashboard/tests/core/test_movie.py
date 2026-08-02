@@ -284,3 +284,35 @@ def test_similar_films_matches_directors_case_insensitively(cache_df):
     movie = pd.Series({"slug": "other", "directors": "ANDREI TARKOVSKY", "themes": None, "mini_themes": None})
 
     assert "solaris" in similar_films(cache_df, movie)["slug"].tolist()
+
+
+def test_similar_films_keeps_only_watchlisted_candidates(cache_df):
+    """The rail is "what to watch next", so already-seen qualifiers drop out."""
+    movie = cache_df[cache_df["slug"] == "solaris"].iloc[0]
+
+    slugs = similar_films(cache_df, movie, watchlist_slugs={"gravity"})["slug"].tolist()
+
+    assert slugs == ["gravity"]  # stalker qualifies on director but isn't watchlisted
+
+
+def test_similar_films_without_watchlist_slugs_keeps_the_whole_cache(cache_df):
+    """``None`` means "no watchlist parquet" — fall back to the unfiltered cache."""
+    movie = cache_df[cache_df["slug"] == "solaris"].iloc[0]
+
+    assert "stalker" in similar_films(cache_df, movie, watchlist_slugs=None)["slug"].tolist()
+
+
+def test_similar_films_empty_watchlist_is_empty(cache_df):
+    """An empty set is a real (empty) watchlist, not a missing one — no rail."""
+    movie = cache_df[cache_df["slug"] == "solaris"].iloc[0]
+
+    assert similar_films(cache_df, movie, watchlist_slugs=set()).empty
+
+
+def test_similar_films_empty_watchlist_drops_its_scratch_columns(cache_df):
+    """The early empty return must match the shape of the normal one."""
+    movie = cache_df[cache_df["slug"] == "solaris"].iloc[0]
+
+    result = similar_films(cache_df, movie, watchlist_slugs=set())
+
+    assert not {"_shared_director", "_shared_themes"} & set(result.columns)

@@ -73,6 +73,11 @@ class ChatContext:
     # ``showtimes_query`` tools query. Falls back to ``wl_shows`` unchanged
     # when there is no usable rating history or scoring fails.
     wl_scored: pd.DataFrame
+    #: Watchlist title -> Letterboxd slug, keyed on both the original and the
+    #: French title. Covers the *whole* watchlist, not just the films currently
+    #: screening, which is what lets ``chat.ui.resolve_pin`` keep a pinned film
+    #: linked to its detail page after its screenings have passed.
+    slug_by_title: dict[str, str]
     n_movies: int
     n_screenings: int
 
@@ -124,6 +129,23 @@ def _showtimes_context(wl_shows: pd.DataFrame) -> str:
     display_cols = [c for c in wanted if c in wl_shows.columns]
     df = wl_shows[display_cols].sort_values("showtimes").drop_duplicates().reset_index(drop=True)
     return df.to_markdown(index=False)
+
+
+def _slug_by_title(watchlist_df: pd.DataFrame) -> dict[str, str]:
+    """Map every watchlist title spelling to its slug (see ``ChatContext.slug_by_title``).
+
+    Both ``title`` and ``french_title`` are keyed because a pin's stored title
+    can be either, depending on which one the showtimes join matched on.
+    """
+    if "slug" not in watchlist_df.columns:
+        return {}
+    mapping: dict[str, str] = {}
+    for column in ("title", "french_title"):
+        if column not in watchlist_df.columns:
+            continue
+        pairs = watchlist_df[[column, "slug"]].dropna()
+        mapping.update({str(title): str(slug) for title, slug in pairs.itertuples(index=False) if title and slug})
+    return mapping
 
 
 def build_chat_context() -> ChatContext | None:
@@ -205,6 +227,7 @@ def build_chat_context() -> ChatContext | None:
         theaters_csv=theaters_csv,
         wl_shows=wl_shows,
         wl_scored=wl_scored,
+        slug_by_title=_slug_by_title(watchlist_df),
         n_movies=int(wl_shows["letterboxd_title"].nunique()),
         n_screenings=int(len(wl_shows)),
     )

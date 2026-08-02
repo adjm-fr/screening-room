@@ -9,7 +9,7 @@ freshness banner), and ``ui.ics`` (calendar export) so call sites can do
 symbol.
 """
 
-from ui.cards import render_hero_card, render_movie_card, render_poster_rail
+from ui.cards import render_compact_movie_card, render_hero_card, render_movie_card, render_poster_rail
 from ui.chips import (
     match_chips_html,
     render_chip_filter,
@@ -28,6 +28,7 @@ __all__ = [
     "row_slug",
     "MOVIE_QUERY_PARAM",
     "render_movie_card",
+    "render_compact_movie_card",
     "render_poster_rail",
     "render_hero_card",
     "match_chips_html",

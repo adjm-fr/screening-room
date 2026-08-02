@@ -32,6 +32,7 @@ beside ``_ask_gemini`` rather than in the Streamlit-free ``chat.tools``.
 
 from __future__ import annotations
 
+import html
 import logging
 from collections.abc import Iterator
 from typing import cast
@@ -48,7 +49,7 @@ from config import settings
 from integrations.allocine import search_theaters
 from integrations.theaters import append_theater, load_theater_ids
 from sources.loader import _normalize_title
-from ui import render_movie_card
+from ui import render_compact_movie_card
 
 log = logging.getLogger(__name__)
 
@@ -262,6 +263,63 @@ def _render_pending_theaters(ctx: ChatContext) -> None:
     st.divider()
 
 
+def resolve_pin(stored: dict, wl_shows: pd.DataFrame, slug_by_title: dict[str, str] | None = None) -> dict:
+    """Return the live row behind a stored pin, else the stored dict re-linked.
+
+    Pins are persisted as a whole row snapshot, so a pin taken before a column
+    existed keeps that shape forever. That is what left old pins unclickable:
+    they predate ``letterboxd_slug`` being carried through the showtimes join,
+    so :func:`ui.row_slug` found nothing and the card rendered as plain text.
+    Re-resolving at render time rather than migrating the file makes the frozen
+    copy only ever a *fallback*, so no future column addition can strand a pin
+    again.
+
+    Two levels, because they fix two different failures:
+
+    1. A row from ``wl_shows`` (matched on ``letterboxd_slug``, else on
+       ``letterboxd_title`` — the key old pins do carry), taking the **next
+       upcoming** screening. Without this a pin keeps advertising whichever
+       showtime happened to be scraped the day it was pinned, which goes stale
+       within the week.
+    2. When the film has no upcoming screenings at all it drops out of
+       ``wl_shows`` entirely, so level 1 cannot help. The stored snapshot is
+       then returned with a slug attached from ``slug_by_title``, which spans
+       the whole watchlist. The detail page reads the cache, not the showtimes,
+       so the film still has a page — the pin has no reason to stop linking to
+       it just because the run has ended.
+    """
+    match = pd.DataFrame()
+    slug = stored.get("letterboxd_slug")
+    title = stored.get("letterboxd_title")
+    if not wl_shows.empty:
+        if isinstance(slug, str) and slug and "letterboxd_slug" in wl_shows.columns:
+            match = wl_shows[wl_shows["letterboxd_slug"] == slug]
+        if match.empty and isinstance(title, str) and title and "letterboxd_title" in wl_shows.columns:
+            match = wl_shows[wl_shows["letterboxd_title"] == title]
+    if not match.empty:
+        if "showtimes" in match.columns:
+            match = match.assign(_dt=pd.to_datetime(match["showtimes"], errors="coerce")).sort_values("_dt").drop(columns=["_dt"])
+        return cast(dict, match.iloc[0].to_dict())
+
+    if slug or not slug_by_title or not isinstance(title, str) or not title:
+        return stored
+    recovered = slug_by_title.get(title)
+    return {**stored, "letterboxd_slug": recovered} if recovered else stored
+
+
+def _pin_caption_html(pinned: dict) -> str:
+    """Escaped ``"🎟 Sat 02 Aug · 20:00 — Le Champo"`` line, or ``""`` when undated."""
+    showtime = pinned.get("showtimes")
+    if showtime is None or (not isinstance(showtime, str) and pd.isna(showtime)):
+        return ""
+    when = pd.to_datetime(showtime, errors="coerce")
+    if pd.isna(when):
+        return ""
+    theater = pinned.get("theater_name")
+    suffix = f" — {theater}" if isinstance(theater, str) and theater else ""
+    return html.escape(f"🎟 {when.strftime('%a %d %b · %H:%M')}{suffix}")
+
+
 def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned_column: bool = True) -> None:
     """Render the chat UI: prompt chips, history, streaming response, pending theaters.
 
@@ -362,7 +420,7 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
                     label_visibility="collapsed",
                 )
                 if to_pin:
-                    existing = {p["letterboxd_title"] for p in state.pinned_recs}
+                    existing = {p.get("letterboxd_title") for p in state.pinned_recs}
                     n_before = len(state.pinned_recs)
                     for title in to_pin:
                         if title in existing:
@@ -376,13 +434,9 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
             if not state.pinned_recs:
                 st.caption("Pinned recommendations will appear here.")
             else:
-                for pinned in state.pinned_recs:
-                    render_movie_card(pd.Series(pinned), size="sm")
-                    showtime = pinned.get("showtimes")
-                    theater = pinned.get("theater_name")
-                    if showtime is not None and not pd.isna(showtime):
-                        when = pd.to_datetime(showtime).strftime("%a %d %b · %H:%M")
-                        st.caption(f"🎟 {when}{f' — {theater}' if isinstance(theater, str) and theater else ''}")
+                for stored in state.pinned_recs:
+                    pinned = resolve_pin(stored, ctx.wl_shows, ctx.slug_by_title)
+                    render_compact_movie_card(pd.Series(pinned), caption=_pin_caption_html(pinned))
                 if st.button("Clear pins", key="clear_pins", use_container_width=True):
                     state.pinned_recs = []
                     save_chat_state(state)

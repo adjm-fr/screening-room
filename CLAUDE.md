@@ -130,7 +130,11 @@ typecheck, security, test.
   a `::after` overlay, because a card already contains a real `<a>` (the trailer chip) and nesting anchors
   is invalid HTML; the hero's overlay anchor is a sibling of `.hero-body` (which is positioned, so an
   `::after` opened inside it would only cover the text). `pages/database.py`'s Tables tab links through a
-  `detail_url` `LinkColumn` instead.
+  `detail_url` `LinkColumn` instead. `_compact_movie_card_html` / `render_compact_movie_card` is the
+  horizontal variant for narrow columns (44px thumbnail, no chips, `.movie-row--linked`) — it reuses the
+  `.movie-card-link` class rather than declaring its own so it inherits that class's specificity guard.
+  **A renderer only links a row that still carries a slug**, which is why anything persisting a row
+  snapshot must re-resolve it before rendering (see the pinned-recs note below).
 - **Every anchor rule in `assets/styles.css` needs a specificity guard.** Streamlit styles links inside
   `st.markdown` (theme colour + underline) through a selector that outranks a bare class, so a rule like
   `.movie-card-link { color: inherit; text-decoration: none }` silently loses and the anchor renders as a
@@ -194,6 +198,18 @@ typecheck, security, test.
   context, never from outside it). The `- {title} — flatrate=…` streaming-context line format is pinned by
   the eval goldens: append new segments (e.g. `; free=…`), never reword the existing prefix. The system
   prompt's existing rules are likewise pinned: **insert** new paragraphs, never reword or reflow old ones.
+- **A persisted pin is a frozen row snapshot, so `chat.ui.resolve_pin` re-resolves it at render time.**
+  `pinned_recs` stores a whole `wl_shows` row, which freezes that row's *shape*: pins taken before
+  `letterboxd_slug` was carried through the showtimes join carry no slug, so `row_slug` finds nothing and
+  the card renders as unclickable plain text. Re-resolving beats migrating the file because it also
+  immunises every future column addition. Two levels, fixing two different failures: a live `wl_shows` row
+  (matched on slug, else on title) supplies fresh columns *and* the **next upcoming** screening rather than
+  whichever was scraped on pin day; and when a film's screenings have all passed it leaves `wl_shows`
+  entirely, so the stored snapshot is returned with a slug recovered from `ChatContext.slug_by_title` — a
+  whole-*watchlist* title→slug map (both title spellings), deliberately not derived from `wl_shows`, since
+  the detail page reads the cache and the film still has a page. Pins render through
+  `render_compact_movie_card`, not `render_movie_card`: in a 1/3-width column a 2:3 poster ran several
+  hundred pixels tall. Anything else that persists a row snapshot must re-resolve it the same way.
 - **The injected context blocks and the chat tools are deliberately redundant — don't "optimize" the
   blocks away.** The blocks define the closed set *at rest*: tools are opt-in, so any turn where the model
   doesn't call one would otherwise be ungrounded. `top_matches` is the tool that adds what the prompt

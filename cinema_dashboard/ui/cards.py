@@ -11,6 +11,10 @@ they render an anchor to ``?movie=<slug>`` (see :func:`ui.theme.movie_href`),
 which ``app.py`` routes to the movie detail page. Wrapping it here rather than
 at the call sites is what makes every surface — home rails, calendar day
 rails, streaming rails, chat's pinned recommendations — clickable for free.
+
+Two card shapes, same linking rules: :func:`render_movie_card` (vertical, 2:3
+poster, chips — for rails and grids) and :func:`render_compact_movie_card`
+(horizontal, 44px thumbnail, no chips — for narrow list columns).
 """
 
 from __future__ import annotations
@@ -97,6 +101,17 @@ def _user_rating_chip_html(rating: float | None) -> str:
     )
 
 
+def _title_of(row: pd.Series) -> str:
+    """First non-empty title across the spellings the various frames use."""
+    candidates = [row.get("letterboxd_title"), row.get("french_title"), row.get("title"), row.get("movie")]
+    return next((str(v) for v in candidates if isinstance(v, str) and v), "Untitled")
+
+
+def _directors_of(row: pd.Series) -> str:
+    """The row's director line (``directors`` or the singular ``director``), else ``""``."""
+    return next((str(v) for v in [row.get("directors"), row.get("director")] if isinstance(v, str) and v), "")
+
+
 def _movie_card_html(
     row: pd.Series,
     *,
@@ -120,9 +135,8 @@ def _movie_card_html(
     browsers silently unnest. One anchor per card also keeps the tab order to
     one stop and gives screen readers the film title as the link name.
     """
-    _title_candidates = [row.get("letterboxd_title"), row.get("french_title"), row.get("title"), row.get("movie")]
-    title = next((str(v) for v in _title_candidates if isinstance(v, str) and v), "Untitled")
-    directors = next((str(v) for v in [row.get("directors"), row.get("director")] if isinstance(v, str) and v), "")
+    title = _title_of(row)
+    directors = _directors_of(row)
     runtime = row.get("runtime_minutes")
     if runtime is None or (isinstance(runtime, float) and pd.isna(runtime)):
         runtime = row.get("runtime")
@@ -185,6 +199,64 @@ def render_movie_card(
     :func:`sources.loader.attach_streaming`).
     """
     st.markdown(_movie_card_html(row, size=size, subscribed=subscribed), unsafe_allow_html=True)
+
+
+def _compact_movie_card_html(row: pd.Series, *, caption: str = "") -> str:
+    """Return the HTML for a one-line list row: thumbnail + title + director.
+
+    The horizontal counterpart to :func:`_movie_card_html`, for narrow columns
+    where a full card's 2:3 poster would run hundreds of pixels tall — a
+    sidebar list wants a thumbnail, not a poster. Deliberately carries no
+    chips (rating/runtime/genre/trailer/streaming): the detail page one click
+    away has all of it, and a list of stacked rows only stays scannable while
+    each row is one line of text.
+
+    ``caption`` is trusted, pre-escaped HTML for an optional third line (e.g.
+    a pinned screening's date and theater).
+
+    Linking works exactly as it does on the full card — the title is the one
+    anchor, and ``.movie-row--linked`` gives its ``::after`` overlay a
+    positioned ancestor to stretch across. It reuses the ``.movie-card-link``
+    class rather than a new one so it inherits that class's Streamlit
+    specificity guard (see ``assets/styles.css``) instead of needing its own.
+    """
+    title = _title_of(row)
+    directors = _directors_of(row)
+    poster_url = row.get("poster_url")
+
+    poster_html = (
+        f'<img class="movie-row-poster" src="{html.escape(str(poster_url))}" alt="{html.escape(title)} poster" loading="lazy" />'
+        if isinstance(poster_url, str) and poster_url
+        else '<div class="skeleton movie-row-poster"></div>'
+    )
+    slug = row_slug(row)
+    title_html = (
+        f'<a class="movie-card-link" href="{movie_href(slug)}" target="_self">{html.escape(title)}</a>'
+        if slug
+        else html.escape(title)
+    )
+    sub_html = f'<div class="movie-row-sub">{html.escape(directors)}</div>' if directors else ""
+    caption_html = f'<div class="movie-row-caption">{caption}</div>' if caption else ""
+
+    return (
+        f'<div class="movie-row{" movie-row--linked" if slug else ""}">'
+        f"{poster_html}"
+        f'<div class="movie-row-meta">'
+        f'<div class="movie-row-title">{title_html}</div>'
+        f"{sub_html}{caption_html}"
+        f"</div>"
+        f"</div>"
+    )
+
+
+def render_compact_movie_card(row: pd.Series, *, caption: str = "") -> None:
+    """Render a compact horizontal movie row (thumbnail + title + director).
+
+    For narrow surfaces — the chat's pinned column — where
+    :func:`render_movie_card` is too tall. ``caption`` is pre-escaped HTML for
+    an optional third line.
+    """
+    st.markdown(_compact_movie_card_html(row, caption=caption), unsafe_allow_html=True)
 
 
 def render_poster_rail(

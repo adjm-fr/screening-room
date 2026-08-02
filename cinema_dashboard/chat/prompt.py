@@ -73,6 +73,13 @@ class ChatContext:
     # ``showtimes_query`` tools query. Falls back to ``wl_shows`` unchanged
     # when there is no usable rating history or scoring fails.
     wl_scored: pd.DataFrame
+    #: Watchlist title -> the ``(slug, directors)`` candidates carrying it, keyed
+    #: on both the original and the French title. Covers the *whole* watchlist,
+    #: not just the films currently screening, which is what lets
+    #: ``chat.ui.resolve_pin`` keep a pinned film linked to its detail page after
+    #: its screenings have passed. A list because titles collide across remakes —
+    #: see :func:`_slug_by_title`.
+    slug_by_title: dict[str, list[tuple[str, str]]]
     n_movies: int
     n_screenings: int
 
@@ -124,6 +131,38 @@ def _showtimes_context(wl_shows: pd.DataFrame) -> str:
     display_cols = [c for c in wanted if c in wl_shows.columns]
     df = wl_shows[display_cols].sort_values("showtimes").drop_duplicates().reset_index(drop=True)
     return df.to_markdown(index=False)
+
+
+def _slug_by_title(watchlist_df: pd.DataFrame) -> dict[str, list[tuple[str, str]]]:
+    """Map every watchlist title spelling to its ``(slug, directors)`` candidates.
+
+    Both ``title`` and ``french_title`` are keyed because a pin's stored title
+    can be either, depending on which one the showtimes join matched on.
+
+    The value is a **list**, not a single slug, because a title does not
+    identify a film: 22 titles in the real watchlist name two different films
+    (*King Lear* is both Peter Brook's and Godard's, *Mandy* both Mackendrick's
+    and Cosmatos'). A plain ``dict[str, str]`` would be last-write-wins and
+    would silently link a pin to the wrong film — worse than not linking it.
+    The director rides along so :func:`chat.ui.resolve_pin` can confirm the
+    match the same way the showtimes join does.
+    """
+    if "slug" not in watchlist_df.columns:
+        return {}
+    directors_col = watchlist_df["directors"] if "directors" in watchlist_df.columns else None
+    mapping: dict[str, list[tuple[str, str]]] = {}
+    for column in ("title", "french_title"):
+        if column not in watchlist_df.columns:
+            continue
+        frame = watchlist_df[[column, "slug"]].copy()
+        frame["_directors"] = "" if directors_col is None else directors_col.fillna("")
+        for title, slug, directors in frame.dropna(subset=[column, "slug"]).itertuples(index=False):
+            if not title or not slug:
+                continue
+            candidates = mapping.setdefault(str(title), [])
+            if not any(existing == str(slug) for existing, _ in candidates):
+                candidates.append((str(slug), str(directors)))
+    return mapping
 
 
 def build_chat_context() -> ChatContext | None:
@@ -205,6 +244,7 @@ def build_chat_context() -> ChatContext | None:
         theaters_csv=theaters_csv,
         wl_shows=wl_shows,
         wl_scored=wl_scored,
+        slug_by_title=_slug_by_title(watchlist_df),
         n_movies=int(wl_shows["letterboxd_title"].nunique()),
         n_screenings=int(len(wl_shows)),
     )

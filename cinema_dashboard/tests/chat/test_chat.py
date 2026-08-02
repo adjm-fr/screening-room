@@ -17,13 +17,15 @@ import pandas as pd
 import pytest
 from google.genai import types
 
-from chat.prompt import _streaming_context
+from chat.prompt import _slug_by_title, _streaming_context
 from chat.state import load_chat_state
 from chat.ui import (
     ChatContext,
     ChatState,
     _ask_gemini,
+    _pin_caption_html,
     delete_chat_state,
+    resolve_pin,
     save_chat_state,
 )
 
@@ -154,6 +156,259 @@ def test_delete_chat_state_removes_file_and_tolerates_missing(tmp_path):
     delete_chat_state(path)  # second delete must not raise
 
 
+# ── pinned recommendations ───────────────────────────────────────────────────
+
+
+def test_slug_by_title_keys_both_title_spellings():
+    """A pin's stored title may be either spelling, depending on what the join matched."""
+    wl = pd.DataFrame([{"title": "Fail Safe", "french_title": "Point limite", "slug": "fail-safe", "directors": "Sidney Lumet"}])
+
+    assert _slug_by_title(wl) == {
+        "Fail Safe": [("fail-safe", "Sidney Lumet")],
+        "Point limite": [("fail-safe", "Sidney Lumet")],
+    }
+
+
+def test_slug_by_title_keeps_every_film_sharing_a_title():
+    """Remakes collide; last-write-wins would silently point a pin at the wrong film."""
+    wl = pd.DataFrame(
+        [
+            {"title": "King Lear", "french_title": "Le Roi Lear", "slug": "king-lear", "directors": "Peter Brook"},
+            {"title": "King Lear", "french_title": "Le Roi Lear", "slug": "king-lear-1987", "directors": "Jean-Luc Godard"},
+        ]
+    )
+
+    assert _slug_by_title(wl)["King Lear"] == [("king-lear", "Peter Brook"), ("king-lear-1987", "Jean-Luc Godard")]
+
+
+def test_slug_by_title_does_not_duplicate_a_film_across_title_spellings():
+    """title == french_title must not list the same slug twice."""
+    wl = pd.DataFrame([{"title": "Güeros", "french_title": "Güeros", "slug": "gueros", "directors": "Alonso Ruizpalacios"}])
+
+    assert _slug_by_title(wl)["Güeros"] == [("gueros", "Alonso Ruizpalacios")]
+
+
+def test_slug_by_title_skips_rows_without_a_slug():
+    wl = pd.DataFrame([{"title": "Fail Safe", "french_title": "Point limite", "slug": None, "directors": "Sidney Lumet"}])
+
+    assert _slug_by_title(wl) == {}
+
+
+def test_slug_by_title_without_a_slug_column_is_empty():
+    assert _slug_by_title(pd.DataFrame([{"title": "Fail Safe"}])) == {}
+
+
+def test_slug_by_title_tolerates_a_missing_french_title_column():
+    wl = pd.DataFrame([{"title": "Fail Safe", "slug": "fail-safe", "directors": "Sidney Lumet"}])
+
+    assert _slug_by_title(wl) == {"Fail Safe": [("fail-safe", "Sidney Lumet")]}
+
+
+def test_slug_by_title_tolerates_a_missing_directors_column():
+    wl = pd.DataFrame([{"title": "Fail Safe", "slug": "fail-safe"}])
+
+    assert _slug_by_title(wl) == {"Fail Safe": [("fail-safe", "")]}
+
+
+@pytest.fixture
+def pin_shows() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "letterboxd_title": "Ran",
+                "letterboxd_slug": "ran",
+                "showtimes": pd.Timestamp("2026-08-06 21:00"),
+                "theater_name": "Le Champo",
+            },
+            {
+                "letterboxd_title": "Ran",
+                "letterboxd_slug": "ran",
+                "showtimes": pd.Timestamp("2026-08-04 18:00"),
+                "theater_name": "MK2 Beaubourg",
+            },
+        ]
+    )
+
+
+def test_resolve_pin_relinks_a_snapshot_saved_without_a_slug(pin_shows):
+    """The #42 case: pins saved before the slug was carried through the join."""
+    stored = {"letterboxd_title": "Ran", "showtimes": "2026-07-01 20:00", "theater_name": "Old"}
+
+    assert resolve_pin(stored, pin_shows)["letterboxd_slug"] == "ran"
+
+
+def test_resolve_pin_prefers_the_slug_over_the_title(pin_shows):
+    stored = {"letterboxd_slug": "ran", "letterboxd_title": "a stale retitle", "showtimes": "2026-07-01 20:00"}
+
+    assert resolve_pin(stored, pin_shows)["theater_name"] == "MK2 Beaubourg"
+
+
+def test_resolve_pin_returns_the_next_upcoming_screening(pin_shows):
+    """A pin points at a film; the frozen showtime would go stale within a week."""
+    resolved = resolve_pin({"letterboxd_title": "Ran"}, pin_shows)
+
+    assert resolved["showtimes"] == pd.Timestamp("2026-08-04 18:00")
+
+
+def test_resolve_pin_falls_back_when_the_film_no_longer_screens(pin_shows):
+    stored = {"letterboxd_title": "Solaris", "theater_name": "Le Champo"}
+
+    assert resolve_pin(stored, pin_shows) == stored
+
+
+def test_resolve_pin_falls_back_on_an_empty_join():
+    stored = {"letterboxd_title": "Ran"}
+
+    assert resolve_pin(stored, pd.DataFrame()) == stored
+
+
+def test_resolve_pin_relinks_a_film_whose_screenings_have_passed(pin_shows):
+    """The film drops out of wl_shows, but its detail page (cache-backed) is still there."""
+    stored = {"letterboxd_title": "Solaris", "theater_name": "Le Champo"}
+
+    resolved = resolve_pin(stored, pin_shows, {"Solaris": [("solaris", "Andrei Tarkovsky")]})
+
+    assert resolved["letterboxd_slug"] == "solaris"
+    assert resolved["theater_name"] == "Le Champo"  # the rest of the snapshot is untouched
+
+
+def test_resolve_pin_relinks_off_an_empty_join():
+    resolved = resolve_pin({"letterboxd_title": "Solaris"}, pd.DataFrame(), {"Solaris": [("solaris", "Andrei Tarkovsky")]})
+
+    assert resolved["letterboxd_slug"] == "solaris"
+
+
+def test_resolve_pin_leaves_an_unknown_title_alone(pin_shows):
+    stored = {"letterboxd_title": "Not On The Watchlist"}
+
+    assert resolve_pin(stored, pin_shows, {"Solaris": [("solaris", "Andrei Tarkovsky")]}) == stored
+
+
+def test_resolve_pin_does_not_overwrite_a_slug_it_already_has(pin_shows):
+    """A pin that already carries a slug needs no recovery — never guess over it."""
+    stored = {"letterboxd_slug": "solaris-1972", "letterboxd_title": "Solaris"}
+
+    assert resolve_pin(stored, pin_shows, {"Solaris": [("solaris", "Andrei Tarkovsky")]})["letterboxd_slug"] == "solaris-1972"
+
+
+def test_resolve_pin_tolerates_a_join_without_the_slug_column():
+    shows = pd.DataFrame([{"letterboxd_title": "Ran", "theater_name": "Le Champo"}])
+
+    assert resolve_pin({"letterboxd_slug": "ran", "letterboxd_title": "Ran"}, shows)["theater_name"] == "Le Champo"
+
+
+# ── pins vs. remakes: a title does not identify a film ──────────────────────
+
+#: Two different films, same title — the real watchlist has 22 such collisions.
+_LEARS = [("king-lear", "Peter Brook"), ("king-lear-1987", "Jean-Luc Godard")]
+
+
+@pytest.fixture
+def lear_shows() -> pd.DataFrame:
+    """Both King Lears screening, Brook's first — so .iloc[0] alone would pick him."""
+    return pd.DataFrame(
+        [
+            {
+                "letterboxd_title": "King Lear",
+                "letterboxd_slug": "king-lear",
+                "directors": "Peter Brook",
+                "showtimes": pd.Timestamp("2026-08-04 18:00"),
+            },
+            {
+                "letterboxd_title": "King Lear",
+                "letterboxd_slug": "king-lear-1987",
+                "directors": "Jean-Luc Godard",
+                "showtimes": pd.Timestamp("2026-08-06 21:00"),
+            },
+        ]
+    )
+
+
+def test_resolve_pin_picks_the_right_remake_by_director(lear_shows):
+    """Godard's pin must not resolve to Brook's film just because his screens first."""
+    stored = {"letterboxd_title": "King Lear", "directors": "Jean-Luc Godard"}
+
+    assert resolve_pin(stored, lear_shows)["letterboxd_slug"] == "king-lear-1987"
+
+
+def test_resolve_pin_refuses_an_unconfirmable_remake(lear_shows):
+    """No director on the pin — linking to either film would be a coin flip."""
+    stored = {"letterboxd_title": "King Lear"}
+
+    assert resolve_pin(stored, lear_shows) == stored
+
+
+def test_resolve_pin_recovers_the_right_remake_slug_by_director():
+    stored = {"letterboxd_title": "King Lear", "directors": "Jean-Luc Godard"}
+
+    assert resolve_pin(stored, pd.DataFrame(), {"King Lear": _LEARS})["letterboxd_slug"] == "king-lear-1987"
+
+
+def test_resolve_pin_recovers_no_slug_for_an_unconfirmable_remake():
+    """Silently opening the wrong film is a worse failure than an unlinked pin."""
+    stored = {"letterboxd_title": "King Lear"}
+
+    assert resolve_pin(stored, pd.DataFrame(), {"King Lear": _LEARS}) == stored
+
+
+def test_resolve_pin_confirms_a_remake_across_director_name_drift():
+    """Confirmation is token containment, matching the showtimes join's tolerance."""
+    stored = {"letterboxd_title": "King Lear", "directors": "Godard"}
+
+    assert resolve_pin(stored, pd.DataFrame(), {"King Lear": _LEARS})["letterboxd_slug"] == "king-lear-1987"
+
+
+def test_resolve_pin_recovers_an_unambiguous_title_without_a_director():
+    """One candidate needs no confirmation — the title already identifies the film."""
+    stored = {"letterboxd_title": "Ran"}
+
+    assert resolve_pin(stored, pd.DataFrame(), {"Ran": [("ran", "Akira Kurosawa")]})["letterboxd_slug"] == "ran"
+
+
+def test_resolve_pin_drops_same_title_rows_with_no_director_column():
+    """Can't confirm, so don't guess — fall through to the stored snapshot."""
+    shows = pd.DataFrame(
+        [
+            {"letterboxd_title": "King Lear", "letterboxd_slug": "king-lear"},
+            {"letterboxd_title": "King Lear", "letterboxd_slug": "king-lear-1987"},
+        ]
+    )
+    stored = {"letterboxd_title": "King Lear", "directors": "Jean-Luc Godard"}
+
+    assert resolve_pin(stored, shows) == stored
+
+
+def test_pin_caption_formats_the_screening():
+    caption = _pin_caption_html({"showtimes": pd.Timestamp("2026-08-04 18:00"), "theater_name": "Le Champo"})
+
+    assert caption == "🎟 Tue 04 Aug · 18:00 — Le Champo"
+
+
+def test_pin_caption_escapes_the_theater_name():
+    caption = _pin_caption_html({"showtimes": "2026-08-04 18:00", "theater_name": "Ciné <b>X</b>"})
+
+    assert "<b>" not in caption
+    assert "&lt;b&gt;" in caption
+
+
+@pytest.mark.parametrize(
+    "pinned",
+    [
+        {},
+        {"showtimes": None},
+        {"showtimes": pd.NaT},
+        {"showtimes": "not-a-date"},
+    ],
+    ids=["absent", "none", "nat", "unparseable"],
+)
+def test_pin_caption_is_empty_without_a_usable_date(pinned):
+    assert _pin_caption_html(pinned) == ""
+
+
+def test_pin_caption_omits_a_missing_theater():
+    assert _pin_caption_html({"showtimes": "2026-08-04 18:00"}) == "🎟 Tue 04 Aug · 18:00"
+
+
 # ── tool dispatch ────────────────────────────────────────────────────────────
 
 
@@ -192,6 +447,7 @@ def ctx():
         theaters_csv=None,
         wl_shows=wl,
         wl_scored=wl,
+        slug_by_title={"Ran": [("ran", "Akira Kurosawa")]},
         n_movies=1,
         n_screenings=1,
     )

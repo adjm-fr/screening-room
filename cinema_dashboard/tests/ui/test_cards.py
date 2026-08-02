@@ -5,8 +5,16 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from ui import format_runtime, movie_href, rating_to_hsl, render_hero_card, render_poster_rail, row_slug
-from ui.cards import _movie_card_html, _streaming_badges_html, _user_rating_chip_html
+from ui import (
+    format_runtime,
+    movie_href,
+    rating_to_hsl,
+    render_compact_movie_card,
+    render_hero_card,
+    render_poster_rail,
+    row_slug,
+)
+from ui.cards import _compact_movie_card_html, _movie_card_html, _streaming_badges_html, _user_rating_chip_html
 
 # ── format_runtime ──────────────────────────────────────────────────────────
 
@@ -302,3 +310,72 @@ def test_render_hero_card_does_not_hide_its_body_from_screen_readers(mocker):
     render_hero_card(pd.Series({"title": "Solaris", "slug": "solaris"}))
 
     assert 'role="img"' not in markdown.call_args[0][0]
+
+
+# ── compact movie row ───────────────────────────────────────────────────────
+
+
+def test_compact_card_links_the_title():
+    row = _compact_movie_card_html(pd.Series({"letterboxd_title": "Ran", "letterboxd_slug": "ran"}))
+
+    assert 'class="movie-card-link" href="?movie=ran" target="_self"' in row
+    assert "movie-row--linked" in row
+    assert ">Ran</a>" in row
+
+
+def test_compact_card_reuses_the_guarded_link_class():
+    """A new anchor class would render unstyled — styles.css guards .movie-card-link only."""
+    row = _compact_movie_card_html(pd.Series({"title": "Ran", "slug": "ran"}))
+
+    assert 'class="movie-card-link"' in row
+
+
+def test_compact_card_without_a_slug_renders_no_link():
+    row = _compact_movie_card_html(pd.Series({"title": "Ran"}))
+
+    assert "<a" not in row
+    assert "movie-row--linked" not in row
+
+
+def test_compact_card_has_exactly_one_anchor():
+    """No chips means the title link is the only one — the ::after overlay stays valid."""
+    row = _compact_movie_card_html(pd.Series({"title": "Ran", "slug": "ran", "trailer_url": "https://youtu.be/x"}))
+
+    assert row.count("<a ") == 1
+
+
+def test_compact_card_omits_the_full_cards_chips():
+    """The compact row is one line of text; chips are what made the pinned card too tall."""
+    row = _compact_movie_card_html(
+        pd.Series({"title": "Ran", "slug": "ran", "genres": "Drama", "letterboxd_avg_rating": 4.2, "runtime_minutes": 160})
+    )
+
+    assert "chip" not in row
+
+
+def test_compact_card_renders_the_director_and_caption():
+    row = _compact_movie_card_html(pd.Series({"title": "Ran", "directors": "Akira Kurosawa"}), caption="🎟 Tue 04 Aug · 18:00")
+
+    assert "Akira Kurosawa" in row
+    assert "🎟 Tue 04 Aug · 18:00" in row
+
+
+def test_compact_card_escapes_the_title_and_poster_alt():
+    row = _compact_movie_card_html(pd.Series({"title": "Ran <b>x</b>", "poster_url": "http://x/p.jpg"}))
+
+    assert "<b>" not in row
+    assert 'alt="Ran &lt;b&gt;x&lt;/b&gt; poster"' in row
+
+
+def test_compact_card_falls_back_to_a_skeleton_without_a_poster():
+    row = _compact_movie_card_html(pd.Series({"title": "Ran"}))
+
+    assert "skeleton movie-row-poster" in row
+
+
+def test_render_compact_movie_card_writes_html(mocker):
+    markdown = mocker.patch("ui.cards.st.markdown")
+    render_compact_movie_card(pd.Series({"title": "Ran", "slug": "ran"}))
+
+    assert markdown.call_args.kwargs["unsafe_allow_html"] is True
+    assert 'href="?movie=ran"' in markdown.call_args[0][0]

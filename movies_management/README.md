@@ -203,7 +203,7 @@ Contains all columns from `data_letterboxd.parquet` (see above) for movies on yo
 *Note: Only contains movies where metadata was successfully fetched from Letterboxd.*
 
 ### 4. `unresolved_allocine.parquet` *(optional)*
-Written when `--enrich-from-allocine` is used. Contains `(movie, original_title, director, release_year)` tuples from the showtimes file that could not be resolved to a Letterboxd slug. Useful for diagnosing match failures. Empty when all films resolved successfully.
+Written when `--enrich-from-allocine` is used. Contains `(movie, original_title, director, release_year)` tuples from the showtimes file that could not be resolved to a Letterboxd slug. Useful for diagnosing match failures. Empty when all films resolved successfully. Consumed downstream by `cinema_dashboard`'s Dagster pipeline metadata (`pipeline/assets.py`) and, since the "unmatched films" surface shipped, by the Movies Database page's Unmatched tab (`sources.loader.load_unresolved_allocine` / `build_unresolved_showtimes`) — a missing file there is read as "nothing unresolved," not an error.
 
 ## Architecture
 

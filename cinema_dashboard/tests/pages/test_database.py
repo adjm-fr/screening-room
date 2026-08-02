@@ -64,3 +64,69 @@ def test_streaming_label_missing_columns_treated_as_empty():
     from pages.database import _streaming_label
 
     assert _streaming_label(pd.Series({})) == ""
+
+
+def test_unresolved_summary_empty_input_returns_empty():
+    from pages.database import _unresolved_summary
+
+    result = _unresolved_summary(pd.DataFrame())
+    assert result.empty
+
+
+def test_unresolved_summary_collapses_to_one_row_per_film():
+    from pages.database import _unresolved_summary
+
+    df = pd.DataFrame(
+        [
+            {
+                "movie": "Unknown Film",
+                "original_title": None,
+                "director": None,
+                "release_year": 2024,
+                "theater_name": "Le Champo",
+                "showtimes": pd.Timestamp("2030-06-05 20:00"),
+            },
+            {
+                "movie": "Unknown Film",
+                "original_title": None,
+                "director": None,
+                "release_year": 2024,
+                "theater_name": "MK2 Bastille",
+                "showtimes": pd.Timestamp("2030-06-03 18:00"),
+            },
+        ]
+    )
+    result = _unresolved_summary(df)
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["movie"] == "Unknown Film"
+    assert row["next_showtime"] == pd.Timestamp("2030-06-03 18:00")
+    assert row["theaters"] == "Le Champo, MK2 Bastille"
+    assert row["n_showtimes"] == 2
+
+
+def test_unresolved_summary_sorts_by_next_showtime():
+    from pages.database import _unresolved_summary
+
+    df = pd.DataFrame(
+        [
+            {
+                "movie": "Later Film",
+                "original_title": None,
+                "director": None,
+                "release_year": 2024,
+                "theater_name": "Le Champo",
+                "showtimes": pd.Timestamp("2030-06-10 20:00"),
+            },
+            {
+                "movie": "Sooner Film",
+                "original_title": None,
+                "director": None,
+                "release_year": 2024,
+                "theater_name": "Le Champo",
+                "showtimes": pd.Timestamp("2030-06-02 20:00"),
+            },
+        ]
+    )
+    result = _unresolved_summary(df)
+    assert result["movie"].tolist() == ["Sooner Film", "Later Film"]

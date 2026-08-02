@@ -68,6 +68,22 @@ The free-time toggle (which replaced the old weekend toggle) narrows to screenin
 
 **Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` (+ `ALLOCINE_INPUT_PATH` for the map)
 
+### Screening in Paris (🎭)
+
+Every other showtimes-driven page is built on `build_watchlist_showtimes`, an inner join that only ever surfaces films already on the watchlist — measured against the real parquets, 250 films screen across 13 tracked theaters in a week and that join surfaces 14 of them. This page joins the **full** showtimes against the Letterboxd metadata cache instead (`sources/discover.py`'s `build_screenings`), reusing the exact title-matched, director-confirmed contract `build_watchlist_showtimes` uses (see Watchlist Showtimes above), and like it dropping any showtime that never confirms a cache match — those are diagnosed on the Movies Database page's Unmatched tab, not here. Every film is labelled with a watch status — **New to you** (in the cache but neither rated nor watchlisted), **Watchlist**, or **Seen** (present in the ratings parquet) — and taste-ranked with the same `core/taste.py` ranker every other rail uses, so the match badge and "✓ because" chips mean the same thing here as on Home.
+
+The page is **curated sections, not a filter wall — there is no browse-everything rail**. The one control is the "Only times I'm free" toggle (`core.availability.free_time_mask`, identical semantics to the Watchlist Showtimes page below — weekends, French holidays, days off, or weekday evenings after a cutoff, minus days marked unavailable), which narrows every section to screenings the user can actually attend before any of them render. A KPI strip then counts unique films per status, followed by three rails, each answering one question and each omitted (not rendered empty) when nothing qualifies:
+
+| Rail | What's in it |
+| --- | --- |
+| **Best matches — new to you** | Never rated, never watchlisted; highest taste match first. |
+| **Worth a second chance?** | Films you rated **< 2.5** that the ranker nonetheless scores **≥ 70** — the disagreement rail. Deliberately short: of the 24 films rated under 2.5 screening in a sample week, 3 cleared 70. |
+| **Worth a rewatch!** | Films you rated **≥ 4.0**, ordered by *your* rating — this rail is your verdict, not the ranker's. Last and biggest (up to 24 cards, vs. 12 for the other two): it draws on films the user has already vouched for, so there's less risk in showing more. |
+
+The thresholds are constants at the top of `pages/paris.py` (`REWATCH_MIN_RATING`, `RETRY_MAX_RATING`, `RETRY_MIN_MATCH`, `REWATCH_RAIL_SIZE`). Every card also lists its upcoming showtimes (day, time, theater) beneath it — capped at `MAX_SHOWTIME_BADGES` (6) with a "+N more" suffix for a wide release, which can carry dozens of screenings in a week.
+
+**Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH`
+
 ### Streaming (📺)
 
 One horizontal poster rail per FR streaming provider, populated from the TMDB watch-providers cache. Films are taken from your full watchlist (not only those with upcoming showtimes). When a ratings history exists each rail is taste-ranked (`core/taste.py`) and every card carries the same "◎ {n}% match" badge and "✓ because" chips as the Home rails, with the Letterboxd average breaking ties; before any films are rated, rails fall back to Letterboxd average order. A multi-select chip filter at the top (with an inclusive *All* sentinel) lets you focus on one or more providers using human-readable provider names (e.g. *Canal+*, *MUBI*). The slug → pretty-name map is persisted at `assets/provider_display_names.json` and auto-grows every time `orchestrate.py` refreshes the cache and TMDB returns a new provider.
@@ -125,14 +141,16 @@ movies_management          Allocine-Showtimes-Scraping
                       │      + TMDB watch-providers FR (in-process refresh)
                       │        → data/streaming_providers.parquet
                       │
-              cinema_dashboard
-   ┌──────┬──────────┬──────┴──────────────┬───────────┬─────────────────┐
-  Home  Database  Watchlist Showtimes  Streaming  Recommendations
-   └──────┴──────────┴─────────┴──────────┘                │
-     every movie card → ?movie=<slug>                Gemini API
-     (pages/movie.py — detail overlay)          (google-genai SDK)
-                                                         │
-                               sources/loader.py          ← cached parquet readers
+                       cinema_dashboard
+   ┌──────┬──────────┬──────┴──────┬──────────────┬───────────┬─────────────────┐
+  Home  Database  Watchlist    Screening in     Streaming  Recommendations
+              Showtimes         Paris
+   └──────┴──────────┴─────────┴──────────────┴───────────┘        │
+     every movie card → ?movie=<slug>                        Gemini API
+     (pages/movie.py — detail overlay)                  (google-genai SDK)
+                                                                    │
+                               sources/loader.py          ← cached parquet readers + watchlist↔showtimes join
+                               sources/discover.py        ← full showtimes↔cache join + watch-status labels + user_rating
                                sources/streaming.py       ← TMDB FR providers cache
                                integrations/allocine.py   ← theater lookup
                                integrations/theaters.py   ← CSV append
@@ -161,6 +179,7 @@ cinema_dashboard/
 │   ├── database.py               # Movies Database page (Overview / Discover / Tables / Unmatched)
 │   ├── calendar.py               # Watchlist Showtimes page (theater dropdown, runtime/time-of-day/free-time/search filters, day rails, map, ICS export)
 │   ├── movie.py                  # Movie detail page — routed by ?movie=<slug>, not by st.navigation (no import-time main())
+│   ├── paris.py                  # Screening in Paris page — full showtimes×cache discovery, curated rewatch/second-chance rails
 │   ├── streaming.py              # Streaming page — one poster rail per FR provider
 │   └── recommendations.py        # Recommendations chat page (calls chat.ui.render_chat)
 ├── core/                         # Streamlit-free domain logic
@@ -171,6 +190,7 @@ cinema_dashboard/
 ├── sources/                      # Cached parquet readers + joins. Named `sources`, not `data` — the
 │   │                              # runtime `data/` dir is gitignored, so a package there would never commit.
 │   ├── loader.py                  # Cached parquet readers + watchlist↔showtimes join + attach_streaming
+│   ├── discover.py                # Full showtimes↔Letterboxd-cache join + watch-status labels + user_rating
 │   ├── streaming.py               # TMDB FR watch-providers cache + display-name catalogue loader/updater
 │   └── geo.py                     # Theater geocoding (Nominatim + RateLimiter, cached parquet) + pydeck map renderer
 ├── integrations/                 # External-system integrations
@@ -186,6 +206,7 @@ cinema_dashboard/
 │   ├── theme.py                   # CSS injection, format_runtime/rating_to_hsl, movie_href/row_slug
 │   ├── cards.py                    # render_movie_card, render_compact_movie_card, render_poster_rail, render_hero_card
 │   ├── chips.py                    # match_chips_html, render_chip_filter, render_kpi_strip, render_empty_state, render_freshness_banner
+│   ├── availability.py             # "Only times I'm free" control (render_free_time_filter / FreeTimeSelection)
 │   ├── ics.py                      # screening_end, to_ics, ad-block sizing
 │   └── cmdk.py                     # Global Cmd+K command palette (st.dialog + hand-rolled st.iframe shortcut)
 ├── tests/

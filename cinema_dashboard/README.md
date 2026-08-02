@@ -43,7 +43,7 @@ The page is backed by `data_letterboxd.parquet`, which is a superset of the rati
 - **Taste match** — the `◎ n% match` badge plus, behind an expander, the full per-dimension breakdown: every value that fed the score with its weight, its shrunk affinity, how many films you've rated it across, and its signed contribution, then the community-quality prior and the logistic that maps the raw total to the badge. Disliked contributors are shown and labelled rather than hidden (sentiment follows the rating ladder's 2.25 pivot, so a value can be *liked* and still contribute negatively). The arithmetic reconciles exactly with the badge on the film's card.
 - **Synopsis**, **Credits** (director, writer, producer, studio, top-8 billed cast), **Themes** chips
 - **Upcoming screenings** — grouped by theater, each with a one-click `.ics` sized by the same helper the calendar page's bulk ICS/CSV export uses (runtime + the pre-feature ad block)
-- **Streaming**, **Trailer** (embedded when cached — null for ~2/3 of films), **More like this** (same-director and shared-theme films), and out-links to Letterboxd / IMDB / TMDB
+- **Streaming**, **Trailer** (embedded when cached — null for ~2/3 of films), **More like this** (same-director and shared-theme films, drawn from your *watchlist* — the cache also holds every film you've already rated, which would otherwise fill four fifths of the rail with films you've seen), and out-links to Letterboxd / IMDB / TMDB
 
 **Requires**: `OUTPUT_PATH` (+ `ALLOCINE_OUTPUT_PATH` for the screenings section)
 

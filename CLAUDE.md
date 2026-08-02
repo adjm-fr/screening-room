@@ -88,6 +88,11 @@ uv run --no-sync --directory movies_management pytest tests/test_utils.py::test_
 uv run --no-sync --directory cinema_dashboard  pytest -k streaming
 # The opt-in LLM eval suite (hits the live Gemini API, needs GEMINI_API_KEY):
 uv run --no-sync --directory cinema_dashboard  pytest tests/evals/ -m evals
+
+# Re-validate the taste constants against the real ratings (see "Taste ranker" below).
+# No flag: metrics for the constants as they stand. --sweep: grid-search candidates.
+uv run --no-sync --directory cinema_dashboard  python backtest.py
+uv run --no-sync --directory cinema_dashboard  python backtest.py --sweep
 ```
 
 CI (`.github/workflows/ci.yml`) runs four jobs for the whole workspace: lint (incl. `uv lock --check`),
@@ -254,6 +259,22 @@ typecheck, security, test.
   chips on each card) consume it. `sources.loader.build_taste_profile` (the chat-prompt string) is a thin formatter
   over the same profile — its line prefixes ("Average rating given:", "Favourite genres:", …) are a
   contract pinned by `tests/sources/test_loader.py` and the eval goldens: extend with new lines, don't reword.
+- **Those taste constants are re-derivable, not folklore — `backtest.py` is how.** `core/backtest.py` is the
+  harness (`random_holdout_splits` / `raw_scores` / `evaluate`) and `backtest.py` the CLI over it: no flag
+  reports held-out Spearman + quartile lift for the constants as they stand, `--sweep` grid-searches
+  `SHRINKAGE_K` / cast weight / `QUALITY_WEIGHT`. Run it before *and* after touching anything in
+  `core/taste.py` — that is what "calibrated against the real parquets" above means. Three deliberate
+  methodology choices, each easy to "fix" into a wrong answer: **repeated random holdout, not a temporal
+  split**, because the ratings history has no watch-date column to split on (there is no last-N-months to
+  hold out); **raw pre-logistic scores**, because the display logistic is strictly monotone and both metrics
+  are rank-based, so it cannot change the answer and only costs float ops and a `LOGISTIC_TAU` dependency;
+  and **quantile-based quartile masks, not `nlargest`/`nsmallest`**, because half-star ratings tie heavily
+  and rank-order tie-breaking would let DataFrame row order bias which tied rows land in the top quartile.
+  A single seeded generator drives every split, so a sweep compares candidates on identical partitions
+  instead of confounding the weight change with a different random split. Current numbers on the real
+  ratings (Aug 2026, ~3.3k rated films, μ=2.48), as a regression reference: **spearman 0.677 /
+  quartile lift 2.03**, against a quality-prior-only baseline of 0.603 / 1.81. Beating that baseline is the
+  bar — a constants change that drops toward it has removed the personalisation, not tuned it.
 - **Two orchestrators, both intentional.** `orchestrate.py` (CLI, staleness-aware, runs both scrapers in
   parallel) is the everyday path; `pipeline/` is a deliberate Dagster equivalent kept as an experiment
   (`dagster dev -m pipeline.definitions`) — it is not dead code, don't remove it.
@@ -322,14 +343,36 @@ typecheck, security, test.
   would need): `allocine_dir` points *outside* the monorepo
   (`_ROOT.parent.parent / "Allocine-Showtimes-Scraping"`, override with `ALLOCINE_DIR`), `movies_dir` is the
   in-repo sibling. `movies_management/config.py` no longer uses `_ROOT` at all.
+- **`ALLOCINE_DIR` is the scraper's *checkout*; the two `ALLOCINE_*_PATH` keys are its data — don't conflate
+  them.** All three are separate `.env` keys and all three are load-bearing: `ALLOCINE_OUTPUT_PATH` is the
+  `showtimes.parquet` the dashboard reads (`build_chat_context` hard-fails with "**ALLOCINE_OUTPUT_PATH** is
+  not set" and every showtimes surface degrades to an empty state without it), while `ALLOCINE_INPUT_PATH`
+  is the `theaters.csv` the scraper *reads* — see the theaters bullet below. `TMDB_API_KEY` is the fourth
+  commonly-missed key: it drives `french_title`/`cast`/`trailer_url` enrichment and the streaming-provider
+  cache, all of which simply stay null without it. Every data path is `Path | None` on purpose, so a missing
+  key degrades one page instead of crashing the app — which also means a misspelled key fails *silently*
+  (`extra="ignore"`), not loudly.
+- **`theaters.csv` is a cross-repo *write* seam: the dashboard edits the scraper's input.** The file at
+  `ALLOCINE_INPUT_PATH` (three headerless columns — `theater_id,theater_name,address`) is what
+  `Allocine-Showtimes-Scraping` reads to decide which cinemas to scrape, and
+  `integrations/theaters.py` writes to it: chat's `search_theater` tool surfaces Allocine matches, the
+  "add this theater?" flow calls `append_theater` (deduped against `load_theater_ids`), and
+  `backfill_addresses` fills blank addresses from the Allocine cache once per session. So **a chat turn can
+  change what the sibling repo scrapes on its next run** — that write is the point, not a bug, but it means
+  the dashboard is not a read-only consumer of the scraper and edits here outlive the session.
+  `sources/geo.py` is the read side: it geocodes each address once via Nominatim
+  (`NOMINATIM_USER_AGENT` identifies us — keep it set, it is their rate-limit contract) and persists lat/lon
+  to `data/theaters_geo.parquet`, so later loads are free cache hits and the map falls back to central Paris
+  for anything unresolved. Map rendering is `st.pydeck_chart`, deliberately Streamlit-native (no Folium dep).
 - **`cinema_dashboard/integrations/scrapers.py` is unchanged.** Its subprocess argv (`uv run python main.py`) is
   run with `cwd` set to the target member/repo, so cwd-based resolution works for both the in-repo movies
   member and the external Allocine repo. No `--package` needed given the shared venv.
 - **pip-audit scopes to runtime deps (`--no-dev`).** The dev-only eval tooling tree
   (`deepeval → llama-index → pypdf`, etc.) carries many CVEs that don't affect anything that ships; scanning
   the runtime export keeps the gate meaningful. The shipped runtime deps are currently clean.
-- **Coverage gates:** movies 90 (≈98% actual), dashboard 75 (≈82% actual), common 90 (100%). The dashboard
-  ran no gate before the merge; 75 gives buffer over its real number.
+- **Coverage gates:** movies 90 (97% actual), dashboard 75 (85% actual), common 90 (100%). The dashboard
+  ran no gate before the merge; 75 gives buffer over its real number. The gates are deliberately slack —
+  raise one only if you intend the headroom to disappear.
 - **The calendar page's export mirrors its on-screen filters.** `cinema_dashboard/pages/calendar.py`
   narrows one `filtered` frame through every control (the on-page "Only times I'm free" toggle plus the
   sidebar's date range, theater multiselect — empty selection = all theaters — runtime buckets, showtime

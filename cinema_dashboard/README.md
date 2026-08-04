@@ -186,7 +186,7 @@ cinema_dashboard/
 │   ├── cards.py                    # render_movie_card, render_compact_movie_card, render_poster_rail, render_hero_card
 │   ├── chips.py                    # match_chips_html, render_chip_filter, render_kpi_strip, render_empty_state, render_freshness_banner
 │   ├── ics.py                      # screening_end, to_ics, ad-block sizing
-│   └── cmdk.py                     # Global Cmd+K command palette (st.dialog + streamlit-shortcuts)
+│   └── cmdk.py                     # Global Cmd+K command palette (st.dialog + hand-rolled st.iframe shortcut)
 ├── tests/
 │   ├── conftest.py                # Shared fixtures + @st.cache_data no-op patch
 │   ├── test_config.py             # Covers the root config.py
@@ -351,7 +351,7 @@ Requires `GEMINI_API_KEY`; the suite skips itself when unset. To add a new failu
 
 **Map shows no theaters** — addresses are geocoded once via Nominatim (rate-limited, free) and cached to `data/theaters_geo.parquet`. To force re-geocoding, delete the parquet. Theaters whose addresses Nominatim can't resolve are kept in tables but skipped on the map.
 
-**`Cmd+K` doesn't open the assistant** — the keyboard shortcut depends on `streamlit-shortcuts`; if it's missing or the binding fails on your browser, the "✦ Ask AI" button in the sidebar opens the same dialog.
+**`Cmd+K` doesn't open the assistant** — the keyboard shortcut is a small JS snippet injected via `st.iframe`; if the binding fails on your browser, the "✦ Ask AI" button in the sidebar opens the same dialog.
 
 **Theme looks broken / fonts not loading** — `assets/styles.css` imports Inter and Playfair Display from Google Fonts. Browsers without internet access render the dashboard with system fallbacks; the layout still works.
 

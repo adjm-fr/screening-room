@@ -23,7 +23,6 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "requests>=2.34.2",
     "streamlit>=1.60.0",
-    "streamlit-shortcuts>=1.2.1",
     "common",
     "contracts",
 ]

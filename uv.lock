@@ -494,7 +494,6 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "streamlit" },
-    { name = "streamlit-shortcuts" },
 ]
 
 [package.dev-dependencies]
@@ -524,7 +523,6 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "streamlit", specifier = ">=1.60.0" },
-    { name = "streamlit-shortcuts", specifier = ">=1.2.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -4054,18 +4052,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/7a/46/fa437e9651af1dbe7e5b28a754fd9c36df656e4a14a2b5ecc1bcd1d90587/streamlit-1.60.0.tar.gz", hash = "sha256:09f2fdd2aabbd3b3560953795681dd675d5479ac82c21fc2dceadaf9bd484ea3", size = 9819884, upload-time = "2026-07-21T21:13:58.04Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2f/69/7a1984df015d01875c9ac79bfda7c31492cc94f81a2625303ce4707188e5/streamlit-1.60.0-py3-none-any.whl", hash = "sha256:d167d67cf94537600a6e378d8aa0c31eabab26beb243e2a51de9842e2872e393", size = 10419153, upload-time = "2026-07-21T21:13:55.113Z" },
-]
-
-[[package]]
-name = "streamlit-shortcuts"
-version = "1.2.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "streamlit" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/87/6d/a3b9befa11528163b96c216f7e4152c7e6df8976bb6ad8a42fb82e8c1778/streamlit_shortcuts-1.2.1.tar.gz", hash = "sha256:c982ace38ce6f887beef2bd3f16c36d645bdcbee010c5585e6963e4615fc8f16", size = 111285, upload-time = "2025-07-31T21:02:57.65Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e0/b5/a9d1ad477ae69db0b6cef35bf40154ec634a42657ff684a4b3c2024dde36/streamlit_shortcuts-1.2.1-py3-none-any.whl", hash = "sha256:58fa6d375c9f91068bf1400f9870ff3d382b4e4f1dcbf26e05567e4db3547375", size = 6856, upload-time = "2025-07-31T21:02:56.273Z" },
 ]
 
 [[package]]

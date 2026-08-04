@@ -8,6 +8,24 @@ import streamlit as st
 st.cache_data = lambda f=None, **kw: f if f is not None else lambda fn: fn
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    # Opt-in flag for tests/evals/test_chat_evals.py's LLM-as-judge metrics
+    # (FaithfulnessMetric, AnswerRelevancyMetric) — those cost judge tokens on
+    # top of the live Gemini call the whole ``evals`` suite already needs, so
+    # they only run with ``pytest tests/evals/ -m evals --judge``.
+    parser.addoption(
+        "--judge",
+        action="store_true",
+        default=False,
+        help="Also run the LLM-as-judge metrics in tests/evals/test_chat_evals.py (costs judge tokens).",
+    )
+
+
+@pytest.fixture
+def judge_enabled(request: pytest.FixtureRequest) -> bool:
+    return bool(request.config.getoption("--judge"))
+
+
 @pytest.fixture
 def make_showtimes():
     defaults = {"theater_id": "T1", "theater_name": "Cinema"}

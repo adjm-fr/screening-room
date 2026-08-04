@@ -196,7 +196,7 @@ cinema_dashboard/
 │       ├── goldens.py            # Bait prompts + allowed film/provider sets
 │       ├── metrics.py            # FilmSetMembership + StreamingClaim DeepEval metrics
 │       ├── test_metrics.py       # Unit tests for the metric regex (no Gemini calls)
-│       └── test_chat_evals.py    # Parameterized harness (hits live Gemini API)
+│       └── test_chat_evals.py    # Parameterized harness, no-tool + tool paths (hits live Gemini API)
 ```
 
 `movies_management` deliberately keeps its own `modules/` package — there it *is* the implementation (one
@@ -331,14 +331,23 @@ Both metrics ignore mentions inside a **refusal context** (*"I can't recommend O
 
 The system prompt also enforces a **refusal flow**: when the user asks about a film, director, or provider not in the provided lists, the model must respond in 1–2 sentences, acknowledge it isn't in the watchlist/streaming list, and **ask** whether the user wants a recommendation from what is available — without auto-dumping the watchlist.
 
+### Two eval paths: prompt-only and tool-enabled
+
+`test_chat_stays_in_bounds` runs the goldens **without** tool declarations, so it verifies the injected prompt alone keeps the model in its closed set. `test_chat_tool_layer` runs `TOOL_GOLDENS` **with** the `top_matches` / `showtimes_query` / `streaming_query` declarations and the same bounded round-trip dispatch loop `chat.ui._ask_gemini` uses, recording every call so tool assertions are possible. `search_theater` is deliberately excluded from the eval dispatch — it hits the live Allocine site and writes to `theaters.csv`, which a read-only eval must not do.
+
+That second path exists for one reason: `_streaming_context` caps the streaming block at `STREAMING_CONTEXT_TOP_N` films, so anything below the cap is answerable *only* if the tool fires. `OVERCAP_STREAMING_GOLDEN` renders 60 films through the real `_streaming_context` and asks about the one ranked 55th — the regression test for that whole narrow-the-block/recover-with-a-tool design. It adds a third deterministic metric, **`ToolCorrectnessMetric`** (compares the recorded calls against the golden's `expected_tools`, no judge tokens), alongside the reused `StreamingClaimMetric`.
+
+Two LLM-as-judge metrics — **`FaithfulnessMetric`** and **`AnswerRelevancyMetric`** — are opt-in behind `--judge` so judge tokens aren't burned on every run. Both are pointed at a `GeminiModel` judge rather than DeepEval's default, which would want an `OPENAI_API_KEY` this project never asks for.
+
 The suite is deselected from the default `pytest` run (every file is tagged `pytest.mark.evals` and `pyproject.toml` uses `addopts = "-m 'not evals'"`) because each case hits the live Gemini API.
 
 ```bash
 uv run --no-sync --directory cinema_dashboard pytest tests/evals/ -m evals                       # full suite
 uv run --no-sync --directory cinema_dashboard pytest tests/evals/ -m evals -k outside_film_bait  # one golden
+uv run --no-sync --directory cinema_dashboard pytest tests/evals/ -m evals --judge               # + the judge metrics
 ```
 
-Requires `GEMINI_API_KEY`; the suite skips itself when unset. To add a new failure mode, append a `Golden(...)` entry to `tests/evals/goldens.py` — keep the dataset tight and curated rather than sprawling.
+Requires `GEMINI_API_KEY`; the suite skips itself when unset. Running the full suite twice in quick succession can trip the Gemini free tier's 15 req/min quota (`429 RESOURCE_EXHAUSTED`) — that's rate limiting, not a failure. To add a new failure mode, append a `Golden(...)` entry to `tests/evals/goldens.py` — keep the dataset tight and curated rather than sprawling.
 
 ## Troubleshooting
 

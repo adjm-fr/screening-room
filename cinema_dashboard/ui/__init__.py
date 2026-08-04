@@ -4,11 +4,12 @@ Public UI surface for the cinema dashboard.
 Re-exports the full public API of ``ui.theme`` (CSS injection, formatting,
 movie-detail links), ``ui.cards`` (movie cards, poster rails, hero cards),
 ``ui.chips`` (taste-match badges, filter pills, KPI strips, empty states,
-freshness banner), and ``ui.ics`` (calendar export) so call sites can do
-``from ui import (...)`` regardless of which submodule actually defines the
-symbol.
+freshness banner), ``ui.availability`` (the "Only times I'm free" control), and
+``ui.ics`` (calendar export) so call sites can do ``from ui import (...)``
+regardless of which submodule actually defines the symbol.
 """
 
+from ui.availability import FreeTimeSelection, render_free_time_filter
 from ui.cards import render_compact_movie_card, render_hero_card, render_movie_card, render_poster_rail
 from ui.chips import (
     match_chips_html,
@@ -36,6 +37,8 @@ __all__ = [
     "render_kpi_strip",
     "render_empty_state",
     "render_freshness_banner",
+    "FreeTimeSelection",
+    "render_free_time_filter",
     "screening_end",
     "to_ics",
     "ADS_MINUTES_CHAIN",

@@ -118,8 +118,8 @@ typecheck, security, test.
 
 - **Entry point `app.py`** sets up logging, injects the CSS layer (`ui.theme.inject_css` — editorial
   typography, movie cards, poster rails, chips; called once globally, so page code can assume the classes
-  exist), mounts the global `Cmd+K` palette, then routes via `st.navigation` to the five `pages/` files
-  (home, database, calendar, streaming, recommendations).
+  exist), mounts the global `Cmd+K` palette, then routes via `st.navigation` to the six `pages/` files
+  (home, database, calendar, paris, streaming, recommendations).
 - **Routing has a second layer: `?movie=<slug>` overlays the movie detail page.** `app.py` reads
   `st.query_params[ui.MOVIE_QUERY_PARAM]` after `st.navigation` and, when present (even empty — a
   truncated link shows the "no film at this link" empty state), calls `pages/movie.py:main(slug)`
@@ -156,7 +156,8 @@ typecheck, security, test.
   `movie_href`/`row_slug`), `ui/cards.py` (`render_movie_card`, `render_poster_rail`, `render_hero_card` —
   imports the primitives it needs from `ui.theme` and `render_empty_state` from `ui.chips`), `ui/chips.py`
   (`match_chips_html`, `render_chip_filter`, `render_kpi_strip`, `render_empty_state`,
-  `render_freshness_banner`), and `ui/ics.py` (`screening_end`, `to_ics`, the ad-block sizing). `ui/__init__.py`
+  `render_freshness_banner`), `ui/availability.py` (`render_free_time_filter` / `FreeTimeSelection`), and
+  `ui/ics.py` (`screening_end`, `to_ics`, the ad-block sizing). `ui/__init__.py`
   re-exports the full public surface with an explicit `__all__`, so existing `from utils.ui import (...)`
   call sites became `from ui import (...)` — a one-token change; the handful of call sites that need a
   private helper (e.g. `pages/calendar.py`'s `_movie_card_html`, `pages/movie.py`'s `_streaming_badges_html`)
@@ -278,6 +279,53 @@ typecheck, security, test.
   Database page's "Unmatched" tab (`pages/database.py`) groups the result to one row per film
   (`_unresolved_summary`: next upcoming showtime, theater(s), screening count) and renders a designed
   "✅ every screening matched" empty state — not a broken panel — when there's nothing to review.
+- **`sources/discover.py` joins the full showtimes against the metadata cache, not just the watchlist —
+  the "Screening in Paris" page (`pages/paris.py`).** Every other showtimes surface is built on
+  `build_watchlist_showtimes`'s inner join, so a film screening this week that was never watchlisted never
+  appears anywhere; measured against the real parquets, 250 films screen across 13 tracked theaters in a
+  week and that join surfaces 14 of them. `build_screenings` reuses `sources.loader._normalize_title` and
+  `sources.loader._directors_overlap` — the identical title-matched, director-confirmed contract — against
+  `data_letterboxd.parquet` instead of the watchlist, and like it this is an **inner** join — a showtime
+  that never confirms a cache match is dropped, because a film with no cache row has no metadata to rank,
+  no poster and no detail page, and the enrichment step already reports that set in
+  `unresolved_allocine.parquet`. Every row is labelled `"seen"` (its slug is in the ratings parquet),
+  `"watchlist"`, or `"untracked"` — the discovery case, taste-scored via `core.taste.attach_match` exactly
+  like every other rail so its match badge and "because" chips mean the same thing here as on Home.
+  `build_screenings` also maps `user_rating` on from the ratings parquet by slug (the cache has no such
+  column — same join `core.movie.load_movie` does for the detail page), because the page's rewatch /
+  second-chance sections are cuts on it; the column is always present, all-`NA` when there is no ratings
+  parquet, since the page indexes it unconditionally. `french_title` is dropped from the cache-metadata
+  side before the `movie`→`french_title` rename (mirroring `build_watchlist_showtimes`'s own `drop_cols`) —
+  skipping that step produces two identically-named columns and pandas raises `InvalidIndexError`, a bug
+  only the real parquets caught (most cache rows carry both `title` and `french_title`; the unit tests'
+  synthetic cache rows mostly didn't).
+- **The Paris page is curated sections, not a filter wall — there is no browse-everything rail.** The one
+  control is "Only times I'm free" (`core.availability.free_time_mask`, identical semantics to the
+  Watchlist Showtimes page — day-off vs unavailable, weekday cutoff), applied to `screenings` before any
+  section is built, so the KPI strip and every rail below only ever show attendable screenings. Three rails
+  follow, each answering one question and each *omitted rather than rendered empty*, in this order:
+  "Best matches — new to you" (`untracked`, by match), "Worth a second chance?" (`user_rating <
+  RETRY_MAX_RATING` 2.5 **and** `match >= RETRY_MIN_MATCH` 70 — the disagreement rail), and last "Worth a
+  rewatch!" (`user_rating >= REWATCH_MIN_RATING` 4.0, ordered by the user's own rating — this rail is their
+  verdict, not the ranker's). Rewatch alone gets a bigger cap (`REWATCH_RAIL_SIZE` 24 vs. `TOP_MATCHES_SIZE`
+  12 for the other two) because it draws on films the user has already vouched for, not a ranker guess, so
+  there's less risk in showing more. The three score/rating thresholds are page constants calibrated on the
+  real parquets (Aug 2026): 61 films clear the rewatch bar in a week, and of the 24 rated-below-2.5 films
+  screening, match≥60 keeps 9, ≥65 keeps 6, ≥70 keeps 3 — 70 is chosen so the rail shows only strong
+  disagreement. `user_rating` arrives nullable, so the masks coerce with `pd.to_numeric(...)` and
+  `.fillna(False)`: `series >= x` on a nullable dtype yields `NA`, which pandas rejects as a boolean mask.
+  Every card also lists its upcoming showtimes (`_showtime_badges_html`, one `.showtime-badge` div per
+  screening — same CSS class the Watchlist Showtimes day rails use, just per-card here since these rails
+  aren't grouped by date), capped at `MAX_SHOWTIME_BADGES` (6, "+N more" beyond that — a wide release can
+  carry dozens of screenings in a week, measured max 86) and grouped once per render from the full
+  (post-free-time-filter) multi-row frame, not the single row a rail dedupes each card down to.
+- **`dict(some_groupby_object)` breaks on this project's pandas (3.x).** `DataFrameGroupBy` now exposes a
+  public `.keys` attribute — the grouping column name(s), a plain string here — which shadows the mapping
+  protocol `dict()` checks for (`hasattr(obj, "keys")` then calls it), raising `TypeError: 'str' object is
+  not callable`. Caught building `pages/paris.py`'s per-film showtime lookup against the real data, not by
+  the unit tests (synthetic fixtures never exercised the actual `groupby` call). Use a dict/generator
+  comprehension over the groupby's `(key, frame)` iteration instead — `{k: g for k, g in df.groupby(col)}`
+  — which sidesteps the mapping-protocol check entirely.
 - **Taste ranker lives in `core/taste.py`** (all formulas + constants in one place). `build_affinity`
   derives signed, shrunk affinities per director/genre/theme/cast/country/language/decade from the
   ratings history (`_DIM_COLUMNS` + `WEIGHTS` are the single place new dimensions plug in; `_CARRY_COLUMNS`
@@ -289,8 +337,9 @@ typecheck, security, test.
   unfiltered per-value terms the movie detail page shows in full (disliked ones flagged, not hidden), which
   with `quality_prior` sum back to `_raw_score` exactly, so the breakdown always reconciles with the badge;
   `attach_match` joins scores onto candidate rows. Home's "Top matches this week" rail, home's streaming
-  rail (ordering), and the streaming page's per-provider rails (ordering, plus the match badge/"because"
-  chips on each card) consume it. `sources.loader.build_taste_profile` (the chat-prompt string) is a thin formatter
+  rail (ordering), the streaming page's per-provider rails (ordering, plus the match badge/"because"
+  chips on each card), and the Screening in Paris page's "Best matches — new to you" rail consume it.
+  `sources.loader.build_taste_profile` (the chat-prompt string) is a thin formatter
   over the same profile — its line prefixes ("Average rating given:", "Favourite genres:", …) are a
   contract pinned by `tests/sources/test_loader.py` and the eval goldens: extend with new lines, don't reword.
 - **Those taste constants are re-derivable, not folklore — `backtest.py` is how.** `core/backtest.py` is the
@@ -419,6 +468,18 @@ typecheck, security, test.
   missing/junk) with the pre-feature ad block — `ADS_MINUTES_CHAIN` (20) when the theater name
   case-insensitively contains `mk2`/`ugc`, else `ADS_MINUTES_DEFAULT` (10). Keep all three downloads on that
   one helper so they can't drift.
+- **The free-time control is one widget shared by two pages, rendered and applied at different moments.**
+  `ui/availability.py` is the Streamlit half of `core/availability.py`: `render_free_time_filter(rows,
+  key_prefix=...)` mounts the toggle plus its three pickers and returns a frozen `FreeTimeSelection`, whose
+  `.apply(df)` does the masking. Render and apply are split because the two call sites need the mask at
+  different points — `pages/calendar.py` mounts the control at the page top but applies it *late*, as one
+  link in the filter chain whose final frame also feeds the ICS/CSV export, while `pages/paris.py` applies
+  it immediately so every curated rail below is built from attendable screenings only. Both pass the
+  *unfiltered* frame as the picker's date source, so another filter can't drop a date out from under it,
+  and `key_prefix` namespaces the four widget keys since both pages can live in one session. A disabled
+  selection is a passthrough that ignores its own other fields, and `.apply` short-circuits on an empty
+  frame (which has no `showtimes` column to mask). Don't re-inline this into a page — it was duplicated
+  once and drifted immediately.
 - **The free-time filter distinguishes "day off" from "unavailable".** `core/availability.py` (Streamlit-
   free, unit-tested) computes `watchable = (weekend | FR holiday | day-off | weekday ≥ cutoff) & ~unavailable`.
   A *day off* is free all day (includes daytime screenings); an *unavailable* day (away/vacation) excludes the

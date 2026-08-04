@@ -4,7 +4,7 @@ Cinema Dashboard — unified Streamlit entry point.
 Run with:
     streamlit run app.py
 
-Routing has two layers. ``st.navigation`` owns the five sections in the
+Routing has two layers. ``st.navigation`` owns the six sections in the
 sidebar; on top of that, a ``?movie=<slug>`` query parameter overlays the movie
 detail page (``pages/movie.py``) in place of whichever section is selected.
 Every movie card in the app is an anchor to that URL (:func:`ui.movie_href`),
@@ -45,6 +45,7 @@ pg = st.navigation(
         st.Page("pages/0_home.py", title="Home", icon="🏠", default=True),
         st.Page("pages/database.py", title="Movies Database", icon="📊"),
         st.Page("pages/calendar.py", title="Watchlist Showtimes", icon="📅"),
+        st.Page("pages/paris.py", title="Screening in Paris", icon="🎭"),
         st.Page("pages/streaming.py", title="Streaming", icon="📺"),
         st.Page("pages/recommendations.py", title="Recommendations", icon="🤖"),
     ]

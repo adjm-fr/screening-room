@@ -11,11 +11,14 @@ displays upcoming screenings across three surfaces:
   filter; marker size ∝ # of watchlist screenings.
 
 The page top carries a single control: the "Only times I'm free" toggle
-(which replaced the old "Weekends only" one). It keeps a screening when it
-falls on a weekend, a French public holiday, a user-marked day off, or a
-weekday at/after an editable cutoff (default 19:00) — minus any dates marked
-unavailable (away), which override everything (see ``core.availability``);
-its cutoff + days-off/unavailable pickers appear inline when it's on. Every
+(which replaced the old "Weekends only" one), mounted via the shared
+:func:`ui.render_free_time_filter` that Screening in Paris also uses. It keeps
+a screening when it falls on a weekend, a French public holiday, a user-marked
+day off, or a weekday at/after an editable cutoff (default 19:00) — minus any
+dates marked unavailable (away), which override everything (see
+``core.availability``); its cutoff + days-off/unavailable pickers appear
+inline when it's on. The returned selection is applied *late*, in filter order
+below, rather than where it's rendered — the export reads that same frame. Every
 other filter lives in the sidebar: date range, a theater multi-select whose
 options stay hidden inside the dropdown (empty selection = all theaters),
 runtime buckets, a showtime time-of-day range, text search, and min rating.
@@ -38,7 +41,6 @@ import html as _html
 import pandas as pd
 import streamlit as st
 
-from core.availability import free_time_mask
 from sources.geo import load_geocoded_theaters, render_theater_map
 from sources.loader import (
     build_watchlist_showtimes,
@@ -50,6 +52,7 @@ from sources.loader import (
 from ui import (
     render_chip_filter,
     render_empty_state,
+    render_free_time_filter,
     screening_end,
     to_ics,
 )
@@ -169,31 +172,10 @@ def main() -> None:
     wl_shows["_runtime_bucket"] = wl_shows[runtime_col].apply(_runtime_bucket) if runtime_col else "Unknown"
 
     # ── On-page: only the free-time toggle (+ its pickers when on) ──────────
-    only_free = st.toggle(
-        "Only times I'm free",
-        value=False,
-        key="cal_free",
-        help=(
-            "Weekends, French public holidays, your days off, or weekday screenings "
-            "at/after the cutoff — minus any days you've marked unavailable."
-        ),
-    )
-    free_cutoff, sel_days_off, sel_unavail = dt.time(19, 0), [], []
-    if only_free:
-        upcoming = sorted(pd.to_datetime(wl_shows["showtimes"]).dt.date.dropna().unique())
-        fa1, fa2, fa3 = st.columns([1, 2, 2])
-        with fa1:
-            free_cutoff = st.time_input(
-                "Free from (weekdays)", value=dt.time(19, 0), step=dt.timedelta(minutes=15), key="cal_cutoff"
-            )
-        with fa2:
-            sel_days_off = st.multiselect(
-                "Days off (free all day)", upcoming, key="cal_daysoff", format_func=lambda d: d.strftime("%a %d %b")
-            )
-        with fa3:
-            sel_unavail = st.multiselect(
-                "Unavailable (away)", upcoming, key="cal_unavail", format_func=lambda d: d.strftime("%a %d %b")
-            )
+    # Options come from the unfiltered wl_shows, so a sidebar filter can't drop
+    # a date out from under the pickers; the selection is applied further down,
+    # in filter order, to the frame the export also reads.
+    free_time = render_free_time_filter(wl_shows, key_prefix="cal")
 
     # ── Sidebar: every other filter ─────────────────────────────────────────
     min_dt = pd.to_datetime(wl_shows["showtimes"]).min()
@@ -231,10 +213,7 @@ def main() -> None:
         start_t, end_t = sel_time_range
         showtime_of_day = pd.to_datetime(filtered["showtimes"]).dt.time
         filtered = filtered[(showtime_of_day >= start_t) & (showtime_of_day <= end_t)]
-    if only_free:
-        filtered = filtered[
-            free_time_mask(filtered["showtimes"], cutoff=free_cutoff, days_off=sel_days_off, unavailable=sel_unavail)
-        ]
+    filtered = free_time.apply(filtered)
     if search:
         s_norm = search.lower().strip()
         title_col = "french_title" if "french_title" in filtered.columns else "movie"

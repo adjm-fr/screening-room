@@ -11,6 +11,9 @@ Reorganises the Letterboxd cache + ratings + watchlist into three calmer tabs:
   not a static chart wall.
 - **Tables** — the three raw dataframes with poster + a "Details" link into
   the movie detail page + IMDB/TMDB/Letterboxd link columns for power users.
+- **Unmatched** — Allocine screenings whose film couldn't be resolved to a
+  Letterboxd slug during cache enrichment (``unresolved_allocine.parquet``),
+  otherwise invisible to the rest of the dashboard.
 """
 
 from __future__ import annotations
@@ -26,9 +29,12 @@ from config import settings
 from sources.loader import (
     attach_streaming,
     build_taste_profile,
+    build_unresolved_showtimes,
     get_paths,
     load_letterboxd_cache,
     load_ratings,
+    load_showtimes,
+    load_unresolved_allocine,
     load_watchlist,
 )
 from ui import (
@@ -196,10 +202,34 @@ def _top_themes(cache_df: pd.DataFrame) -> list[tuple[str, float]]:
     return [(str(name), (count / max_count) * 10.0) for name, count in counts.items()]
 
 
+def _unresolved_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse one-row-per-screening unresolved data into one row per film.
+
+    ``df`` is expected in :func:`sources.loader.build_unresolved_showtimes`'s shape (one row
+    per unresolved film × upcoming showtime). ``next_showtime`` is the soonest upcoming
+    screening, ``theaters`` lists every distinct theater currently showing it, and
+    ``n_showtimes`` counts the upcoming screenings — turning a screening-level frame into an
+    actionable per-film list. Pure/Streamlit-free so it's unit-testable without a page import.
+    """
+    if df.empty:
+        return df
+    return (
+        df.groupby(["movie", "original_title", "director", "release_year"], dropna=False)
+        .agg(
+            next_showtime=("showtimes", "min"),
+            theaters=("theater_name", lambda s: ", ".join(sorted(set(s.dropna())))),
+            n_showtimes=("showtimes", "count"),
+        )
+        .reset_index()
+        .sort_values("next_showtime")
+        .reset_index(drop=True)
+    )
+
+
 def main() -> None:
     st.markdown('<h1 class="h-display" style="font-size:2rem;">Movies Database</h1>', unsafe_allow_html=True)
 
-    output_path, _, _ = get_paths()
+    output_path, allocine_output, _ = get_paths()
     if not output_path:
         st.error("**OUTPUT_PATH** is not set. Add it to the workspace-root `.env` and restart.")
         return
@@ -238,7 +268,7 @@ def main() -> None:
     # Warm the taste-profile cache so the Recommendations page is instant.
     build_taste_profile(ratings_df)
 
-    tab_overview, tab_discover, tab_tables = st.tabs(["📈 Overview", "🔎 Discover", "📋 Tables"])
+    tab_overview, tab_discover, tab_tables, tab_unresolved = st.tabs(["📈 Overview", "🔎 Discover", "📋 Tables", "🧩 Unmatched"])
 
     with tab_overview:
         st.caption(
@@ -314,6 +344,50 @@ def main() -> None:
             st.dataframe(ratings_df_s, width="stretch", hide_index=True, column_config=link_cfg)
         with sub_watch:
             st.dataframe(watchlist_df_s, width="stretch", hide_index=True, column_config=link_cfg)
+
+    with tab_unresolved:
+        st.caption(
+            "Allocine screenings whose title/director combination couldn't be resolved to a "
+            "Letterboxd film during cache enrichment — a spelling mismatch, a director credited "
+            "differently between the two sources, or a release too new/obscure to be on "
+            "Letterboxd yet. They're still playing; the dashboard just has no page for them. "
+            "Check them directly on Letterboxd or Allociné, or wait for a future scrape once the "
+            "metadata catches up."
+        )
+        unresolved_raw = load_unresolved_allocine(str(output_path))
+        if unresolved_raw.empty:
+            render_empty_state(
+                "✅",
+                "Every screening matched",
+                "The last scrape resolved every Allocine film to a Letterboxd page — nothing to review here.",
+            )
+        else:
+            summary = pd.DataFrame()
+            if allocine_output and allocine_output.exists():
+                showtimes_df = load_showtimes(str(allocine_output))
+                summary = _unresolved_summary(build_unresolved_showtimes(unresolved_raw, showtimes_df))
+            if summary.empty:
+                n = len(unresolved_raw)
+                render_empty_state(
+                    "🎬",
+                    f"{n} unmatched film{'s' if n != 1 else ''}, no upcoming screenings",
+                    "They showed up in the last scrape but none are currently playing — check back after the next refresh.",
+                )
+            else:
+                st.dataframe(
+                    summary,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "movie": st.column_config.TextColumn("Title"),
+                        "original_title": st.column_config.TextColumn("Original title"),
+                        "director": st.column_config.TextColumn("Director"),
+                        "release_year": st.column_config.NumberColumn("Year", format="%d"),
+                        "theaters": st.column_config.TextColumn("Theater(s)"),
+                        "next_showtime": st.column_config.DatetimeColumn("Next showtime", format="ddd D MMM, HH:mm"),
+                        "n_showtimes": st.column_config.NumberColumn("Upcoming showtimes"),
+                    },
+                )
 
 
 main()

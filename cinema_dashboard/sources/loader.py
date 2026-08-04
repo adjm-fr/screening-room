@@ -13,7 +13,9 @@ Public API:
     load_showtimes(path)       -> raw showtimes DataFrame (all dates)
     load_ratings(path)         -> Letterboxd ratings DataFrame
     load_letterboxd_cache(p)   -> full Letterboxd metadata cache
+    load_unresolved_allocine(p) -> Allocine films that couldn't be resolved to a Letterboxd slug
     build_watchlist_showtimes  -> join of watchlist and showtimes
+    build_unresolved_showtimes -> join of unresolved films and showtimes (upcoming only)
     build_taste_profile(df)    -> compact taste summary string (affinity-ranked, see core.taste)
     attach_streaming(df, …)    -> left-join FR streaming-providers cache by ``tmdb_id``
     future_showtimes(df)       -> rows with ``showtimes >= now`` in Europe/Paris (uncached)
@@ -39,6 +41,11 @@ DATA_TTL_SECONDS = 300
 # Allocine emits naive screening times in Paris local wall-clock; future_showtimes
 # anchors its "now" cutoff here so the dashboard is correct regardless of host tz.
 SHOWTIMES_TZ = "Europe/Paris"
+
+# The film-identity tuple `allocine_enrichment.enrich_cache_from_showtimes` reads out of
+# showtimes.parquet and writes to unresolved_allocine.parquet verbatim when a film can't be
+# resolved to a Letterboxd slug — see movies_management/modules/allocine_enrichment.py.
+UNRESOLVED_COLUMNS = ("movie", "original_title", "director", "release_year")
 
 
 def _normalize_title(raw: object) -> str:
@@ -176,6 +183,65 @@ def load_letterboxd_cache(movies_output: str) -> pd.DataFrame:  # pragma: no cov
     df = pd.read_parquet(Path(movies_output) / "data_letterboxd.parquet")
     log.info("Letterboxd cache loaded: %d rows", len(df))
     return df
+
+
+@st.cache_data(ttl=DATA_TTL_SECONDS)
+def load_unresolved_allocine(movies_output: str) -> pd.DataFrame:  # pragma: no cover
+    """Read ``unresolved_allocine.parquet`` — Allocine screenings whose film could not be
+    resolved to a Letterboxd slug during cache enrichment (see
+    ``movies_management.modules.allocine_enrichment.enrich_cache_from_showtimes``).
+
+    The file is only produced when ``movies_management`` runs with
+    ``--enrich-from-allocine``, and is legitimately absent whenever that step hasn't run
+    yet — **a missing file is the normal case, not an error**: this returns an empty frame
+    (with :data:`UNRESOLVED_COLUMNS`) instead of raising, so callers never need a defensive
+    existence check of their own. A *malformed* file (present but unreadable) still raises —
+    that's a real data problem, not the expected "nothing unresolved" state.
+    """
+    path = Path(movies_output) / "unresolved_allocine.parquet"
+    if not path.exists():
+        log.debug("No unresolved_allocine.parquet at %s — nothing unresolved on disk", path)
+        return pd.DataFrame(columns=list(UNRESOLVED_COLUMNS))
+    df = pd.read_parquet(path)
+    log.info("Unresolved Allocine films loaded: %d rows", len(df))
+    return df
+
+
+def build_unresolved_showtimes(unresolved_df: pd.DataFrame, showtimes_df: pd.DataFrame) -> pd.DataFrame:
+    """Join unresolved Allocine films onto the raw showtimes for theater/date context.
+
+    ``unresolved_df`` rows are exactly the ``(movie, original_title, director,
+    release_year)`` tuples ``enrich_cache_from_showtimes`` read out of ``showtimes_df`` in the
+    first place and failed to resolve — the same tuple shape, from the same source rows — so
+    an exact-key merge on those four columns recovers every screening for that film without
+    the title-normalisation/director-overlap fuzziness :func:`build_watchlist_showtimes` needs
+    (its keys come from two *different* sources and can legitimately spell things
+    differently; these don't). pandas matches ``NaN`` keys to each other in a merge, so rows
+    with a blank ``original_title``/``director`` still join correctly.
+
+    Returns one row per (unresolved film × future showtime) — the same "one row per
+    movie×showtime" shape as ``build_watchlist_showtimes``'s ``wl_shows``. Screenings already
+    in the past are dropped (see :func:`future_showtimes`); a film whose only screenings have
+    passed drops out of the result entirely — nothing actionable is left to show for it.
+
+    Not ``@st.cache_data``-decorated for the same reason :func:`future_showtimes` isn't: the
+    result depends on the current time and would otherwise stick to whatever "now" was when
+    the cache entry was first written.
+    """
+    empty_result = unresolved_df.iloc[0:0].assign(theater_name=pd.Series(dtype=str), showtimes=pd.Series(dtype="datetime64[ns]"))
+    key_cols = [c for c in UNRESOLVED_COLUMNS if c in unresolved_df.columns and c in showtimes_df.columns]
+    if unresolved_df.empty or showtimes_df.empty or not key_cols:
+        return empty_result
+
+    want_cols = [*key_cols, "theater_name", "showtimes"]
+    merged = unresolved_df.merge(showtimes_df[[c for c in want_cols if c in showtimes_df.columns]], on=key_cols, how="inner")
+    if merged.empty or "showtimes" not in merged.columns:
+        return empty_result
+
+    merged = future_showtimes(merged)
+    n_films = merged["movie"].nunique() if "movie" in merged.columns else 0
+    log.info("Unresolved-showtimes join: %d upcoming screenings across %d films", len(merged), n_films)
+    return merged.sort_values("showtimes").reset_index(drop=True)
 
 
 @st.cache_data(ttl=DATA_TTL_SECONDS)

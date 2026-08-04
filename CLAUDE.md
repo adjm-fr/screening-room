@@ -244,6 +244,20 @@ typecheck, security, test.
   (`data/chat_state.json`, `data/streaming_providers.parquet`) listed in both this project's and the
   workspace root's `.gitignore` — a Python package placed there would be silently untracked and never
   committed.
+- **Unmatched Allocine films are surfaced, not just counted.** `movies_management`'s Allocine cache
+  enrichment (`allocine_enrichment.enrich_cache_from_showtimes`) writes films it couldn't resolve to a
+  Letterboxd slug to `{OUTPUT_PATH}/unresolved_allocine.parquet` — previously read by exactly one thing,
+  `pipeline/assets.py`'s Dagster metadata count. `sources.loader.load_unresolved_allocine` now reads it for
+  the dashboard too (a missing file is the normal "nothing unresolved" case, not an error — it returns an
+  empty frame, same convention as every other loader here); `build_unresolved_showtimes` joins it back onto
+  the raw `showtimes.parquet` on the exact `(movie, original_title, director, release_year)` tuple the
+  enrichment step read it *from* in the first place (pandas matches `NaN` keys to each other, so a blank
+  `original_title`/`director` still joins), dropping screenings already in the past — same
+  `future_showtimes`/`Europe/Paris` rule as everywhere else, not the title-normalisation/director-overlap
+  fuzziness `build_watchlist_showtimes` needs (these keys come from one source, not two). The Movies
+  Database page's "Unmatched" tab (`pages/database.py`) groups the result to one row per film
+  (`_unresolved_summary`: next upcoming showtime, theater(s), screening count) and renders a designed
+  "✅ every screening matched" empty state — not a broken panel — when there's nothing to review.
 - **Taste ranker lives in `core/taste.py`** (all formulas + constants in one place). `build_affinity`
   derives signed, shrunk affinities per director/genre/theme/cast/country/language/decade from the
   ratings history (`_DIM_COLUMNS` + `WEIGHTS` are the single place new dimensions plug in; `_CARRY_COLUMNS`

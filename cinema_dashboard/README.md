@@ -49,12 +49,13 @@ The page is backed by `data_letterboxd.parquet`, which is a superset of the rati
 
 ### Movies Database (📊)
 
-Three calmer tabs in place of the old chart wall:
+Four tabs in place of the old chart wall:
 - **Overview** — Genre × avg rating chart (rated films only) + micro-card insights (runtime distribution sparkline, top directors chip cloud, top themes chip cloud). A caption below the title clarifies the stats are based on your rated films count.
 - **Discover** — chip filters (genre, director multiselect with live search, min-rating slider) over a poster rail of matching films. Each card shows your own star rating as a green chip (Letterboxd convention) next to the amber Letterboxd community average; both ratings are on the same 0–5 scale.
 - **Tables** — raw dataframes with poster, a "Details" link into the film's [movie detail page](#movie-detailmovieslug), IMDB, TMDB, and Letterboxd link columns. A "Streaming on" column lists, per film, the subscribed services currently carrying it (when `STREAMING_SERVICES` is set) plus every no-cost provider suffixed `(free)` (e.g. `netflix, arte-tv (free)`) — free platforms always show, subscription-gated ones don't.
+- **Unmatched** — surfaces `unresolved_allocine.parquet`: Allocine screenings whose title/director combination `movies_management`'s Allocine cache enrichment couldn't resolve to a Letterboxd film, otherwise invisible everywhere else in the dashboard. `sources.loader.load_unresolved_allocine` reads the parquet (a missing file is the normal "nothing unresolved" case, not an error — it returns an empty frame) and `build_unresolved_showtimes` joins it back onto the raw `showtimes.parquet` on the exact `(movie, original_title, director, release_year)` tuple the enrichment step read it from, dropping screenings already in the past (`Europe/Paris` wall-clock, same rule as everywhere else). The page groups that to one row per film — title, director, year, theater(s), next upcoming showtime, and screening count — via `pages.database._unresolved_summary`, and renders a designed "✅ every screening matched" empty state when there's nothing to review.
 
-**Requires**: `OUTPUT_PATH`
+**Requires**: `OUTPUT_PATH` (+ `ALLOCINE_OUTPUT_PATH` for theater/showtime context on the Unmatched tab — without it the tab still reports the raw unresolved count, just without screening details)
 
 ### Watchlist Showtimes (📅)
 
@@ -156,7 +157,7 @@ cinema_dashboard/
 ├── pages/
 │   ├── __init__.py               # Makes `pages` a real package (app.py imports pages.movie — see the module docstring)
 │   ├── 0_home.py                 # Home — hero "tonight" card, poster rails, KPI strip
-│   ├── database.py               # Movies Database page (Overview / Discover / Tables)
+│   ├── database.py               # Movies Database page (Overview / Discover / Tables / Unmatched)
 │   ├── calendar.py               # Watchlist Showtimes page (theater dropdown, runtime/time-of-day/free-time/search filters, day rails, map, ICS export)
 │   ├── movie.py                  # Movie detail page — routed by ?movie=<slug>, not by st.navigation (no import-time main())
 │   ├── streaming.py              # Streaming page — one poster rail per FR provider
@@ -269,7 +270,7 @@ uv run --no-sync --directory cinema_dashboard python orchestrate.py --reset-db #
 - `showtimes.parquet` — stale if last written before the most recent Tuesday (French cinemas publish the new week's programme on Tuesdays), **or** if the theaters CSV (`ALLOCINE_INPUT_PATH`) has been modified since the parquet was last written (a theater was added/removed, so the showtimes no longer cover the current set). Adding a theater via the Recommendations chat therefore triggers a re-scrape on the next run, even mid-week.
 - `watchlist_with_letterboxd.parquet` — stale if older than 7 days
 
-After the Allocine scrape succeeds, the orchestrator automatically runs a third step that expands `data_letterboxd.parquet` with Letterboxd metadata for every film found in the fresh `showtimes.parquet` — not only the user's watchlist and ratings. Films that cannot be resolved to a Letterboxd slug are written to `{OUTPUT_PATH}/unresolved_allocine.parquet`.
+After the Allocine scrape succeeds, the orchestrator automatically runs a third step that expands `data_letterboxd.parquet` with Letterboxd metadata for every film found in the fresh `showtimes.parquet` — not only the user's watchlist and ratings. Films that cannot be resolved to a Letterboxd slug are written to `{OUTPUT_PATH}/unresolved_allocine.parquet` — surfaced in the dashboard's Movies Database page, on the "Unmatched" tab (see [Pages](#pages) above), rather than only in Dagster metadata.
 
 Output is timestamped and labelled per scraper:
 ```

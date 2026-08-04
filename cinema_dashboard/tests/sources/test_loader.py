@@ -7,8 +7,10 @@ from sources.loader import (
     _normalize_title,
     attach_streaming,
     build_taste_profile,
+    build_unresolved_showtimes,
     build_watchlist_showtimes,
     future_showtimes,
+    load_unresolved_allocine,
 )
 
 # ---------------------------------------------------------------------------
@@ -647,3 +649,124 @@ def test_attach_streaming_left_join_preserves_unmatched(mocker):
     assert out.loc["2", "free"] == []
     assert out.loc["3", "flatrate"] == ["netflix", "canalplus"]
     assert out.loc["3", "free"] == ["arte"]
+
+
+# ---------------------------------------------------------------------------
+# load_unresolved_allocine
+# ---------------------------------------------------------------------------
+
+
+def test_load_unresolved_allocine_missing_file_returns_empty_frame(tmp_path):
+    result = load_unresolved_allocine(str(tmp_path))
+    assert result.empty
+    assert list(result.columns) == ["movie", "original_title", "director", "release_year"]
+
+
+def test_load_unresolved_allocine_reads_existing_file(tmp_path):
+    df = pd.DataFrame([{"movie": "Unknown Film", "original_title": None, "director": None, "release_year": 2024}])
+    df.to_parquet(tmp_path / "unresolved_allocine.parquet")
+    result = load_unresolved_allocine(str(tmp_path))
+    assert len(result) == 1
+    assert result.iloc[0]["movie"] == "Unknown Film"
+
+
+# ---------------------------------------------------------------------------
+# build_unresolved_showtimes
+# ---------------------------------------------------------------------------
+
+
+def test_build_unresolved_showtimes_empty_unresolved_returns_empty(mocker):
+    mocker.patch("sources.loader._now_paris", return_value=pd.Timestamp("2030-06-01", tz="Europe/Paris"))
+    unresolved = pd.DataFrame(columns=["movie", "original_title", "director", "release_year"])
+    showtimes = pd.DataFrame(
+        [
+            {
+                "movie": "X",
+                "original_title": None,
+                "director": None,
+                "release_year": 2024,
+                "theater_name": "T",
+                "showtimes": pd.Timestamp("2030-06-02"),
+            }
+        ]
+    )
+    result = build_unresolved_showtimes(unresolved, showtimes)
+    assert result.empty
+    assert "theater_name" in result.columns
+    assert "showtimes" in result.columns
+
+
+def test_build_unresolved_showtimes_joins_on_film_key(mocker):
+    mocker.patch("sources.loader._now_paris", return_value=pd.Timestamp("2030-06-01", tz="Europe/Paris"))
+    unresolved = pd.DataFrame([{"movie": "Unknown Film", "original_title": None, "director": None, "release_year": 2024}])
+    showtimes = pd.DataFrame(
+        [
+            {
+                "movie": "Unknown Film",
+                "original_title": None,
+                "director": None,
+                "release_year": 2024,
+                "theater_name": "Le Champo",
+                "showtimes": pd.Timestamp("2030-06-05 20:00"),
+            },
+            {
+                "movie": "Some Other Film",
+                "original_title": None,
+                "director": None,
+                "release_year": 2024,
+                "theater_name": "Le Champo",
+                "showtimes": pd.Timestamp("2030-06-05 20:00"),
+            },
+        ]
+    )
+    result = build_unresolved_showtimes(unresolved, showtimes)
+    assert len(result) == 1
+    assert result.iloc[0]["movie"] == "Unknown Film"
+    assert result.iloc[0]["theater_name"] == "Le Champo"
+
+
+def test_build_unresolved_showtimes_drops_past_screenings(mocker):
+    mocker.patch("sources.loader._now_paris", return_value=pd.Timestamp("2030-06-01 20:00", tz="Europe/Paris"))
+    unresolved = pd.DataFrame([{"movie": "Unknown Film", "original_title": None, "director": None, "release_year": 2024}])
+    showtimes = pd.DataFrame(
+        [
+            {
+                "movie": "Unknown Film",
+                "original_title": None,
+                "director": None,
+                "release_year": 2024,
+                "theater_name": "Le Champo",
+                "showtimes": pd.Timestamp("2030-06-01 19:00"),  # past relative to frozen "now"
+            },
+            {
+                "movie": "Unknown Film",
+                "original_title": None,
+                "director": None,
+                "release_year": 2024,
+                "theater_name": "Le Champo",
+                "showtimes": pd.Timestamp("2030-06-02 19:00"),  # future
+            },
+        ]
+    )
+    result = build_unresolved_showtimes(unresolved, showtimes)
+    assert len(result) == 1
+    assert result.iloc[0]["showtimes"] == pd.Timestamp("2030-06-02 19:00")
+
+
+def test_build_unresolved_showtimes_no_match_returns_empty(mocker):
+    mocker.patch("sources.loader._now_paris", return_value=pd.Timestamp("2030-06-01", tz="Europe/Paris"))
+    unresolved = pd.DataFrame([{"movie": "Unmatched", "original_title": None, "director": None, "release_year": 2024}])
+    showtimes = pd.DataFrame(
+        [
+            {
+                "movie": "Different Film",
+                "original_title": None,
+                "director": None,
+                "release_year": 2024,
+                "theater_name": "Le Champo",
+                "showtimes": pd.Timestamp("2030-06-05 20:00"),
+            }
+        ]
+    )
+    result = build_unresolved_showtimes(unresolved, showtimes)
+    assert result.empty

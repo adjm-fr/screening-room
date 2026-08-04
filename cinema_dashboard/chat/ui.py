@@ -25,7 +25,9 @@ The Gemini API call lives in :func:`_ask_gemini`, which streams the assistant
 reply and handles up to :data:`MAX_TOOL_ROUNDS` rounds of tool use, dispatched
 by :func:`_run_tool`: ``search_theater`` (Allocine lookup, defined here) plus
 ``top_matches`` / ``showtimes_query`` / ``streaming_query`` (pure queries over
-the injected data, defined in :mod:`chat.tools`). ``_run_tool`` and
+the injected data, defined in :mod:`chat.tools`). A round may carry *several*
+parallel calls — one question can name several theaters — and every one of them
+is executed and answered. ``_run_tool`` and
 ``_render_tool_rows`` render Streamlit expanders (transport-with-UI), which is
 why they stay here beside ``_ask_gemini`` rather than in the Streamlit-free
 ``chat.tools``.
@@ -72,7 +74,9 @@ SEARCH_THEATER_TOOL = types.Tool(
                 "theaters list — including plain membership questions like 'is X in the list?', 'do you "
                 "know the X cinema?', or 'what about X?'. Always call the tool instead of answering from "
                 "the known list; never tell the user the theater is unknown or ask whether to search — "
-                "just search."
+                "just search. The tool takes ONE theater per call: when the user names several in the "
+                "same question, issue one call per theater in that same turn, never a single call "
+                "joining them."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -106,9 +110,11 @@ def _history_to_contents(history: list[dict]) -> list[types.Content]:
     return contents
 
 
-# How many tool calls one user turn may trigger. Bounded so a model that keeps
-# asking for tools can't loop forever (or drain the token budget); the reply is
-# still streamed, the surplus tool call is simply ignored.
+# How many *rounds* of tool use one user turn may trigger. Bounded so a model
+# that keeps asking for tools can't loop forever (or drain the token budget);
+# the reply is still streamed, the surplus round is simply ignored. A single
+# round may carry several parallel calls (see :func:`_ask_gemini`), so this
+# budget limits chained follow-ups, not how many theaters one turn can look up.
 MAX_TOOL_ROUNDS = 2
 
 
@@ -164,6 +170,24 @@ def _run_tool(ctx: ChatContext, name: str, args: dict) -> tuple[dict, list[dict]
     return {"error": f"unknown tool {name!r}"}, None
 
 
+def _merge_theaters(seen: list[dict] | None, new: list[dict]) -> list[dict]:
+    """Accumulate ``search_theater`` results across several calls in one turn.
+
+    A multi-theater question ("do you know the Brady and the Champo?") produces
+    one call per theater, and the "add this theater?" flow must offer all of
+    them, not just the last. Deduped on Allocine id because
+    :func:`_render_pending_theaters` keys its Add buttons on it — a repeat would
+    raise a duplicate-widget-key error.
+    """
+    merged = list(seen or [])
+    known = {t["id"] for t in merged}
+    for theater in new:
+        if theater["id"] not in known:
+            known.add(theater["id"])
+            merged.append(theater)
+    return merged
+
+
 def _render_tool_rows(label: str, rows: list[dict]) -> None:
     """Show a tool's returned rows in a collapsed expander, mirroring ``search_theater``'s UI."""
     with st.expander(label, expanded=False):
@@ -200,7 +224,7 @@ def _ask_gemini(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], l
         # One extra iteration over the round budget: the last pass streams the
         # model's answer to the final tool result without granting a new call.
         for round_index in range(MAX_TOOL_ROUNDS + 1):
-            fn_call: types.FunctionCall | None = None
+            fn_calls: list[types.FunctionCall] = []
             assistant_parts: list[types.Part] = []
 
             stream = client.models.generate_content_stream(model=settings.gemini_model, contents=cast(list, convo), config=cfg)
@@ -212,26 +236,32 @@ def _ask_gemini(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], l
                         assistant_parts.append(part)
                         yield part.text
                     elif part.function_call:
-                        fn_call = part.function_call
+                        fn_calls.append(part.function_call)
                         assistant_parts.append(part)
 
-            if fn_call is None:
+            if not fn_calls:
                 break
             if round_index == MAX_TOOL_ROUNDS:
-                log.warning("Tool-call budget of %d round(s) exhausted — ignoring %r", MAX_TOOL_ROUNDS, fn_call.name)
+                log.warning(
+                    "Tool-call budget of %d round(s) exhausted — ignoring %s",
+                    MAX_TOOL_ROUNDS,
+                    [c.name for c in fn_calls],
+                )
                 break
 
-            name = fn_call.name or ""
-            payload, tool_theaters = _run_tool(ctx, name, dict(fn_call.args or {}))
-            if tool_theaters is not None:
-                theaters = tool_theaters
+            # Every call in the turn must be answered: Gemini rejects a turn whose
+            # function responses don't cover its function calls one-for-one.
+            response_parts: list[types.Part] = []
+            for fn_call in fn_calls:
+                name = fn_call.name or ""
+                payload, tool_theaters = _run_tool(ctx, name, dict(fn_call.args or {}))
+                if tool_theaters is not None:
+                    theaters = _merge_theaters(theaters, tool_theaters)
+                response_parts.append(types.Part.from_function_response(name=name or "unknown", response=payload))
 
             convo = convo + [
                 types.Content(role="model", parts=assistant_parts),
-                types.Content(
-                    role="user",
-                    parts=[types.Part.from_function_response(name=name or "unknown", response=payload)],
-                ),
+                types.Content(role="user", parts=response_parts),
             ]
 
         pending_ref[0] = theaters if theaters else None

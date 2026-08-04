@@ -197,7 +197,13 @@ typecheck, security, test.
   streaming availability as markdown context, plus four tools: `search_theater` (live Allocine lookup,
   declared in `chat/ui.py`) and `top_matches` / `showtimes_query` / `streaming_query` (declared with their
   pure handlers in `chat/tools.py`). `_ask_gemini` dispatches them through a bounded loop (`MAX_TOOL_ROUNDS = 2`,
-  plus one final pass to stream the answer); only `search_theater` sets `pending_ref`. The system prompt is
+  plus one final pass to stream the answer); only `search_theater` sets `pending_ref`. **A round is a
+  round-trip, not a single call — one model turn can carry several parallel `function_call` parts** (asking
+  about two theaters at once produces one `search_theater` call each) and `_ask_gemini` must run *all* of
+  them and return a function response for *each*: Gemini rejects a turn whose responses don't cover its
+  calls one-for-one, which is how a multi-theater question used to end up with the tool apparently never
+  firing. `search_theater` results accumulate across those calls via `_merge_theaters`, deduped on Allocine
+  id because `_render_pending_theaters` keys its Add buttons on it. The system prompt is
   strictly **closed-set** — the model may only name films/providers present in the injected context or
   returned by a tool — and any new tool must preserve that by construction (return rows drawn from the same
   context, never from outside it). The `- {title} — flatrate=…` streaming-context line format is pinned by

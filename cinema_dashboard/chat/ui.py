@@ -24,10 +24,11 @@ This module itself owns the LLM transport and the UI:
 The Gemini API call lives in :func:`_ask_gemini`, which streams the assistant
 reply and handles up to :data:`MAX_TOOL_ROUNDS` rounds of tool use, dispatched
 by :func:`_run_tool`: ``search_theater`` (Allocine lookup, defined here) plus
-``top_matches`` / ``showtimes_query`` (pure queries over the injected data,
-defined in :mod:`chat.tools`). ``_run_tool`` and ``_render_tool_rows``
-render Streamlit expanders (transport-with-UI), which is why they stay here
-beside ``_ask_gemini`` rather than in the Streamlit-free ``chat.tools``.
+``top_matches`` / ``showtimes_query`` / ``streaming_query`` (pure queries over
+the injected data, defined in :mod:`chat.tools`). ``_run_tool`` and
+``_render_tool_rows`` render Streamlit expanders (transport-with-UI), which is
+why they stay here beside ``_ask_gemini`` rather than in the Streamlit-free
+``chat.tools``.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ from google.genai import types
 
 from chat.prompt import ChatContext, build_system_message
 from chat.state import ChatState, chat_state, delete_chat_state, save_chat_state
-from chat.tools import SHOWTIMES_TOOL, TASTE_TOOL, showtimes_query, top_matches
+from chat.tools import SHOWTIMES_TOOL, STREAMING_TOOL, TASTE_TOOL, showtimes_query, streaming_query, top_matches
 from config import settings
 from integrations.allocine import search_theaters
 from integrations.theaters import append_theater, load_theater_ids
@@ -151,6 +152,14 @@ def _run_tool(ctx: ChatContext, name: str, args: dict) -> tuple[dict, list[dict]
         _render_tool_rows(f"🛠 Searched showtimes: {criteria or 'all upcoming'}", rows)
         return {"results": rows}, None
 
+    if name == "streaming_query":
+        title, provider = args.get("title"), args.get("provider")
+        log.info("Tool call: streaming_query(title=%r, provider=%r)", title, provider)
+        rows = streaming_query(ctx.streaming_df, title=title, provider=provider)
+        criteria = ", ".join(f"{k}={v}" for k, v in (("title", title), ("provider", provider)) if v)
+        _render_tool_rows(f"🛠 Searched streaming: {criteria or 'all'}", rows)
+        return {"results": rows}, None
+
     log.warning("Ignoring unknown tool call: %r", name)
     return {"error": f"unknown tool {name!r}"}, None
 
@@ -177,7 +186,7 @@ def _ask_gemini(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], l
     contents = _history_to_contents(history)
     cfg = types.GenerateContentConfig(
         system_instruction=system_instruction,
-        tools=[SEARCH_THEATER_TOOL, TASTE_TOOL, SHOWTIMES_TOOL],
+        tools=[SEARCH_THEATER_TOOL, TASTE_TOOL, SHOWTIMES_TOOL, STREAMING_TOOL],
         max_output_tokens=settings.gemini_max_tokens,
         temperature=settings.gemini_temperature,
         top_p=settings.gemini_top_p,

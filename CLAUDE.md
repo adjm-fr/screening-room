@@ -194,9 +194,9 @@ typecheck, security, test.
   across surfaces; the transcript + pinned recs are also persisted to `data/chat_state.json`
   (`CHAT_STATE_PATH`, patchable in tests) and reloaded on launch — corrupt/absent file falls back to a
   fresh state, and "Clear conversation" deletes the file. The model gets taste profile + showtimes +
-  streaming availability as markdown context, plus three tools: `search_theater` (live Allocine lookup,
-  declared in `chat/ui.py`) and `top_matches` / `showtimes_query` (declared with their pure handlers in
-  `chat/tools.py`). `_ask_gemini` dispatches them through a bounded loop (`MAX_TOOL_ROUNDS = 2`,
+  streaming availability as markdown context, plus four tools: `search_theater` (live Allocine lookup,
+  declared in `chat/ui.py`) and `top_matches` / `showtimes_query` / `streaming_query` (declared with their
+  pure handlers in `chat/tools.py`). `_ask_gemini` dispatches them through a bounded loop (`MAX_TOOL_ROUNDS = 2`,
   plus one final pass to stream the answer); only `search_theater` sets `pending_ref`. The system prompt is
   strictly **closed-set** — the model may only name films/providers present in the injected context or
   returned by a tool — and any new tool must preserve that by construction (return rows drawn from the same
@@ -230,11 +230,24 @@ typecheck, security, test.
   guessing an order. `ctx.taste` is a ~200-token profile distilled from a 4k-row ratings history that is
   never in the prompt; it drives style-matching and carries the rating-ladder legend, so no tool replaces
   it. `showtimes_query` only adds precision (exact day filtering) over data already in context.
+  `streaming_query` is different from the other two: it isn't adding data the block lacks, it's recovering
+  data the block deliberately *drops*. `_streaming_context` was a one-line-per-streaming-film block that
+  alone cost ~74% of the ~9,500-token system prompt (measured against the real cache: 458 lines, ~8,460
+  tokens of a ~11,150-token prompt via `tiktoken`'s `cl100k_base`). It's now capped to the top
+  `STREAMING_CONTEXT_TOP_N` (50) films by taste `match` — landing around 50 lines / ~900 tokens, prompt
+  total ~3,580 tokens — ranked against `streaming_scored` (`watchlist_df` × `attach_streaming` ×
+  `attach_match`, computed in `build_chat_context` beside `wl_scored` and falling back to the unranked,
+  uncapped full list the same way `wl_scored` falls back to `wl_shows` when there's no usable rating
+  history). `ChatContext.streaming_df` carries that same pre-truncation frame so `streaming_query` can
+  still answer "is X streaming?" / "what's on Mubi?" for the films the cap left out of the block; when the
+  cap actually truncates, `_streaming_context` appends a trailing marker line naming the tool — never in
+  the pinned `- {title} — flatrate=…` shape, so it can't be read as a film entry.
 - **`chat/tools.py` is Streamlit-free and imports only pandas, `google.genai.types`, and
   `_normalize_title`** — that purity is what keeps the closed set true by construction. Its handlers take
-  the scored DataFrame, *not* `ChatContext` (which would also cycle the import back into `chat.ui`). New
-  tools belong here and must follow both rules; they must also be total (missing columns / NaN / junk args
-  return `[]`, never raise) since a raised exception would kill the streaming generator mid-reply.
+  a DataFrame, *not* `ChatContext` (which would also cycle the import back into `chat.ui`): `top_matches`
+  and `showtimes_query` take `ctx.wl_scored`, `streaming_query` takes `ctx.streaming_df`. New tools belong
+  here and must follow both rules; they must also be total (missing columns / NaN / junk args return `[]`,
+  never raise) since a raised exception would kill the streaming generator mid-reply.
 - **Data flow:** `sources/loader.py` loads the parquets, validates `showtimes.parquet` against
   `contracts.SHOWTIMES`, and `build_watchlist_showtimes` produces `wl_shows` — the watchlist↔showtimes join
   every page consumes (one row per movie×showtime, carrying titles, directors, runtime, rating, genres,

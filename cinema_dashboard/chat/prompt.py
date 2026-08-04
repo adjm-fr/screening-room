@@ -10,6 +10,12 @@ anchoring the LLM to a closed set of films/providers (see ``CLAUDE.md``'s
 chat-assistant section). Both are called once per Streamlit run, by
 ``chat.ui``'s callers (``pages/recommendations.py``, ``ui/cmdk.py``).
 
+``streaming_md`` is capped to the top :data:`STREAMING_CONTEXT_TOP_N`
+taste-matched films (see :func:`_streaming_context`) — the uncapped block
+alone cost ~74% of the system prompt's tokens. ``ChatContext.streaming_df``
+carries the full, untruncated frame it was built from so the
+``chat.tools.streaming_query`` tool can still reach films the cap left out.
+
 This module owns:
     ChatContext             (the dataclass)
     build_chat_context()   -> ChatContext | None  (config + data validation)
@@ -46,6 +52,15 @@ from sources.loader import (
 
 log = logging.getLogger(__name__)
 
+# Cap on how many watchlist films get an inline line in the streaming block.
+# The uncapped block cost ~74% of the ~9,500-token system prompt (measured
+# against the real cache: 458 lines, ~6,990 tokens); ranking by taste match
+# and keeping the top 50 lands the block around 50 lines / ~800 tokens while
+# keeping the most-relevant films inline. Anything narrowed out is still
+# reachable via the ``streaming_query`` tool (see ``chat.tools``), which
+# queries the same underlying frame unfiltered.
+STREAMING_CONTEXT_TOP_N = 50
+
 
 def _gemini_key_configured() -> bool:
     """Return True if the Gemini API key is set, else render an error and return False.
@@ -73,6 +88,12 @@ class ChatContext:
     # ``showtimes_query`` tools query. Falls back to ``wl_shows`` unchanged
     # when there is no usable rating history or scoring fails.
     wl_scored: pd.DataFrame
+    # The full watchlist x FR-streaming frame ``streaming_md`` was rendered
+    # from, *before* :func:`_streaming_context` truncates it to its top-N
+    # lines — the frame the ``streaming_query`` tool queries, so it can reach
+    # films the narrowed block left out. Carries the taste ``match`` column
+    # when scoring succeeded (same fallback rule as ``wl_scored``).
+    streaming_df: pd.DataFrame
     #: Watchlist title -> the ``(slug, directors)`` candidates carrying it, keyed
     #: on both the original and the French title. Covers the *whole* watchlist,
     #: not just the films currently screening, which is what lets
@@ -95,13 +116,25 @@ def _streaming_context(wl_shows: pd.DataFrame) -> str:
     stable — it's an eval contract (see ``tests/evals/goldens.py``). A
     ``; free={c}`` segment is appended only when the film also has
     free-to-watch providers (Arte.tv, France.tv, …).
+
+    Capped to the top :data:`STREAMING_CONTEXT_TOP_N` films by taste
+    ``match`` when ``wl_shows`` carries a ``match`` column (i.e. scoring
+    succeeded — see :func:`build_chat_context`); falls back to the full,
+    unranked list when it doesn't, since there is no meaningful way to pick a
+    "top" subset without a score. When the cap actually drops rows, a
+    trailing marker line names the ``streaming_query`` tool that can still
+    reach them — deliberately *not* in the pinned ``- {title} —
+    flatrate=...`` shape, so it can't be mistaken for a film entry.
     """
     if "flatrate" not in wl_shows.columns:
         return ""
     title_col = "letterboxd_title" if "letterboxd_title" in wl_shows.columns else "french_title"
+    ranked_by_match = "match" in wl_shows.columns
+    df = wl_shows.sort_values("match", ascending=False, na_position="last") if ranked_by_match else wl_shows
     lines: list[str] = []
     seen: set[str] = set()
-    for _, row in wl_shows.iterrows():
+    n_eligible = 0
+    for _, row in df.iterrows():
         title = row.get(title_col)
         if not isinstance(title, str) or title in seen:
             continue
@@ -109,11 +142,19 @@ def _streaming_context(wl_shows: pd.DataFrame) -> str:
         free = row.get("free") if isinstance(row.get("free"), list) else []
         if not flat and not free:
             continue
+        seen.add(title)
+        n_eligible += 1
+        if ranked_by_match and len(lines) >= STREAMING_CONTEXT_TOP_N:
+            continue
         line = f"- {title} — flatrate={', '.join(flat)}"
         if free:
             line += f"; free={', '.join(free)}"
         lines.append(line)
-        seen.add(title)
+    if ranked_by_match and n_eligible > len(lines):
+        lines.append(
+            f"(+{n_eligible - len(lines)} more watchlist films with streaming availability, not shown here "
+            "— call streaming_query to look them up.)"
+        )
     return "\n".join(lines)
 
 
@@ -224,13 +265,20 @@ def build_chat_context() -> ChatContext | None:
 
     # Score once here rather than per tool call: both chat surfaces and every
     # turn of the conversation reuse the same frame. Scoring is best-effort —
-    # a failure costs the tools their ``match`` column, not the whole page.
+    # a failure costs the tools (and the streaming block's ranking) their
+    # ``match`` column, not the whole page.
     try:
         profile = build_affinity(ratings_df)
-        wl_scored = attach_match(wl_shows, watchlist_df, profile) if not profile.is_empty else wl_shows
+        if profile.is_empty:
+            wl_scored = wl_shows
+            streaming_scored = watchlist_streaming
+        else:
+            wl_scored = attach_match(wl_shows, watchlist_df, profile)
+            streaming_scored = attach_match(watchlist_streaming, watchlist_df, profile)
     except Exception as exc:
         log.warning("Taste scoring failed — chat tools fall back to unscored showtimes: %s", exc)
         wl_scored = wl_shows
+        streaming_scored = watchlist_streaming
 
     showtime_theaters = set(wl_shows["theater_name"].dropna().unique()) if "theater_name" in wl_shows.columns else set()
     csv_theaters = {t["name"] for t in load_theaters(theaters_csv)} if theaters_csv else set()
@@ -239,11 +287,12 @@ def build_chat_context() -> ChatContext | None:
     return ChatContext(
         taste=build_taste_profile(ratings_df),
         showtimes_md=_showtimes_context(wl_shows),
-        streaming_md=_streaming_context(watchlist_streaming),
+        streaming_md=_streaming_context(streaming_scored),
         known_theaters=known_theaters,
         theaters_csv=theaters_csv,
         wl_shows=wl_shows,
         wl_scored=wl_scored,
+        streaming_df=streaming_scored,
         slug_by_title=_slug_by_title(watchlist_df),
         n_movies=int(wl_shows["letterboxd_title"].nunique()),
         n_screenings=int(len(wl_shows)),
@@ -324,6 +373,15 @@ def build_system_message(ctx: ChatContext) -> dict:
             "you may cite — every row they return already belongs to the closed set, and the ABSOLUTE "
             "RULE still holds: never name a film, provider or theater that appears neither in a tool "
             "result nor in the data blocks below.\n\n"
+            "STREAMING TOOL — a third read-only tool queries the SAME closed set of FR streaming "
+            "availability as the streaming block below. That block only lists the user's TOP "
+            "taste-matched watchlist films to keep it short — call streaming_query whenever the user "
+            "asks about streaming for a film or provider that might not be in the block (e.g. 'what's "
+            "on Mubi?', 'is X streaming anywhere?'), filtering by film title and/or provider name. Its "
+            "results are the only additional (film, provider) pairs you may cite beyond the block — "
+            "every row it returns already belongs to the closed set, and the ABSOLUTE RULE still holds: "
+            "never pair a film with a provider that appears neither in a tool result nor in the "
+            "streaming block below.\n\n"
             f"User taste profile (from their Letterboxd ratings history):\n{ctx.taste}\n\n"
             f"These are the watchlist movies currently showing at their theaters:\n{ctx.showtimes_md}\n"
             f"{streaming_block}\n"

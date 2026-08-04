@@ -86,7 +86,8 @@ uv run --no-sync --directory cinema_dashboard    pytest --cov --cov-fail-under=7
 # Single test / file / pattern (drop --cov so the per-run gate doesn't fail on a subset):
 uv run --no-sync --directory movies_management pytest tests/test_utils.py::test_name
 uv run --no-sync --directory cinema_dashboard  pytest -k streaming
-# The opt-in LLM eval suite (hits the live Gemini API, needs GEMINI_API_KEY):
+# The opt-in LLM eval suite (hits the live Gemini API, needs GEMINI_API_KEY).
+# Add --judge to also run the LLM-as-judge metrics (Faithfulness/AnswerRelevancy).
 uv run --no-sync --directory cinema_dashboard  pytest tests/evals/ -m evals
 
 # Re-validate the taste constants against the real ratings (see "Taste ranker" below).
@@ -491,6 +492,18 @@ typecheck, security, test.
   climbing behavior). `tests/conftest.py` patches `st.cache_data` to a no-op before imports so coverage can
   see inside decorated functions; `deepeval` is imported by `tests/evals/` (incl. the default-suite
   `test_metrics.py`), which is why it stays in the workspace lock.
+- **The eval suite has two paths, and the tool one is load-bearing.** `test_chat_stays_in_bounds` calls
+  Gemini *without* tools (prompt-only closed-set check); `test_chat_tool_layer` passes the
+  `top_matches`/`showtimes_query`/`streaming_query` declarations and runs `_ask_gemini`'s bounded
+  round-trip loop, recording `tools_called` for `ToolCorrectnessMetric`. `search_theater` is deliberately
+  *not* dispatched there — it hits live Allocine and writes `theaters.csv`, so an eval run would mutate the
+  sibling repo's scraper input. `OVERCAP_STREAMING_GOLDEN` renders 60 films through the real
+  `_streaming_context` and asks about the 55th, which only the tool can answer: that is the regression test
+  for the `STREAMING_CONTEXT_TOP_N` cap, so keep the golden's film count above the cap if the cap changes.
+  Judge metrics (`Faithfulness`/`AnswerRelevancy`) sit behind `--judge` and use an explicit `GeminiModel` —
+  DeepEval's default judge wants an `OPENAI_API_KEY` this workspace never provisions. All DeepEval metrics
+  taking a model set `async_mode=False`: the async path raises a deprecated-event-loop warning that
+  `filterwarnings=["error"]` turns into a hard failure.
 - `movies_management` and `packages/*` use plain pytest; `asyncio_mode="auto"` where async tests exist.
 - **`pages/*.py` call `main()` unconditionally at import time** (the Streamlit multipage convention —
   `st.Page` executes each file's source). To import a page module in a test, patch

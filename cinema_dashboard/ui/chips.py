@@ -10,7 +10,7 @@ empty states, and the data-freshness banner.
 from __future__ import annotations
 
 import html
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -46,10 +46,15 @@ def match_chips_html(row: pd.Series, profile: TasteProfile) -> str:
 # ── KPI strip ───────────────────────────────────────────────────────────────
 
 
-def render_kpi_strip(kpis: list[tuple[str, str | int | float]]) -> None:
+def render_kpi_strip(kpis: Sequence[tuple[str, str | int | float]]) -> None:
     """Render a row of KPI cards in equal-width columns.
 
     Uses native ``st.columns`` so widths reflow on narrow viewports.
+
+    Takes a ``Sequence`` rather than a ``list`` because ``list`` is invariant:
+    a helper returning a narrower ``list[tuple[str, int]]`` (e.g.
+    :func:`core.agenda.agenda_kpis`) would not be assignable to a ``list``
+    parameter, only to a covariant one.
     """
     if not kpis:
         return
@@ -78,12 +83,17 @@ def render_chip_filter(
     selection_mode: Literal["single", "multi"] = "multi",
     default: list[str] | str | None = None,
     on_change: Callable[[], None] | None = None,
+    label_visibility: Literal["visible", "hidden", "collapsed"] = "visible",
 ) -> list[str]:
     """Wrap ``st.pills`` with normalised return type and consistent labelling.
 
     Always returns a ``list[str]`` (empty when nothing is selected) regardless
     of selection mode, so callers don't have to special-case the single-mode
     ``str | None`` return.
+
+    ``label_visibility`` is passed straight through: a filter sitting in a
+    toolbar row often carries its meaning in the chips themselves, but the label
+    must still exist for screen readers, so collapse it rather than dropping it.
     """
     if not options:
         return []
@@ -94,6 +104,7 @@ def render_chip_filter(
         default=default,
         key=key,
         on_change=on_change,
+        label_visibility=label_visibility,
     )
     if selection is None:
         return []

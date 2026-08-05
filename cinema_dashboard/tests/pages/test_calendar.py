@@ -1,4 +1,4 @@
-"""Tests for pages.calendar — the ICS export builder.
+"""Tests for pages.calendar — now an orchestration-only module.
 
 ``pages/calendar.py`` calls ``main()`` unconditionally at module import time
 (the Streamlit multipage convention shared by every ``pages/*.py`` file). As in
@@ -6,15 +6,16 @@
 *first* import so ``main()`` hits its "OUTPUT_PATH is not set" early return
 instead of running against this developer's real on-disk parquets.
 
-The duration helpers these events are sized with (``screening_end``,
-``_ads_minutes``) now live in ``ui.ics`` beside ``to_ics``, shared with the
-movie detail page's per-screening download — they are tested in
-``tests/ui/test_ics.py``. What stays here is that this page's export *uses* them.
+The page's logic now lives in libraries with their own suites: grouping,
+labelling and the filter chain in ``tests/core/test_agenda.py``, the row/day
+HTML in ``tests/ui/test_agenda.py``, and both export builders in
+``tests/ui/test_ics.py``. What is worth asserting *here* is that the page still
+imports cleanly under that early return, and that it has not re-implemented the
+export off a frame of its own.
 """
 
 from __future__ import annotations
 
-import pandas as pd
 import pytest
 
 
@@ -24,49 +25,20 @@ def _import_calendar_page(module_mocker):
     import pages.calendar  # noqa: F401  (import side effect: registers the module in sys.modules)
 
 
-def test_build_ics_events_ends_include_ads():
-    from pages.calendar import _build_ics_events
+def test_page_exposes_main_after_the_early_return():
+    import pages.calendar
 
-    df = pd.DataFrame(
-        [
-            {
-                "showtimes": "2026-08-03 20:00",
-                "runtime_minutes": 100,
-                "theater_name": "UGC Ciné Cité Bercy",
-                "french_title": "Film A",
-                "letterboxd_title": "Film A",
-                "directors": "Alice",
-            },
-            {
-                "showtimes": "2026-08-04 18:00",
-                "runtime_minutes": 100,
-                "theater_name": "Le Champo",
-                "french_title": "Film B",
-                "letterboxd_title": "Film B",
-                "directors": "Bob",
-            },
-        ]
-    )
-
-    events = _build_ics_events(df)
-
-    assert [e["end"] for e in events] == [pd.Timestamp("2026-08-03 22:00"), pd.Timestamp("2026-08-04 19:50")]
+    assert callable(pages.calendar.main)
 
 
-def test_build_ics_events_skips_rows_without_showtime():
-    from pages.calendar import _build_ics_events
+def test_export_uses_the_shared_builders():
+    """Guards the "export mirrors on-screen filters" invariant mechanically.
 
-    df = pd.DataFrame(
-        [
-            {
-                "showtimes": None,
-                "runtime_minutes": 100,
-                "theater_name": "MK2 Quai de Seine",
-                "french_title": "Film A",
-                "letterboxd_title": "Film A",
-                "directors": "Alice",
-            }
-        ]
-    )
+    Both builders take the whole filtered frame, so as long as the page calls
+    *these* functions it cannot be exporting something the agenda never showed.
+    """
+    import pages.calendar
+    import ui.ics
 
-    assert _build_ics_events(df) == []
+    assert pages.calendar.build_ics_events is ui.ics.build_ics_events
+    assert pages.calendar.build_csv_rows is ui.ics.build_csv_rows

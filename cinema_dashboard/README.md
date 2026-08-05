@@ -34,7 +34,7 @@ Every card shows a small badge row: subscribed services carrying the film (fille
 
 ### Movie detail (`?movie=<slug>`)
 
-Every movie rendered anywhere in the app — the Home hero, all poster rails, the calendar's day rails, the streaming rails, the Discover rail and the chat's pinned recommendations — is a link to that film's detail page at `?movie=<letterboxd-slug>`. It's a real URL: shareable, bookmarkable, and the browser back button returns you to where you were. The page has no sidebar entry; it overlays whichever section you were on, and a "← Back to the dashboard" control clears the parameter. An unknown or truncated slug renders a designed empty state, never a traceback.
+Every movie rendered anywhere in the app — the Home hero, all poster rails, the calendar's agenda rows, the streaming rails, the Discover rail and the chat's pinned recommendations — is a link to that film's detail page at `?movie=<letterboxd-slug>`. It's a real URL: shareable, bookmarkable, and the browser back button returns you to where you were. The page has no sidebar entry; it overlays whichever section you were on, and a "← Back to the dashboard" control clears the parameter. An unknown or truncated slug renders a designed empty state, never a traceback.
 
 The page is backed by `data_letterboxd.parquet`, which is a superset of the ratings and watchlist parquets, so **any** cached film has a page — including the few hundred Allocine-enriched films on neither list. It shows, omitting any section the cache has no data for:
 
@@ -59,12 +59,20 @@ Four tabs in place of the old chart wall:
 
 ### Watchlist Showtimes (📅)
 
-Inner-joins your watchlist with current showtimes. The join matches Allocine's display title against both normalized watchlist titles — the TMDB French retitle *and* the original title, since repertory screenings often run in VO (*Sudden Fear* screens as such even though TMDB calls it *Le Masque arraché*) — and then **confirms each match by director**, so a recurring or remade title (e.g. *Nosferatu*) can't attach the wrong film's screenings. Director confirmation uses token-subset containment — one director name's tokens being wholly contained in the other's — so name-form drift between Allocine and TMDB (`Kirk Jones (II)` vs `Kirk Jones`, `Akinola Davies` vs `Akinola Davies Jr.`, `Ringo Lam` vs `Ringo Lam Ling-Tung`) still matches while genuinely different directors are still rejected. The page top carries a single control — the **"Only times I'm free"** toggle — while every other filter (date range, theater multi-select dropdown, runtime buckets, "showtime between" time-of-day range slider, free-text search, min rating) lives in the sidebar. The theater options stay hidden inside the dropdown: an empty selection means *all theaters*.
+Inner-joins your watchlist with current showtimes. The join matches Allocine's display title against both normalized watchlist titles — the TMDB French retitle *and* the original title, since repertory screenings often run in VO (*Sudden Fear* screens as such even though TMDB calls it *Le Masque arraché*) — and then **confirms each match by director**, so a recurring or remade title (e.g. *Nosferatu*) can't attach the wrong film's screenings. Director confirmation uses token-subset containment — one director name's tokens being wholly contained in the other's — so name-form drift between Allocine and TMDB (`Kirk Jones (II)` vs `Kirk Jones`, `Akinola Davies` vs `Akinola Davies Jr.`, `Ringo Lam` vs `Ringo Lam Ling-Tung`) still matches while genuinely different directors are still rejected.
 
-The free-time toggle (which replaced the old weekend toggle) narrows to screenings you can actually attend: weekends, French public holidays (via the `holidays` library), days you mark off, or weekdays at/after an editable cutoff (default 19:00). Turning it on reveals the cutoff time picker plus two date multi-selects over the upcoming showtime dates — **Days off (free all day)**, which includes that day's daytime screenings, and **Unavailable (away)**, which excludes the whole day and overrides everything else (even a weekend or holiday). The three tabs:
-- **By day** — horizontal poster rails grouped by date under **"Cinema-only this week"**; one card per movie with all showtimes for that day listed below (time + theater), sorted by earliest showtime. Streaming availability isn't shown here — see the dedicated Streaming page.
-- **Calendar** — ICS and CSV export for your filtered screenings (Google / Apple / Outlook compatible); the export always reflects every filter applied above, including the time-of-day range and the free-time toggle. Both exports size each block with the same helper, so they can't drift: the film's runtime (120min when it's missing or unparseable) plus the pre-feature ad block — 20min when the theater name contains `mk2`/`ugc`, 10min elsewhere — so the calendar entry ends when you actually walk out
-- **Map** — pydeck map of theaters with screenings in the current filter; marker size ∝ # screenings
+The result renders as a **compact vertical agenda**: one section per day with a sticky heading ("Tonight · Tuesday 04 August", then a screening count), and inside it one row per film — 56px thumbnail, title, director · runtime · Letterboxd rating, and that day's showtimes as **time pills** (`19:00 Le Champo`). It replaced a horizontal poster rail per day, which spent ~390px of height and a sideways drag per film on a page whose whole job is *what can I see, and when?*. Films are grouped by Letterboxd slug rather than by title, so two different films sharing a name (*King Lear* is Brook's *and* Godard's) stay two rows instead of merging into one with both films' showtimes.
+
+Every control sits in a toolbar above the agenda — this page used to be the only one in the app with a sidebar, which is collapsed by default on the phone the page is most useful on:
+- a **day strip** of chips with per-day screening counts (`Tue 4 · 3`), which replaced a date-range picker: the horizon is about a week, so a range control was duplicating a strip that fits on one line. Picking a day also scopes the export, so "download tonight only" is one click
+- **search** across both title spellings *and* directors (searching only the Allocine display title used to make a film unreachable by its Letterboxd name)
+- a **Filters** popover for the low-frequency controls — theater multi-select (empty selection means *all theaters*, so the long list stays inside the dropdown), runtime buckets, min Letterboxd rating — badged with the number of active filters
+- **time-of-day chips** — Morning / Afternoon / Evening / Late — replacing a 15-minute range slider that offered 96 stops for a decision with four real answers
+- the **"Only times I'm free"** toggle (shared with Screening in Paris): weekends, French public holidays (via the `holidays` library), days you mark off, or weekdays at/after an editable cutoff (default 19:00). Turning it on reveals the cutoff picker plus two date multi-selects over the upcoming showtime dates — **Days off (free all day)**, which includes that day's daytime screenings, and **Unavailable (away)**, which excludes the whole day and overrides everything else (even a weekend or holiday)
+- a **Time / Match** sort. Match ranks by the same `core/taste.py` score Home's rails use, showing a `◎ N% match` badge and "✓ because" chips on each row, and it reorders films *within* each day rather than flattening the agenda — the day strip is already the day picker. The option only appears when there's a ratings history to build a profile from
+- an **Export** popover — `.ics` (Google / Apple / Outlook) with CSV behind an expander — and an **Agenda / Map** switch, the map being pydeck markers sized ∝ screening count
+
+Every one of those filters narrows a single frame, and the agenda, both exports and the map all read that same frame, so a download can never disagree with what's on screen. Both exports size each block with one shared helper: the film's runtime (120min when missing or unparseable) plus the pre-feature ad block — 20min when the theater name contains `mk2`/`ugc`, 10min elsewhere — so the calendar entry ends when you actually walk out. Streaming availability isn't shown here; see the dedicated Streaming page.
 
 **Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH` (+ `ALLOCINE_INPUT_PATH` for the map)
 
@@ -167,7 +175,7 @@ cinema_dashboard/
 ├── .streamlit/
 │   └── config.toml               # Cinema theme: dark + light, system-driven
 ├── assets/
-│   ├── styles.css                # Design tokens, movie cards, poster rails, chips, KPI cards, detail page + contribution bars, anchor styling, motion, focus rings, mobile media queries
+│   ├── styles.css                # Design tokens, movie cards, poster rails, agenda rows + sticky day headers + time pills, chips, KPI cards, detail page + contribution bars, anchor styling, motion, focus rings, mobile media queries
 │   └── provider_display_names.json  # Slug → pretty-name catalogue (auto-grown by refresh_streaming_providers)
 ├── pipeline/                     # Dagster pipeline (alternative to orchestrate.py)
 │   ├── assets.py                 # @asset definitions for showtimes + watchlist (consume integrations/scrapers.py)
@@ -177,7 +185,7 @@ cinema_dashboard/
 │   ├── __init__.py               # Makes `pages` a real package (app.py imports pages.movie — see the module docstring)
 │   ├── 0_home.py                 # Home — hero "tonight" card, poster rails, KPI strip
 │   ├── database.py               # Movies Database page (Overview / Discover / Tables / Unmatched)
-│   ├── calendar.py               # Watchlist Showtimes page (theater dropdown, runtime/time-of-day/free-time/search filters, day rails, map, ICS export)
+│   ├── calendar.py               # Watchlist Showtimes page (top toolbar, day strip, vertical agenda, Time/Match sort, export popover, map view)
 │   ├── movie.py                  # Movie detail page — routed by ?movie=<slug>, not by st.navigation (no import-time main())
 │   ├── paris.py                  # Screening in Paris page — full showtimes×cache discovery, curated rewatch/second-chance rails
 │   ├── streaming.py              # Streaming page — one poster rail per FR provider
@@ -186,6 +194,7 @@ cinema_dashboard/
 │   ├── taste.py                  # Taste ranker — affinity profile, 0–100 match scorer, "because" explanations + full contribution breakdown
 │   ├── movie.py                  # Movie detail data assembly (load_movie, movie_screenings, similar_films)
 │   ├── availability.py           # Free-time mask (weekend/holiday/day-off/after-cutoff, minus unavailable days)
+│   ├── agenda.py                 # Calendar day grouping, friendly day labels, time/runtime buckets, the one filter chain
 │   └── backtest.py               # Held-out evaluation of the taste-ranker constants (used by backtest.py)
 ├── sources/                      # Cached parquet readers + joins. Named `sources`, not `data` — the
 │   │                              # runtime `data/` dir is gitignored, so a package there would never commit.
@@ -205,9 +214,10 @@ cinema_dashboard/
 ├── ui/                           # Streamlit rendering — split from a single 641-line utils/ui.py
 │   ├── theme.py                   # CSS injection, format_runtime/rating_to_hsl, movie_href/row_slug
 │   ├── cards.py                    # render_movie_card, render_compact_movie_card, render_poster_rail, render_hero_card
+│   ├── agenda.py                   # render_agenda, render_day_strip, agenda row/day HTML, time pills
 │   ├── chips.py                    # match_chips_html, render_chip_filter, render_kpi_strip, render_empty_state, render_freshness_banner
 │   ├── availability.py             # "Only times I'm free" control (render_free_time_filter / FreeTimeSelection)
-│   ├── ics.py                      # screening_end, to_ics, ad-block sizing
+│   ├── ics.py                      # screening_end, to_ics, build_ics_events, build_csv_rows, ad-block sizing
 │   └── cmdk.py                     # Global Cmd+K command palette (st.dialog + hand-rolled st.iframe shortcut)
 ├── tests/
 │   ├── conftest.py                # Shared fixtures + @st.cache_data no-op patch

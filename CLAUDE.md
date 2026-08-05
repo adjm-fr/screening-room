@@ -130,8 +130,8 @@ typecheck, security, test.
   so mypy resolves that file as `pages.movie` (matching the import) rather than twice under two names.
 - **Every movie rendered anywhere is a link to its detail page.** `ui.cards._movie_card_html` and
   `render_hero_card` emit an anchor to `movie_href(slug)` whenever the row carries a slug (`row_slug`
-  accepts both the `slug` and `letterboxd_slug` spellings), so home/streaming/discover rails, calendar day
-  rails and chat's pinned recs became clickable without touching their call sites — keep new surfaces on
+  accepts both the `slug` and `letterboxd_slug` spellings), so home/streaming/discover rails, the calendar
+  agenda's rows and chat's pinned recs became clickable without touching their call sites — keep new surfaces on
   these renderers and they stay linked. The card uses **one** anchor (the title) stretched over the card by
   a `::after` overlay, because a card already contains a real `<a>` (the trailer chip) and nesting anchors
   is invalid HTML; the hero's overlay anchor is a sibling of `.hero-body` (which is positioned, so an
@@ -139,6 +139,10 @@ typecheck, security, test.
   `detail_url` `LinkColumn` instead. `_compact_movie_card_html` / `render_compact_movie_card` is the
   horizontal variant for narrow columns (44px thumbnail, no chips, `.movie-row--linked`) — it reuses the
   `.movie-card-link` class rather than declaring its own so it inherits that class's specificity guard.
+  `ui/agenda.py`'s `_agenda_row_html` does the same, and is the *simple* case: the row carries no second
+  anchor (time pills and the rating chip are `<span>`s, and it deliberately has no trailer chip), so unlike
+  the card nothing needs lifting back above the `::after` overlay with `z-index` — don't add a second link
+  to an agenda row.
   **A renderer only links a row that still carries a slug**, which is why anything persisting a row
   snapshot must re-resolve it before rendering (see the pinned-recs note below).
 - **Every anchor rule in `assets/styles.css` needs a specificity guard.** Streamlit styles links inside
@@ -156,12 +160,14 @@ typecheck, security, test.
   `movie_href`/`row_slug`), `ui/cards.py` (`render_movie_card`, `render_poster_rail`, `render_hero_card` —
   imports the primitives it needs from `ui.theme` and `render_empty_state` from `ui.chips`), `ui/chips.py`
   (`match_chips_html`, `render_chip_filter`, `render_kpi_strip`, `render_empty_state`,
-  `render_freshness_banner`), `ui/availability.py` (`render_free_time_filter` / `FreeTimeSelection`), and
-  `ui/ics.py` (`screening_end`, `to_ics`, the ad-block sizing). `ui/__init__.py`
+  `render_freshness_banner`), `ui/availability.py` (`render_free_time_filter` / `FreeTimeSelection`),
+  `ui/agenda.py` (`render_agenda`, `render_day_strip`, the calendar agenda's row/day HTML), and
+  `ui/ics.py` (`screening_end`, `to_ics`, both export builders, the ad-block sizing). `ui/__init__.py`
   re-exports the full public surface with an explicit `__all__`, so existing `from utils.ui import (...)`
   call sites became `from ui import (...)` — a one-token change; the handful of call sites that need a
-  private helper (e.g. `pages/calendar.py`'s `_movie_card_html`, `pages/movie.py`'s `_streaming_badges_html`)
-  import it from the owning submodule directly (`ui.cards`), not the package. New movie displays should reuse
+  private helper (e.g. `pages/movie.py`'s `_streaming_badges_html`, `ui/agenda.py`'s `_title_of` /
+  `_directors_of` / `_rating_chip_html`) import it from the owning submodule directly (`ui.cards`), not the
+  package. New movie displays should reuse
   these renderers, not hand-roll `st.image`/HTML.
 - **The detail page reads the cache, not the watchlist.** `core/movie.py` (Streamlit-free, pure pandas)
   holds `load_movie` / `movie_screenings` / `similar_films`; `load_movie` keys `data_letterboxd.parquet` by
@@ -315,7 +321,8 @@ typecheck, security, test.
   disagreement. `user_rating` arrives nullable, so the masks coerce with `pd.to_numeric(...)` and
   `.fillna(False)`: `series >= x` on a nullable dtype yields `NA`, which pandas rejects as a boolean mask.
   Every card also lists its upcoming showtimes (`_showtime_badges_html`, one `.showtime-badge` div per
-  screening — same CSS class the Watchlist Showtimes day rails use, just per-card here since these rails
+  screening — the `.showtime-badge` class the movie detail page also uses, distinct from the calendar
+  agenda's `.time-pill`, and per-card here since these rails
   aren't grouped by date), capped at `MAX_SHOWTIME_BADGES` (6, "+N more" beyond that — a wide release can
   carry dozens of screenings in a week, measured max 86) and grouped once per render from the full
   (post-free-time-filter) multi-row frame, not the single row a rail dedupes each card down to.
@@ -358,6 +365,25 @@ typecheck, security, test.
   ratings (Aug 2026, ~3.3k rated films, μ=2.48), as a regression reference: **spearman 0.677 /
   quartile lift 2.03**, against a quality-prior-only baseline of 0.603 / 1.81. Beating that baseline is the
   bar — a constants change that drops toward it has removed the personalisation, not tuned it.
+- **`core/agenda.py` is the calendar page's Streamlit-free half** — day grouping, friendly day labels
+  ("Tonight"/"Tomorrow"/`%A %d %B`), time-of-day and runtime bucketing, and the one filter chain
+  (`AgendaFilters` / `apply_filters` / `apply_day`, see "export mirrors its on-screen filters" below).
+  `build_agenda` returns `AgendaDay` → `AgendaEntry` (one film × one day, carrying every showtime it has
+  that day), which `ui/agenda.py` renders. Three things not to undo: it **groups on `letterboxd_slug`, not
+  the title** — 22 real watchlist titles name two different films (*King Lear* is Brook's *and* Godard's),
+  and a title-keyed group merges them into one row carrying both films' showtimes (the same hazard
+  `chat.ui.resolve_pin` maps around); `_film_key` is always a string with an `""` fallback because
+  `groupby` defaults to `dropna=True` and would make a NaN-keyed row vanish silently; and `today` is an
+  injected parameter, never `date.today()` inline, so the day labels are testable rather than going red at
+  midnight. `sort="match"` reorders entries *within* a day and never across days — the day strip is itself
+  the day picker — and puts unscored entries last. `_film_key` resolves *identity*; `ui.cards._title_of`
+  resolves *display*; they look similar and are not interchangeable.
+- **`ui/agenda.py` emits one `st.markdown` blob per day, and that is what makes the sticky day header
+  work.** Streamlit wraps every `st.markdown` in its own content-sized element container, so a header
+  emitted separately from its rows would have a containing block exactly its own height and
+  `position: sticky` on `.agenda-day-head` would be a silent no-op. Header + rows must share one blob.
+  (If a future Streamlit adds `overflow` to those wrappers it degrades to a plain non-sticky header —
+  nothing breaks. Don't reach for `!important` or target `stVerticalBlock` to force it back.)
 - **Two orchestrators, both intentional.** `orchestrate.py` (CLI, staleness-aware, runs both scrapers in
   parallel) is the everyday path; `pipeline/` is a deliberate Dagster equivalent kept as an experiment
   (`dagster dev -m pipeline.definitions`) — it is not dead code, don't remove it.
@@ -456,13 +482,22 @@ typecheck, security, test.
 - **Coverage gates:** movies 90 (97% actual), dashboard 75 (85% actual), common 90 (100%). The dashboard
   ran no gate before the merge; 75 gives buffer over its real number. The gates are deliberately slack —
   raise one only if you intend the headroom to disappear.
-- **The calendar page's export mirrors its on-screen filters.** `cinema_dashboard/pages/calendar.py`
-  narrows one `filtered` frame through every control (the on-page "Only times I'm free" toggle plus the
-  sidebar's date range, theater multiselect — empty selection = all theaters — runtime buckets, showtime
-  time-of-day range slider, text search, and min rating), and the ICS/CSV export
-  (`_build_ics_events(filtered)`) reads that *same* frame — so every filter flows into the download
-  automatically. Add a new filter by narrowing `filtered` before the export block; don't rebuild the export
-  off the unfiltered `wl_shows` or the two will silently diverge. Both exports size their blocks with the
+- **The calendar page's export mirrors its on-screen filters — now structurally, not by discipline.**
+  `core.agenda.apply_filters(wl_shows, AgendaFilters(...))` applies every control *except* the day strip
+  (search over both titles + directors, theater multiselect — empty selection = all theaters — runtime
+  buckets, time-of-day chips, min rating, and the shared free-time selection), then
+  `core.agenda.apply_day(narrowed, day)` folds in the day-strip choice; the single `filtered` frame that
+  produces is what `build_agenda`, `ui.ics.build_ics_events`, `ui.ics.build_csv_rows` and the map's
+  `groupby("theater_id")` all read. Only one function makes the frame, so there is only one frame. **Add a
+  new filter by extending `AgendaFilters` + `apply_filters`, never by narrowing again downstream** — that
+  is exactly how the download and the screen would diverge. Note the ordering is load-bearing in two
+  places: the day chips are built from `narrowed` (so their counts describe the filtered frame, which is
+  why the KPI/day-strip containers are *placed* above the toolbar but *filled* after it), and **the day
+  strip therefore scopes the export by design** — picking "Wed 5" downloads a one-day `.ics`. Two controls
+  the redesign deliberately dropped: the sidebar date range (the day strip covers a ~week horizon better)
+  and the 15-minute time-range slider (96 stops for a decision with four real answers). `attach_match` runs
+  *before* filtering so `match` survives every narrowing and the "because" chips get their carry columns;
+  it resets the index, so nothing index-aligned may cross it. Both exports size their blocks with the
   shared `ui.ics.screening_end` (promoted out of the page module so the movie detail page's per-screening
   `.ics` uses the identical helper), which pads the film's runtime (120min when `runtime_minutes` is
   missing/junk) with the pre-feature ad block — `ADS_MINUTES_CHAIN` (20) when the theater name
@@ -493,7 +528,7 @@ typecheck, security, test.
   (a solid key: ~0 dupes, ~2 nulls) — don't try to score `wl_shows` directly. It does **not** strip the
   slug: `letterboxd_slug` (the dedup key) is deliberately kept out of `drop_cols` because it is the
   `?movie=<slug>` route key for every card built off the frame — the home hero, all three home rails and the
-  calendar day rails would silently stop linking without it.
+  calendar agenda rows would silently stop linking without it.
 - **The watchlist↔showtimes join is title-matched, director-confirmed.** `build_watchlist_showtimes` matches
   the Allocine display title against **both** normalized watchlist titles — the TMDB `french_title` *and* the
   original `title` — because repertory screenings often run under the original title (VO) even when TMDB

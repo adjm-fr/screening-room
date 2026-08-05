@@ -19,6 +19,9 @@
   --skeleton-from: #1a1d24;
   --skeleton-mid: #2a2d35;
   --primary-color: #e63946;
+  /* Sticky agenda day headers need an opaque backing or rows scroll through
+   * them. Mirrors backgroundColor in .streamlit/config.toml. */
+  --agenda-head-bg: #0e1117;
 }
 
 @media (prefers-color-scheme: light) {
@@ -28,6 +31,7 @@
     --skeleton-from: #ebeae5;
     --skeleton-mid: #d8d6cf;
     --primary-color: #c81d25;
+    --agenda-head-bg: #ffffff;
   }
 }
 
@@ -177,6 +181,137 @@ html, body, .stMarkdown, .stText {
 .movie-row-caption {
   opacity: 0.85;
   font-variant-numeric: tabular-nums;
+}
+
+/* Agenda (calendar page) ---------------------------------------------------
+ * A compact vertical agenda replaces the per-day poster rails: one row per
+ * (film × day), that day's showtimes as static .time-pill spans. Roughly 5x the
+ * density of a rail of 180px cards, and it scans top-to-bottom instead of
+ * needing a horizontal drag per day.
+ *
+ * The whole row opens the film's detail page through ONE anchor — the title —
+ * reusing .movie-card-link and therefore its Streamlit specificity guard above,
+ * stretched across the row by that class's ::after overlay (which only needs a
+ * positioned ancestor, supplied by .agenda-row--linked). Unlike .movie-card
+ * there is no second anchor in the row, so nothing needs lifting back above the
+ * overlay with z-index.
+ *
+ * No new anchor class here on purpose. Any NEW one added to this block needs
+ * the triple `.x, .stMarkdown a.x, [data-testid="stMarkdownContainer"] a.x`
+ * guard, or Streamlit's markdown link styling wins and it renders blue and
+ * underlined. */
+
+.agenda-day { margin: 0 0 1.5rem; }
+
+/* Sticky within its own <section>: the header and its rows are emitted as ONE
+ * st.markdown blob, so they share a single Streamlit element container and the
+ * header has a taller containing block to stick inside. Split across two
+ * markdown calls the header's parent would be exactly its own height and sticky
+ * would silently do nothing. */
+.agenda-day-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.45rem 0 0.35rem;
+  margin-bottom: 0.15rem;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+  background: var(--agenda-head-bg);
+}
+.agenda-day-label {
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.75;
+}
+.agenda-day--today .agenda-day-label {
+  color: var(--primary-color);
+  opacity: 1;
+}
+.agenda-day-count {
+  margin-left: auto;
+  font-size: 0.75rem;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+
+.agenda-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) max-content;
+  gap: 0.75rem;
+  align-items: start;
+  padding: 0.55rem 0.4rem;
+  border-radius: var(--r-card);
+  transition: background var(--t-fast);
+}
+.agenda-row + .agenda-row { border-top: 1px solid rgba(127, 127, 127, 0.12); }
+.agenda-row--linked { position: relative; }
+.agenda-row--linked:hover { background: rgba(127, 127, 127, 0.08); }
+
+.agenda-thumb {
+  width: 56px;
+  aspect-ratio: 2 / 3;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--skeleton-from);
+}
+/* min-width:0 lets a long title ellipsize instead of widening the grid track. */
+.agenda-main { min-width: 0; }
+.agenda-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  line-height: 1.3;
+}
+.agenda-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.1rem;
+  font-size: 0.78rem;
+  opacity: 0.7;
+}
+.agenda-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 0.4rem;
+}
+
+/* ui.chips.match_chips_html is reused verbatim; only its alignment changes. */
+.agenda-match {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.agenda-match .match-row {
+  margin-top: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+/* Static, not a widget: a showtime is information, not a control. */
+.time-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding: 3px 10px;
+  border-radius: var(--r-chip);
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: rgba(127, 127, 127, 0.14);
+  border: 1px solid rgba(127, 127, 127, 0.24);
+}
+.time-pill-venue {
+  font-weight: 400;
+  font-size: 0.72rem;
+  opacity: 0.72;
 }
 
 /* Hero card --------------------------------------------------------------- */
@@ -536,6 +671,8 @@ html, body, .stMarkdown, .stText {
   .movie-card { transition: none; }
   .movie-card:hover { transform: none; box-shadow: none; }
   .movie-row { transition: none; }
+  /* The hover background stays — that is a state, not motion. */
+  .agenda-row { transition: none; }
   .hero-card--linked { transition: none; }
   .hero-card--linked:hover { transform: none; }
   .contrib-fill { transition: none; }
@@ -550,6 +687,14 @@ html, body, .stMarkdown, .stText {
   .poster-rail > .movie-card { width: 140px; }
   .hero-card { padding: 1.25rem; min-height: 260px; }
   .kpi-card .kpi-value { font-size: 1.4rem; }
+  /* Two columns: the match block wraps under the meta instead of squeezing the
+   * title down to a few characters. Nothing is hidden — the venue name inside a
+   * time pill is the whole point of the pill. */
+  .agenda-row { grid-template-columns: 44px minmax(0, 1fr); gap: 0.6rem; }
+  .agenda-thumb { width: 44px; }
+  .agenda-match { grid-column: 2; align-items: flex-start; margin-top: 0.35rem; }
+  .agenda-match .match-row { justify-content: flex-start; }
+  .time-pill { font-size: 0.72rem; padding: 3px 8px; }
   /* The bar column would squeeze the label to a couple of characters; drop it
    * and keep the signed number, which carries the same information. */
   .contrib-row { grid-template-columns: minmax(0, 1fr) max-content; gap: 0.5rem; }

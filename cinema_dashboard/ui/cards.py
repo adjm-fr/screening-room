@@ -9,12 +9,16 @@ primitives for the editorial card/rail layouts this dashboard needs.
 Cards and hero cards are **links**: whenever the row carries a Letterboxd slug
 they render an anchor to ``?movie=<slug>`` (see :func:`ui.theme.movie_href`),
 which ``app.py`` routes to the movie detail page. Wrapping it here rather than
-at the call sites is what makes every surface — home rails, calendar day
-rails, streaming rails, chat's pinned recommendations — clickable for free.
+at the call sites is what makes every surface — home rails, the calendar
+agenda's rows, streaming rails, chat's pinned recommendations — clickable for
+free.
 
-Two card shapes, same linking rules: :func:`render_movie_card` (vertical, 2:3
-poster, chips — for rails and grids) and :func:`render_compact_movie_card`
-(horizontal, 44px thumbnail, no chips — for narrow list columns).
+Two card shapes live here, sharing those linking rules:
+:func:`render_movie_card` (vertical, 2:3 poster, chips — for rails and grids)
+and :func:`render_compact_movie_card` (horizontal, 44px thumbnail, no chips —
+for narrow list columns). A third, calendar-specific shape lives in
+``ui.agenda``: the agenda row, which reuses this module's ``.movie-card-link``
+title anchor and its private title/director/rating helpers.
 """
 
 from __future__ import annotations

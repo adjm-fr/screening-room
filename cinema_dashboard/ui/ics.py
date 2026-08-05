@@ -1,10 +1,18 @@
 """
-ICS calendar export: screening-block sizing and the RFC 5545 writer.
+Calendar export: screening-block sizing, the RFC 5545 writer, and both builders.
 
 The single source of calendar-block duration (:func:`screening_end`) is
 shared by the calendar page's ICS *and* CSV exports and by the movie detail
 page's per-screening ``.ics`` — keeping them on one helper is what stops the
 three from drifting.
+
+Both of the calendar page's export builders live here too
+(:func:`build_ics_events`, :func:`build_csv_rows`) rather than in the page, for
+the same anti-drift reason: they are the two other ``screening_end`` callers,
+and a builder that lives in a page module is a builder a page can quietly fork.
+Each takes the *whole* filtered frame the agenda is rendered from, so the
+download always matches what is on screen — see ``core.agenda`` for the one
+filter chain that produces it.
 """
 
 from __future__ import annotations
@@ -40,6 +48,73 @@ def screening_end(row: pd.Series, showtime: pd.Timestamp) -> pd.Timestamp:
     except (ValueError, TypeError):
         runtime_min = 120
     return showtime + pd.Timedelta(minutes=_ads_minutes(row.get("theater_name")) + runtime_min)
+
+
+def _summary_of(row: pd.Series) -> str:
+    return str(row.get("letterboxd_title") or row.get("french_title") or "Screening")
+
+
+def _location_of(row: pd.Series) -> str:
+    return str(row.get("theater_name") or row.get("theater_id", ""))
+
+
+def _description_of(row: pd.Series) -> str:
+    return f"Directors: {row.get('directors') or 'N/A'} | French title: {row.get('french_title')}"
+
+
+def build_ics_events(df: pd.DataFrame) -> list[dict]:
+    """Build :func:`to_ics` event dicts from a frame of screenings.
+
+    One event per row (i.e. per screening, not per film), sized with
+    :func:`screening_end`. Rows whose showtime is missing or unparseable are
+    skipped rather than exported as a zero-length block.
+    """
+    events: list[dict] = []
+    for idx, row in df.iterrows():
+        showtime = pd.to_datetime(row["showtimes"], errors="coerce")
+        if pd.isna(showtime):
+            continue
+        events.append(
+            {
+                "summary": _summary_of(row),
+                "start": showtime,
+                "end": screening_end(row, showtime),
+                "location": _location_of(row),
+                "description": _description_of(row),
+                "uid": f"{idx}-{int(showtime.timestamp())}@cinema_dashboard",
+            }
+        )
+    return events
+
+
+def build_csv_rows(df: pd.DataFrame) -> list[dict]:
+    """Build Google-Calendar CSV-import rows from a frame of screenings.
+
+    The legacy import path, kept behind an expander in the export popover. Uses
+    the same :func:`screening_end` sizing and the same skip rule as
+    :func:`build_ics_events`, so the two downloads can never disagree about when
+    a screening ends. The nine keys are Google's import header, in its order.
+    """
+    rows: list[dict] = []
+    for _, row in df.iterrows():
+        showtime = pd.to_datetime(row["showtimes"], errors="coerce")
+        if pd.isna(showtime):
+            continue
+        end_time = screening_end(row, showtime)
+        rows.append(
+            {
+                "Subject": _summary_of(row),
+                "Start Date": showtime.strftime("%Y-%m-%d"),
+                "Start Time": showtime.strftime("%H:%M:%S"),
+                "End Date": end_time.strftime("%Y-%m-%d"),
+                "End Time": end_time.strftime("%H:%M:%S"),
+                "All Day Event": "False",
+                "Description": _description_of(row),
+                "Location": _location_of(row),
+                "Private": "False",
+            }
+        )
+    return rows
 
 
 def _ics_escape(value: str) -> str:

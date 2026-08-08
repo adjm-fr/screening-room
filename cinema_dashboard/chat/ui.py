@@ -21,6 +21,13 @@ This module itself owns the LLM transport and the UI:
     render_chat(ctx, ...) -> None      (the UI: history, streaming reply, pins)
     PROMPT_SUGGESTIONS    : list[str]  (chip-row examples)
 
+The pin picker offers films from the *whole* closed set the model may name —
+what is screening **and** what is streaming (:func:`_pin_candidates`) — matched
+against the *whole* transcript rather than the latest reply
+(:func:`_assistant_text`). Both halves are load-bearing: scoping it to
+``wl_shows`` made every streaming-only recommendation unpinnable, and scoping
+it to the last reply un-pinned earlier ones the moment a follow-up was asked.
+
 The Gemini API call lives in :func:`_ask_gemini`, which streams the assistant
 reply and handles up to :data:`MAX_TOOL_ROUNDS` rounds of tool use, dispatched
 by :func:`_run_tool`: ``search_theater`` (Allocine lookup, defined here) plus
@@ -51,7 +58,8 @@ from chat.tools import SHOWTIMES_TOOL, STREAMING_TOOL, TASTE_TOOL, showtimes_que
 from config import settings
 from integrations.allocine import search_theaters
 from integrations.theaters import append_theater, load_theater_ids
-from sources.loader import _directors_overlap, _normalize_title
+from sources.loader import _directors_overlap, _normalize_title, coerce_str_list
+from sources.streaming import STREAMING_COLUMNS, display_name, load_display_names_catalog
 from ui import render_compact_movie_card
 
 log = logging.getLogger(__name__)
@@ -269,14 +277,96 @@ def _ask_gemini(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], l
     return _generate(), pending_ref
 
 
-def _find_pinnable_titles(reply_text: str, wl_shows: pd.DataFrame) -> list[str]:
-    """Return watchlist titles that appear (case/accent-insensitive) in ``reply_text``."""
-    if wl_shows.empty or "letterboxd_title" not in wl_shows.columns:
+def _streamable(streaming_df: pd.DataFrame) -> pd.DataFrame:
+    """Return the streaming frame's rows that actually carry a provider.
+
+    Mirrors the filter :func:`chat.prompt._streaming_context` and
+    :func:`chat.tools.streaming_query` both apply, so the pin picker offers
+    exactly the films the model was allowed to name — no more.
+    """
+    cols = [c for c in STREAMING_COLUMNS if c in streaming_df.columns]
+    if streaming_df.empty or not cols:
+        return streaming_df.iloc[0:0]
+    has_provider = pd.Series(False, index=streaming_df.index)
+    for col in cols:
+        has_provider |= streaming_df[col].map(lambda cell: isinstance(cell, list) and bool(cell))
+    return streaming_df[has_provider]
+
+
+def _pin_candidates(ctx: ChatContext) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The frames a reply's films can be pinned from, in resolution order.
+
+    Together these are the chat's **closed set**: what is screening
+    (``wl_shows``, also the frame behind ``top_matches``/``showtimes_query``)
+    and what is streaming (the provider-carrying rows of ``streaming_df``, the
+    frame behind the streaming block and ``streaming_query``). Anything the
+    model may legitimately name is in one of them — which is the point, since
+    a film the picker can't offer is a recommendation the user can't keep.
+    ``wl_shows`` comes first so a film that is both screening and streaming
+    pins with its showtime.
+    """
+    return ctx.wl_shows, _streamable(ctx.streaming_df)
+
+
+def _find_pinnable_titles(text: str, *frames: pd.DataFrame) -> list[str]:
+    """Return the ``letterboxd_title``s from ``frames`` that appear in ``text``.
+
+    Both title spellings are searched — the original *and* the ``french_title``
+    — because the showtimes block feeds the model both and it answers with
+    whichever fits (or with both, "Dark Passage (Les Passagers de la nuit)").
+    Matching only one spelling left a film unpinnable purely on how the reply
+    happened to name it. The canonical ``letterboxd_title`` is always what's
+    returned, so the pin key stays stable whichever spelling matched.
+
+    Matching is on **whole words**, not raw substrings: normalization collapses
+    everything to space-separated alphanumeric tokens, so padding both sides
+    makes ``" ran "`` miss ``"le grand rex"``. That guard is what makes the
+    widened candidate set safe — over hundreds of streaming titles, a bare
+    substring test fires on every short title (*Up*, *Her*, *M*, *RRR*).
+    """
+    norm_text = f" {_normalize_title(text)} "
+    if not norm_text.strip():
         return []
-    norm_reply = _normalize_title(reply_text)
-    titles = wl_shows["letterboxd_title"].dropna().unique().tolist()
-    matches = [t for t in titles if _normalize_title(t) and _normalize_title(t) in norm_reply]
-    return sorted(set(matches))
+    matches: set[str] = set()
+    for frame in frames:
+        if frame.empty or "letterboxd_title" not in frame.columns:
+            continue
+        cols = [c for c in ("letterboxd_title", "french_title") if c in frame.columns]
+        for spellings in frame[cols].drop_duplicates().itertuples(index=False):
+            canonical = spellings[0]
+            if not isinstance(canonical, str) or not canonical or canonical in matches:
+                continue
+            if any((norm := _normalize_title(t)) and f" {norm} " in norm_text for t in spellings):
+                matches.add(canonical)
+    return sorted(matches)
+
+
+def _assistant_text(messages: list[dict]) -> str:
+    """Every assistant reply in the conversation, concatenated.
+
+    The picker is derived from the whole transcript rather than the latest
+    reply alone: the earlier replies are still on screen, so the films in them
+    are still recommendations the user may want to keep. Deriving it also
+    means a conversation reloaded from ``data/chat_state.json`` comes back
+    pinnable instead of blank.
+    """
+    return "\n".join(str(m.get("content", "")) for m in messages if m.get("role") == "assistant")
+
+
+def _pin_row(title: str, *frames: pd.DataFrame) -> dict | None:
+    """Return the first row for ``title`` across ``frames``, or ``None``.
+
+    Frames are consulted in order, so a screening row (which carries the
+    showtime and theater the caption shows) wins over the streaming row for
+    the same film.
+    """
+    for frame in frames:
+        if frame.empty or "letterboxd_title" not in frame.columns:
+            continue
+        match = frame[frame["letterboxd_title"] == title].head(1)
+        if not match.empty:
+            return cast(dict, match.iloc[0].to_dict())
+    return None
 
 
 def _render_pending_theaters(ctx: ChatContext) -> None:
@@ -390,14 +480,35 @@ def _disambiguate_by_director(stored: dict, rows: pd.DataFrame) -> pd.DataFrame:
     return confirmed if confirmed["letterboxd_slug"].nunique() == 1 else rows.iloc[0:0]
 
 
+def _streaming_caption(pinned: dict) -> str:
+    """Escaped ``"📺 Netflix · Arte.tv"`` line, or ``""`` with no providers.
+
+    The fallback for a pin with no screening: a film pinned off the streaming
+    block is pinned *because* of where it streams, so a caption-less card
+    would drop the one fact the user kept it for. Providers are unfiltered by
+    ``STREAMING_SERVICES`` on purpose — the chat names every provider in the
+    streaming block, so the caption mirrors what it said.
+    """
+    providers = [*coerce_str_list(pinned.get("flatrate")), *coerce_str_list(pinned.get("free"))]
+    if not providers:
+        return ""
+    catalogue = load_display_names_catalog()
+    return html.escape(f"📺 {' · '.join(display_name(slug, catalogue) for slug in providers)}")
+
+
 def _pin_caption_html(pinned: dict) -> str:
-    """Escaped ``"🎟 Sat 02 Aug · 20:00 — Le Champo"`` line, or ``""`` when undated."""
+    """Escaped ``"🎟 Sat 02 Aug · 20:00 — Le Champo"`` line.
+
+    Falls back to the streaming providers (:func:`_streaming_caption`) when the
+    pin carries no usable date — a streaming-only pin has no showtime at all —
+    and to ``""`` when it carries neither.
+    """
     showtime = pinned.get("showtimes")
     if showtime is None or (not isinstance(showtime, str) and pd.isna(showtime)):
-        return ""
+        return _streaming_caption(pinned)
     when = pd.to_datetime(showtime, errors="coerce")
     if pd.isna(when):
-        return ""
+        return _streaming_caption(pinned)
     theater = pinned.get("theater_name")
     suffix = f" — {theater}" if isinstance(theater, str) and theater else ""
     return html.escape(f"🎟 {when.strftime('%a %d %b · %H:%M')}{suffix}")
@@ -465,10 +576,6 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
             state.messages.append({"role": "assistant", "content": reply})
             save_chat_state(state)
 
-            pinnable = _find_pinnable_titles(reply, ctx.wl_shows)
-            if pinnable:
-                state.pinnable = pinnable
-
             if pending and ctx.theaters_csv:
                 existing_ids = load_theater_ids(ctx.theaters_csv)
                 new_pending = [t for t in pending if t["id"] not in existing_ids]
@@ -495,9 +602,11 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
     if pinned_col is not None:
         with pinned_col:
             st.markdown("##### 📌 Pinned")
+            candidates = _pin_candidates(ctx)
+            state.pinnable = _find_pinnable_titles(_assistant_text(state.messages), *candidates)
             if state.pinnable:
                 to_pin = st.multiselect(
-                    "Pin from this reply",
+                    "Pin from this conversation",
                     options=state.pinnable,
                     key="pin_picker",
                     label_visibility="collapsed",
@@ -508,9 +617,9 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
                     for title in to_pin:
                         if title in existing:
                             continue
-                        match = ctx.wl_shows[ctx.wl_shows["letterboxd_title"] == title].head(1)
-                        if not match.empty:
-                            state.pinned_recs.append(match.iloc[0].to_dict())
+                        row = _pin_row(title, *candidates)
+                        if row is not None:
+                            state.pinned_recs.append(row)
                     if len(state.pinned_recs) > n_before:
                         save_chat_state(state)
 

@@ -631,5 +631,9 @@ def render_chat(ctx: ChatContext, *, show_prompt_chips: bool = True, show_pinned
                     render_compact_movie_card(pd.Series(pinned), caption=_pin_caption_html(pinned))
                 if st.button("Clear pins", key="clear_pins", use_container_width=True):
                     state.pinned_recs = []
+                    # The picker keeps its selection across reruns and the block
+                    # above re-pins whatever is still selected, so emptying the
+                    # list alone puts every pin straight back on the next run.
+                    st.session_state.pop("pin_picker", None)
                     save_chat_state(state)
                     st.rerun()

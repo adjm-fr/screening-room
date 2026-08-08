@@ -23,7 +23,11 @@ from chat.ui import (
     ChatContext,
     ChatState,
     _ask_gemini,
+    _assistant_text,
+    _find_pinnable_titles,
     _pin_caption_html,
+    _pin_row,
+    _streamable,
     delete_chat_state,
     resolve_pin,
     save_chat_state,
@@ -470,6 +474,131 @@ def test_pin_caption_is_empty_without_a_usable_date(pinned):
 
 def test_pin_caption_omits_a_missing_theater():
     assert _pin_caption_html({"showtimes": "2026-08-04 18:00"}) == "🎟 Tue 04 Aug · 18:00"
+
+
+def test_pin_caption_falls_back_to_the_providers_for_a_streaming_pin():
+    """A streaming-only pin has no showtime — the providers are why it was kept."""
+    caption = _pin_caption_html({"flatrate": ["netflix"], "free": ["arte"]})
+
+    assert caption == "📺 Netflix · ARTE"
+
+
+def test_pin_caption_prefers_the_screening_over_the_providers():
+    caption = _pin_caption_html({"showtimes": "2026-08-04 18:00", "theater_name": "Le Champo", "flatrate": ["netflix"]})
+
+    assert caption == "🎟 Tue 04 Aug · 18:00 — Le Champo"
+
+
+# ── the pin picker: which films a reply makes pinnable ───────────────────────
+
+
+@pytest.fixture
+def pinnable_shows() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"letterboxd_title": "A Special Day", "french_title": "Une journée particulière", "letterboxd_slug": "a-special-day"},
+            {"letterboxd_title": "Dark Passage", "french_title": "Les Passagers de la nuit", "letterboxd_slug": "dark-passage"},
+        ]
+    )
+
+
+@pytest.fixture
+def pinnable_streaming() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "letterboxd_title": "The Power of the Dog",
+                "french_title": "Le Pouvoir du chien",
+                "slug": "tpotd",
+                "flatrate": ["netflix"],
+                "free": [],
+            },
+            {"letterboxd_title": "Not Streaming", "french_title": "Pas en ligne", "slug": "nope", "flatrate": [], "free": []},
+        ]
+    )
+
+
+def test_find_pinnable_titles_matches_a_reply(pinnable_shows):
+    assert _find_pinnable_titles("**A Special Day** is showing at L'Archipel.", pinnable_shows) == ["A Special Day"]
+
+
+def test_find_pinnable_titles_matches_the_french_spelling(pinnable_shows):
+    """The prompt feeds the model both spellings, so it answers with either."""
+    assert _find_pinnable_titles("Les Passagers de la nuit passe au Christine.", pinnable_shows) == ["Dark Passage"]
+
+
+def test_find_pinnable_titles_returns_one_entry_when_both_spellings_appear(pinnable_shows):
+    """ "Dark Passage (Les Passagers de la nuit)" is one film, not two options."""
+    assert _find_pinnable_titles("Dark Passage (Les Passagers de la nuit)", pinnable_shows) == ["Dark Passage"]
+
+
+def test_find_pinnable_titles_spans_every_candidate_frame(pinnable_shows, pinnable_streaming):
+    """The #53 case: a Netflix recommendation was unpinnable — it never screens."""
+    reply = "A Special Day is at L'Archipel; The Power of the Dog is on Netflix."
+
+    pinnable = _find_pinnable_titles(reply, pinnable_shows, _streamable(pinnable_streaming))
+
+    assert pinnable == ["A Special Day", "The Power of the Dog"]
+
+
+def test_find_pinnable_titles_matches_whole_words_only(pinnable_shows):
+    """Bare substrings make every short title fire — " ran " is inside "grand rex"."""
+    shows = pd.DataFrame([{"letterboxd_title": "Ran", "french_title": "Ran"}])
+
+    assert _find_pinnable_titles("Playing at Le Grand Rex tonight.", shows) == []
+
+
+def test_find_pinnable_titles_ignores_an_unmentioned_film(pinnable_shows):
+    assert _find_pinnable_titles("Nothing on your watchlist fits tonight.", pinnable_shows) == []
+
+
+def test_find_pinnable_titles_tolerates_frames_it_cannot_read():
+    assert _find_pinnable_titles("A Special Day", pd.DataFrame(), pd.DataFrame([{"title": "A Special Day"}])) == []
+
+
+def test_streamable_keeps_only_films_with_a_provider(pinnable_streaming):
+    assert _streamable(pinnable_streaming)["letterboxd_title"].tolist() == ["The Power of the Dog"]
+
+
+def test_streamable_counts_free_providers_too():
+    """Free platforms are watchable by everyone — never gated behind a subscription."""
+    df = pd.DataFrame([{"letterboxd_title": "Faces Places", "flatrate": [], "free": ["arte"]}])
+
+    assert len(_streamable(df)) == 1
+
+
+def test_streamable_on_a_frame_without_the_columns_is_empty():
+    assert _streamable(pd.DataFrame([{"letterboxd_title": "A"}])).empty
+
+
+def test_assistant_text_spans_the_whole_transcript():
+    """Earlier replies stay pinnable — asking a follow-up must not un-offer them."""
+    messages = [
+        {"role": "user", "content": "what's on this weekend?"},
+        {"role": "assistant", "content": "A Special Day"},
+        {"role": "user", "content": "and on Netflix?"},
+        {"role": "assistant", "content": "The Power of the Dog"},
+    ]
+
+    assert _assistant_text(messages) == "A Special Day\nThe Power of the Dog"
+
+
+def test_pin_row_prefers_the_screening_frame(pinnable_shows):
+    """A film that both screens and streams pins with its showtime, not without."""
+    streaming = pd.DataFrame([{"letterboxd_title": "A Special Day", "flatrate": ["netflix"]}])
+
+    assert _pin_row("A Special Day", pinnable_shows, streaming)["letterboxd_slug"] == "a-special-day"
+
+
+def test_pin_row_falls_through_to_the_streaming_frame(pinnable_shows, pinnable_streaming):
+    row = _pin_row("The Power of the Dog", pinnable_shows, _streamable(pinnable_streaming))
+
+    assert row is not None
+    assert row["slug"] == "tpotd"
+
+
+def test_pin_row_is_none_for_an_unknown_title(pinnable_shows):
+    assert _pin_row("Solaris", pinnable_shows, pd.DataFrame()) is None
 
 
 # ── tool dispatch ────────────────────────────────────────────────────────────

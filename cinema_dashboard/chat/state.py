@@ -54,6 +54,10 @@ class ChatState:
     messages: list[dict] = dataclasses.field(default_factory=list)
     pending_theaters: list[dict] | None = None
     pinned_recs: list[dict] = dataclasses.field(default_factory=list)
+    #: The pin picker's options, *derived* from ``messages`` on every render of
+    #: the pinned column (``chat.ui._find_pinnable_titles``) rather than
+    #: accumulated turn by turn — so a transcript reloaded from disk is
+    #: pinnable again, and no turn can drop an earlier turn's films.
     pinnable: list[str] = dataclasses.field(default_factory=list)
     last_chip: str | None = None
     pending_prompt: str | None = None

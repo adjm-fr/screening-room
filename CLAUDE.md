@@ -217,6 +217,20 @@ typecheck, security, test.
   context, never from outside it). The `- {title} — flatrate=…` streaming-context line format is pinned by
   the eval goldens: append new segments (e.g. `; free=…`), never reword the existing prefix. The system
   prompt's existing rules are likewise pinned: **insert** new paragraphs, never reword or reflow old ones.
+- **The pin picker's candidate set must be the model's whole closed set, or a recommendation can't be
+  kept.** `chat.ui._pin_candidates` returns `(wl_shows, _streamable(streaming_df))` — the frame behind the
+  showtimes block/`top_matches`/`showtimes_query` *and* the provider-carrying rows behind the streaming
+  block/`streaming_query`, filtered by the same "non-empty `flatrate`/`free` list" rule those two apply.
+  Scoping it to `wl_shows` alone was issue #53: ask "what can I watch on Netflix?" and every answer is
+  unpinnable, since a streaming film screens nowhere. `_find_pinnable_titles` likewise matches **both**
+  title spellings (`letterboxd_title` *and* `french_title`, returning the former as the stable pin key) —
+  the prompt feeds the model both, so it answers with either — and matches on **whole words**: padding both
+  sides of the normalized text is what stops a short title (*Up*, *M*, *RRR*, *Ran* inside "Le Grand Rex")
+  from firing on every reply once the candidate set grew from ~12 screening films to hundreds of streaming
+  ones. It reads the **whole transcript** (`_assistant_text`), not the latest reply: `state.pinnable` is
+  derived per render, not accumulated, so a follow-up question can't un-offer the previous answer's films
+  and a transcript reloaded from `data/chat_state.json` comes back pinnable. Add a new source of films the
+  model may name (a new tool, a new context block) and it must be added to `_pin_candidates` too.
 - **A persisted pin is a frozen row snapshot, so `chat.ui.resolve_pin` re-resolves it at render time.**
   `pinned_recs` stores a whole `wl_shows` row, which freezes that row's *shape*: pins taken before
   `letterboxd_slug` was carried through the showtimes join carry no slug, so `row_slug` finds nothing and

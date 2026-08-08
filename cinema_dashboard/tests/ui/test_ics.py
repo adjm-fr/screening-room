@@ -1,4 +1,9 @@
-"""Tests for ui.ics — screening-block sizing and the RFC 5545 ICS writer."""
+"""Tests for ui.ics — screening-block sizing, the RFC 5545 writer, both export builders.
+
+``build_ics_events``/``build_csv_rows`` moved here from ``pages/calendar.py`` when
+the calendar page became orchestration-only: they are ``screening_end`` callers,
+so they belong beside it and beside its tests.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,7 @@ import re
 import pandas as pd
 import pytest
 
-from ui import ADS_MINUTES_CHAIN, ADS_MINUTES_DEFAULT, screening_end, to_ics
+from ui import ADS_MINUTES_CHAIN, ADS_MINUTES_DEFAULT, build_csv_rows, build_ics_events, screening_end, to_ics
 from ui.ics import _ads_minutes, _ics_escape
 
 # ── _ics_escape ─────────────────────────────────────────────────────────────
@@ -159,3 +164,89 @@ def test_screening_end_missing_theater_column():
     row = pd.Series({"runtime_minutes": 90})
 
     assert screening_end(row, pd.Timestamp("2026-08-03 19:30")) == pd.Timestamp("2026-08-03 21:10")  # 10 ads + 90
+
+
+# ── build_ics_events / build_csv_rows ───────────────────────────────────────
+
+
+def _export_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "showtimes": "2026-08-03 20:00",
+                "runtime_minutes": 100,
+                "theater_name": "UGC Ciné Cité Bercy",
+                "french_title": "Film A",
+                "letterboxd_title": "Film A",
+                "directors": "Alice",
+            },
+            {
+                "showtimes": "2026-08-04 18:00",
+                "runtime_minutes": 100,
+                "theater_name": "Le Champo",
+                "french_title": "Film B",
+                "letterboxd_title": "Film B",
+                "directors": "Bob",
+            },
+        ]
+    )
+
+
+def test_build_ics_events_ends_include_ads():
+    events = build_ics_events(_export_frame())
+
+    assert [e["end"] for e in events] == [pd.Timestamp("2026-08-03 22:00"), pd.Timestamp("2026-08-04 19:50")]
+
+
+def test_build_ics_events_skips_rows_without_showtime():
+    df = pd.DataFrame(
+        [
+            {
+                "showtimes": None,
+                "runtime_minutes": 100,
+                "theater_name": "MK2 Quai de Seine",
+                "french_title": "Film A",
+                "letterboxd_title": "Film A",
+                "directors": "Alice",
+            }
+        ]
+    )
+
+    assert build_ics_events(df) == []
+
+
+def test_build_ics_events_on_empty_frame():
+    assert build_ics_events(pd.DataFrame(columns=["showtimes"])) == []
+
+
+def test_build_csv_rows_emits_the_google_import_header_in_order():
+    rows = build_csv_rows(_export_frame())
+
+    assert list(rows[0]) == [
+        "Subject",
+        "Start Date",
+        "Start Time",
+        "End Date",
+        "End Time",
+        "All Day Event",
+        "Description",
+        "Location",
+        "Private",
+    ]
+
+
+def test_build_csv_rows_skips_rows_without_showtime():
+    df = _export_frame()
+    df.loc[0, "showtimes"] = None
+
+    assert [r["Subject"] for r in build_csv_rows(df)] == ["Film B"]
+
+
+def test_build_csv_rows_end_time_matches_screening_end():
+    """Both exports size their blocks with the one helper — this is what stops them drifting."""
+    df = _export_frame()
+    rows = build_csv_rows(df)
+
+    for (_, row), csv_row in zip(df.iterrows(), rows, strict=True):
+        expected = screening_end(row, pd.to_datetime(row["showtimes"]))
+        assert csv_row["End Time"] == expected.strftime("%H:%M:%S")

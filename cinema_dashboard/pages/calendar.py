@@ -1,141 +1,249 @@
 """
-Watchlist Screenings page.
+Watchlist Screenings page — a compact agenda of what's on and when.
 
 Joins ``watchlist_with_letterboxd.parquet`` with ``showtimes.parquet`` and
-displays upcoming screenings across three surfaces:
+renders the result as a **vertical agenda**: one section per day, one row per
+(film × day), that day's showtimes as time pills inside the row. It replaced a
+horizontal poster rail per day, which spent roughly 390px of height and a
+sideways drag per film on a page whose whole job is "what can I see, and when?".
+Grouping, labelling and filtering all live in ``core.agenda``; the row and
+day-header HTML lives in ``ui.agenda``. This module only orchestrates.
 
-- **By day** — horizontal poster rails grouped by date, one card per movie
-  with all showtimes for that day listed below, sorted by earliest showtime.
-- **Calendar** — ICS and CSV export for your watchlist screenings.
-- **Map** — pydeck map of theaters carrying screenings in the current
-  filter; marker size ∝ # of watchlist screenings.
+**One filter chain, one frame.** :func:`core.agenda.apply_filters` applies every
+control except the day strip, :func:`core.agenda.apply_day` folds that in, and
+the single ``filtered`` frame it produces is what the agenda, the ICS export,
+the CSV export and the map all read. Add a filter by extending
+:class:`~core.agenda.AgendaFilters` — never by narrowing again further down, which
+is how the download and the screen would silently diverge. A corollary worth
+knowing: **picking a day scopes the export too**, so "download tonight only" is
+one click on a day chip.
 
-The page top carries a single control: the "Only times I'm free" toggle
-(which replaced the old "Weekends only" one), mounted via the shared
-:func:`ui.render_free_time_filter` that Screening in Paris also uses. It keeps
-a screening when it falls on a weekend, a French public holiday, a user-marked
-day off, or a weekday at/after an editable cutoff (default 19:00) — minus any
-dates marked unavailable (away), which override everything (see
-``core.availability``); its cutoff + days-off/unavailable pickers appear
-inline when it's on. The returned selection is applied *late*, in filter order
-below, rather than where it's rendered — the export reads that same frame. Every
-other filter lives in the sidebar: date range, a theater multi-select whose
-options stay hidden inside the dropdown (empty selection = all theaters),
-runtime buckets, a showtime time-of-day range, text search, and min rating.
-All of these filters narrow the same ``filtered`` frame that both the day
-rails and the ICS/CSV export read from, so exports always match what's on
-screen.
-ICS export is the primary download (universally accepted by Google Calendar /
-Apple Calendar / Outlook); CSV is kept behind an expander for legacy use. Both
-size their calendar blocks with :func:`ui.screening_end`, which pads the
-film's runtime with the pre-feature ad block (20min in an MK2/UGC, 10min
-elsewhere) — it lives in ``ui.ics`` beside :func:`ui.to_ics` so the
-movie detail page's per-screening ``.ics`` can size its blocks identically.
+Controls, all in a toolbar above the agenda rather than a sidebar (this was the
+only page in the app with one, and a sidebar is collapsed by default on the
+phone this page is most useful on):
+
+- a **day strip** of chips with per-day screening counts, which replaced a date
+  range picker — the horizon is about a week, so a range control over ~10 chips
+  was duplicating a strip that fits on one line;
+- **search** across both title spellings and directors;
+- a **Filters** popover carrying the low-frequency controls (theaters, runtime
+  buckets, minimum Letterboxd rating), badged with the number of active filters;
+- **time-of-day chips** (Morning/Afternoon/Evening/Late), which replaced a
+  15-minute time-range slider — 96 stops for a decision with four real answers;
+- the shared **"Only times I'm free"** control (:func:`ui.render_free_time_filter`,
+  also used by Screening in Paris), whose selection feeds ``AgendaFilters``
+  rather than being applied on the spot, so it stays inside the one chain;
+- a **Time / Match** sort, which reorders entries *within* each day and never
+  across days — the day strip is itself a day picker, so a flat list would leave
+  that control pointing at nothing. The Match option only renders when there is
+  a ratings history to build a taste profile from.
+
+The ICS/CSV builders live in ``ui.ics`` beside :func:`ui.screening_end`, which
+sizes every calendar block by padding the film's runtime with the pre-feature ad
+block (20min in an MK2/UGC, 10min elsewhere) — the movie detail page's
+per-screening ``.ics`` uses the identical helper so the three can't drift.
 """
 
 from __future__ import annotations
 
-import datetime as dt
-import html as _html
+from typing import Literal
 
 import pandas as pd
 import streamlit as st
 
+from core.agenda import (
+    RUNTIME_BUCKETS,
+    TIME_BUCKET_LABELS,
+    AgendaFilters,
+    agenda_kpis,
+    apply_day,
+    apply_filters,
+    build_agenda,
+    day_chips,
+)
+from core.taste import TasteProfile, attach_match, build_affinity
 from sources.geo import load_geocoded_theaters, render_theater_map
 from sources.loader import (
     build_watchlist_showtimes,
     future_showtimes,
     get_paths,
+    load_ratings,
     load_showtimes,
     load_watchlist,
 )
 from ui import (
+    build_csv_rows,
+    build_ics_events,
+    render_agenda,
     render_chip_filter,
+    render_day_strip,
     render_empty_state,
     render_free_time_filter,
-    screening_end,
+    render_freshness_banner,
+    render_kpi_strip,
     to_ics,
 )
-from ui.cards import _movie_card_html
+
+SORT_TIME = "⏱ Time"
+SORT_MATCH = "◎ Match"
+VIEW_AGENDA = "Agenda"
+VIEW_MAP = "Map"
 
 
-def _render_day_rails(
-    rows: pd.DataFrame,
+def _filters_badge() -> str:
+    """Label for the Filters popover, counting the controls that are away from default.
+
+    Read from session state rather than from the live values, because the label
+    has to be rendered *before* the popover's own widgets run. Streamlit reruns
+    on every interaction, so the count the user actually sees is always current.
+    """
+    state = st.session_state
+    prior = AgendaFilters(
+        search=str(state.get("cal_search") or ""),
+        theaters=tuple(state.get("cal_theaters") or ()),
+        runtimes=tuple(state.get("cal_runtime") or ()),
+        time_buckets=tuple(state.get("cal_tod") or ()),
+        min_rating=float(state.get("cal_minrating") or 0.0),
+        only_free=bool(state.get("cal_free")),
+    )
+    count = prior.active_count()
+    return f"Filters · {count}" if count else "Filters"
+
+
+def _render_toolbar(
+    wl_shows: pd.DataFrame,
     *,
-    title_col: str,
-) -> None:
-    """Render the by-day poster rails for a (pre-sorted) subset of screenings."""
-    for day, day_group in rows.groupby("_day", sort=True):
-        day_label = pd.Timestamp(str(day)).strftime("%A %d %B")
-        cards_html = ""
-        for _, movie_group in day_group.groupby(title_col, sort=False):
-            rep = movie_group.iloc[0]
-            showtimes_lines = ""
-            for _, st_row in movie_group.sort_values("_dt").iterrows():
-                t = st_row["_dt"].strftime("%H:%M")
-                theater = str(st_row.get("theater_name") or "")
-                line = _html.escape(t)
-                if theater:
-                    line += f" · {_html.escape(theater)}"
-                showtimes_lines += f'<div class="showtime-badge">{line}</div>'
-            cards_html += _movie_card_html(rep, extra_html=showtimes_lines)
-        st.markdown(
-            f'<div class="poster-rail-wrap">'
-            f'<div class="poster-rail-title">{_html.escape(day_label)}</div>'
-            f'<div class="poster-rail">{cards_html}</div>'
-            f"</div>",
-            unsafe_allow_html=True,
+    has_profile: bool,
+) -> tuple[AgendaFilters, Literal["time", "match"], str, st.delta_generator.DeltaGenerator]:
+    """Render every control and return the selection, the sort mode, the view, and the export slot.
+
+    The export popover is returned as an empty container rather than rendered
+    here: its downloads are built from the *filtered* frame, which does not exist
+    until these filters have been applied.
+    """
+    col_search, col_filters, col_sort, col_export, col_view = st.columns([5, 2, 3, 2, 2], vertical_alignment="bottom")
+
+    with col_search:
+        search = st.text_input(
+            "Search title or director",
+            key="cal_search",
+            placeholder="🔍  Search title or director",
+            label_visibility="collapsed",
         )
 
+    with col_filters, st.popover(_filters_badge(), icon=":material/tune:", use_container_width=True):
+        theaters = sorted(wl_shows["theater_name"].dropna().unique().tolist()) if "theater_name" in wl_shows.columns else []
+        # No default: an empty selection means "all theaters", so the long list
+        # stays inside the dropdown instead of rendering as a wall of tags.
+        sel_theaters = st.multiselect("Theaters", theaters, key="cal_theaters", placeholder="All theaters")
+        sel_runtime = render_chip_filter("Runtime", list(RUNTIME_BUCKETS), key="cal_runtime")
+        min_rating = st.slider("Min Letterboxd rating", 0.0, 5.0, 0.0, 0.5, key="cal_minrating")
 
-def _runtime_bucket(minutes: float | str | None) -> str:
-    if minutes is None or (isinstance(minutes, float) and pd.isna(minutes)):
-        return "Unknown"
-    if isinstance(minutes, str):
-        minutes = minutes.strip()
-        if not minutes:
-            return "Unknown"
-        try:
-            m = int(float("".join(c for c in minutes if c.isdigit() or c == ".")))
-        except (ValueError, TypeError):
-            return "Unknown"
-    else:
-        try:
-            m = int(minutes)
-        except (ValueError, TypeError):
-            return "Unknown"
-    if m < 90:
-        return "<90"
-    if m <= 120:
-        return "90–120"
-    return ">120"
+    sort_mode: Literal["time", "match"] = "time"
+    if has_profile:
+        with col_sort:
+            # Built conditionally rather than disabled: with no ratings history
+            # there is no Match to sort by, so render no control at all.
+            choice = st.segmented_control(
+                "Sort",
+                [SORT_TIME, SORT_MATCH],
+                default=SORT_TIME,
+                key="cal_sort",
+                label_visibility="collapsed",
+                width="stretch",
+            )
+        sort_mode = "match" if choice == SORT_MATCH else "time"
 
+    export_slot = col_export.container()
 
-def _build_ics_events(df: pd.DataFrame) -> list[dict]:
-    events: list[dict] = []
-    for idx, row in df.iterrows():
-        showtime = pd.to_datetime(row["showtimes"])
-        if pd.isna(showtime):
-            continue
-        end = screening_end(row, showtime)
-        events.append(
-            {
-                "summary": str(row.get("letterboxd_title") or row["french_title"]),
-                "start": showtime,
-                "end": end,
-                "location": str(row.get("theater_name") or row.get("theater_id", "")),
-                "description": f"Directors: {row.get('directors') or 'N/A'} | French title: {row['french_title']}",
-                "uid": f"{idx}-{int(showtime.timestamp())}@cinema_dashboard",
-            }
+    with col_view:
+        view = st.segmented_control(
+            "View",
+            [VIEW_AGENDA, VIEW_MAP],
+            default=VIEW_AGENDA,
+            key="cal_view",
+            label_visibility="collapsed",
+            width="stretch",
         )
-    return events
+
+    sel_tod = render_chip_filter("Time of day", list(TIME_BUCKET_LABELS), key="cal_tod", label_visibility="collapsed")
+    # Date options come from the unfiltered frame, so narrowing another filter
+    # can't drop a date out from under the pickers.
+    free_time = render_free_time_filter(wl_shows, key_prefix="cal")
+
+    filters = AgendaFilters(
+        search=search,
+        theaters=tuple(sel_theaters),
+        runtimes=tuple(sel_runtime),
+        time_buckets=tuple(sel_tod),
+        min_rating=min_rating,
+        only_free=free_time.enabled,
+        free_cutoff=free_time.cutoff,
+        days_off=free_time.days_off,
+        unavailable=free_time.unavailable,
+    )
+    return filters, sort_mode, view or VIEW_AGENDA, export_slot
+
+
+def _render_export(filtered: pd.DataFrame) -> None:
+    """Export popover: ICS as the primary download, CSV behind an expander.
+
+    Reads the same frame the agenda renders, so the download always matches
+    what's on screen — including the day-strip selection.
+    """
+    with st.popover("Export", icon=":material/download:", use_container_width=True):
+        st.download_button(
+            "📅 .ics (Google / Apple / Outlook)",
+            data=to_ics(build_ics_events(filtered)),
+            file_name="watchlist_calendar.ics",
+            mime="text/calendar",
+            use_container_width=True,
+        )
+        with st.expander("CSV (legacy Google Calendar import)"):
+            csv_rows = build_csv_rows(filtered)
+            if csv_rows:
+                st.download_button(
+                    "Download CSV",
+                    data=pd.DataFrame(csv_rows).to_csv(index=False).encode("utf-8"),
+                    file_name="watchlist_calendar.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+
+
+def _render_map(filtered: pd.DataFrame, theaters_csv: object) -> None:
+    """Theater map for the filtered screenings; marker size ∝ screening count."""
+    if not theaters_csv:
+        st.info("Set `ALLOCINE_INPUT_PATH` in `.env` to render the theater map.")
+        return
+    try:
+        geo = load_geocoded_theaters(str(theaters_csv))
+    except Exception as exc:
+        st.warning(f"Geocoding unavailable: {exc}")
+        return
+    counts = (
+        filtered.groupby("theater_id").size().rename("count").reset_index()
+        if "theater_id" in filtered.columns
+        else pd.DataFrame(columns=["theater_id", "count"])
+    )
+    merged = geo.merge(counts, left_on="id", right_on="theater_id", how="left").fillna({"count": 0})
+    merged = merged[merged["count"] > 0]
+    render_theater_map(merged, count_col="count", popup_col="name")
 
 
 def main() -> None:
-    st.markdown('<h1 class="h-display" style="font-size:2rem;">Watchlist Screenings</h1>', unsafe_allow_html=True)
-    st.caption("Upcoming screenings of your Letterboxd watchlist movies across your configured theaters.")
-
     movies_path, showtimes_path, theaters_csv = get_paths()
+
+    col_title, col_fresh = st.columns([3, 1], vertical_alignment="center")
+    with col_title:
+        st.markdown('<h1 class="h-display" style="font-size:2rem;">Watchlist Screenings</h1>', unsafe_allow_html=True)
+        st.caption("Upcoming screenings of your Letterboxd watchlist movies across your configured theaters.")
+    with col_fresh:
+        render_freshness_banner(
+            showtimes_path,
+            (movies_path / "watchlist_with_letterboxd.parquet") if movies_path else None,
+        )
+
     if not movies_path:
         st.error("**OUTPUT_PATH** is not set in the workspace-root `.env`.")
         return
@@ -153,6 +261,9 @@ def main() -> None:
     try:
         watchlist_df = load_watchlist(str(movies_path))
         showtimes_df = load_showtimes(str(showtimes_path))
+        ratings_df = (
+            load_ratings(str(movies_path)) if (movies_path / "ratings_with_letterboxd.parquet").exists() else pd.DataFrame()
+        )
     except Exception as exc:
         st.error(f"Failed to load data: {exc}")
         return
@@ -167,148 +278,49 @@ def main() -> None:
         )
         return
 
-    runtime_col = next((c for c in ("runtime_minutes", "runtime") if c in wl_shows.columns), None)
-    wl_shows = wl_shows.copy()
-    wl_shows["_runtime_bucket"] = wl_shows[runtime_col].apply(_runtime_bucket) if runtime_col else "Unknown"
+    # Scored before any filtering: `match` then survives every narrowing for
+    # free, and attach_match also carries back the metadata columns the
+    # "because" chips need (see core.taste). Note it resets the index, so
+    # nothing index-aligned may cross this line.
+    profile: TasteProfile | None = build_affinity(ratings_df) if not ratings_df.empty else None
+    has_profile = profile is not None and not profile.is_empty
+    if has_profile and profile is not None:
+        wl_shows = attach_match(wl_shows, watchlist_df, profile)
 
-    # ── On-page: only the free-time toggle (+ its pickers when on) ──────────
-    # Options come from the unfiltered wl_shows, so a sidebar filter can't drop
-    # a date out from under the pickers; the selection is applied further down,
-    # in filter order, to the frame the export also reads.
-    free_time = render_free_time_filter(wl_shows, key_prefix="cal")
+    # Filled after filtering, so both describe the frame the agenda shows — see
+    # the day-strip note below.
+    kpi_slot = st.container()
+    day_slot = st.container()
 
-    # ── Sidebar: every other filter ─────────────────────────────────────────
-    min_dt = pd.to_datetime(wl_shows["showtimes"]).min()
-    max_dt = pd.to_datetime(wl_shows["showtimes"]).max()
-    with st.sidebar:
-        st.header("Filters")
-        date_range = st.date_input(
-            "Show screenings between",
-            value=(min_dt.date(), max_dt.date()),
-            min_value=min_dt.date(),
-            max_value=max_dt.date(),
-        )
-        theaters = sorted(wl_shows["theater_name"].dropna().unique().tolist()) if "theater_name" in wl_shows.columns else []
-        # No default: empty selection means "all theaters", so the (long) list
-        # stays hidden inside the dropdown instead of rendering as tags.
-        sel_theaters = st.multiselect("Theaters", theaters, key="cal_theaters", placeholder="All theaters")
-        sel_runtime = render_chip_filter("Runtime", ["<90", "90–120", ">120"], key="cal_runtime")
-        sel_time_range = st.slider(
-            "Showtime between",
-            min_value=dt.time(0, 0),
-            max_value=dt.time(23, 59),
-            value=(dt.time(0, 0), dt.time(23, 59)),
-            step=dt.timedelta(minutes=15),
-            key="cal_timerange",
-        )
-        search = st.text_input("Search title or director", key="cal_search", placeholder="e.g. Bong Joon-ho")
-        min_rating = st.slider("Min Letterboxd rating", 0.0, 5.0, 0.0, 0.5, key="cal_minrating")
+    filters, sort_mode, view, export_slot = _render_toolbar(wl_shows, has_profile=has_profile)
 
-    filtered = wl_shows.copy()
-    if sel_theaters:
-        filtered = filtered[filtered["theater_name"].isin(sel_theaters)]
-    if sel_runtime:
-        filtered = filtered[filtered["_runtime_bucket"].isin(sel_runtime)]
-    if sel_time_range and sel_time_range != (dt.time(0, 0), dt.time(23, 59)):
-        start_t, end_t = sel_time_range
-        showtime_of_day = pd.to_datetime(filtered["showtimes"]).dt.time
-        filtered = filtered[(showtime_of_day >= start_t) & (showtime_of_day <= end_t)]
-    filtered = free_time.apply(filtered)
-    if search:
-        s_norm = search.lower().strip()
-        title_col = "french_title" if "french_title" in filtered.columns else "movie"
-        mask = filtered[title_col].fillna("").str.lower().str.contains(s_norm, regex=False)
-        if "directors" in filtered.columns:
-            mask = mask | filtered["directors"].fillna("").str.lower().str.contains(s_norm, regex=False)
-        filtered = filtered[mask]
-    if min_rating > 0 and "letterboxd_avg_rating" in filtered.columns:
-        filtered = filtered[filtered["letterboxd_avg_rating"].fillna(0) >= min_rating]
-    if isinstance(date_range, tuple) and len(date_range) == 2:
-        start_date, end_date = date_range
-        mask = (pd.to_datetime(filtered["showtimes"]).dt.date >= start_date) & (
-            pd.to_datetime(filtered["showtimes"]).dt.date <= end_date
-        )
-        filtered = filtered[mask]
-
-    m1, m2 = st.columns(2)
-    m1.metric("Watchlist movies", filtered["french_title"].nunique() if not filtered.empty else 0)
-    m2.metric("Total screenings", len(filtered))
-
-    if filtered.empty:
+    narrowed = apply_filters(wl_shows, filters)
+    if narrowed.empty:
         render_empty_state("🔍", "No matches", "Loosen the filters to see more screenings.")
         return
 
-    tab_days, tab_cal, tab_map = st.tabs(["🎬 By day", "📅 Calendar", "🗺️ Map"])
+    with kpi_slot:
+        render_kpi_strip(agenda_kpis(narrowed))
+    # The day chips count the *filtered* frame, which is why they render from a
+    # slot placed above the toolbar but filled after it. KPIs and chips both
+    # describe `narrowed` (pre-day), so picking a day re-scopes the agenda and
+    # the export without zeroing the headline counts.
+    with day_slot:
+        st.write("")  # breathing room between the KPI cards and the day chips
+        day = render_day_strip(day_chips(narrowed), key="cal_day")
 
-    with tab_days:
-        title_col = "french_title" if "french_title" in filtered.columns else "movie"
-        filtered_sorted = filtered.copy()
-        filtered_sorted["_dt"] = pd.to_datetime(filtered_sorted["showtimes"])
-        filtered_sorted["_day"] = filtered_sorted["_dt"].dt.date
-        # Sort movies within each day by earliest showtime
-        earliest = filtered_sorted.groupby([title_col, "_day"])["_dt"].min().rename("_earliest")
-        filtered_sorted = filtered_sorted.join(earliest, on=[title_col, "_day"])
-        filtered_sorted = filtered_sorted.sort_values(["_day", "_earliest", "_dt"])
+    filtered = apply_day(narrowed, day)
+    with export_slot:
+        _render_export(filtered)
 
-        st.markdown("### Cinema-only this week")
-        st.caption("Showtimes for your watchlist films screening in Paris.")
-        _render_day_rails(filtered_sorted, title_col=title_col)
+    if filtered.empty:
+        render_empty_state("🔍", "Nothing on that day", "Pick another day, or go back to All.")
+        return
 
-    with tab_cal:
-        st.subheader("Export")
-        ics_bytes = to_ics(_build_ics_events(filtered))
-        st.download_button(
-            "📅 Download .ics (Google / Apple / Outlook)",
-            data=ics_bytes,
-            file_name="watchlist_calendar.ics",
-            mime="text/calendar",
-        )
-        with st.expander("CSV (legacy Google Calendar import)"):
-            csv_rows: list[dict] = []
-            for _, row in filtered.iterrows():
-                showtime = pd.to_datetime(row["showtimes"])
-                if pd.isna(showtime):
-                    continue
-                end_time = screening_end(row, showtime)
-                csv_rows.append(
-                    {
-                        "Subject": str(row.get("letterboxd_title") or row["french_title"]),
-                        "Start Date": showtime.strftime("%Y-%m-%d"),
-                        "Start Time": showtime.strftime("%H:%M:%S"),
-                        "End Date": end_time.strftime("%Y-%m-%d"),
-                        "End Time": end_time.strftime("%H:%M:%S"),
-                        "All Day Event": "False",
-                        "Description": f"Directors: {row.get('directors') or 'N/A'} | French title: {row['french_title']}",
-                        "Location": str(row.get("theater_name") or row.get("theater_id", "")),
-                        "Private": "False",
-                    }
-                )
-            if csv_rows:
-                csv_bytes = pd.DataFrame(csv_rows).to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    "Download CSV",
-                    data=csv_bytes,
-                    file_name="watchlist_calendar.csv",
-                    mime="text/csv",
-                )
-
-    with tab_map:
-        if not theaters_csv:
-            st.info("Set `ALLOCINE_INPUT_PATH` in `.env` to render the theater map.")
-        else:
-            try:
-                geo = load_geocoded_theaters(str(theaters_csv))
-            except Exception as exc:
-                st.warning(f"Geocoding unavailable: {exc}")
-            else:
-                counts = (
-                    filtered.groupby("theater_id").size().rename("count").reset_index()
-                    if "theater_id" in filtered.columns
-                    else pd.DataFrame(columns=["theater_id", "count"])
-                )
-                merged = geo.merge(counts, left_on="id", right_on="theater_id", how="left").fillna({"count": 0})
-                merged = merged[merged["count"] > 0]
-                render_theater_map(merged, count_col="count", popup_col="name")
+    if view == VIEW_MAP:
+        _render_map(filtered, theaters_csv)
+    else:
+        render_agenda(build_agenda(filtered, sort=sort_mode), profile=profile if has_profile else None)
 
 
 main()

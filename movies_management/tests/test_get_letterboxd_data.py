@@ -90,6 +90,7 @@ def test_crew_columns_left_for_tmdb_and_letterboxd_crew_ignored(mocker, make_mov
     assert result["directors"] is None
     assert result["producers"] is None
     assert result["writers"] is None
+    assert result["composers"] is None
 
 
 def test_exception_returns_none(mocker):
@@ -334,9 +335,11 @@ async def test_fetch_credits_splits_crew_by_job():
         _crew("John Smith", "Producer"),
         _crew("Alice", "Producer"),
         _crew("Wanda", "Screenplay"),
+        _crew("Nino R.", "Original Music Composer"),
         _crew("Bob", "Editor"),  # excluded — not a tracked job
         _crew("Eve", "Executive Producer"),  # excluded — narrower than TMDB's producer set
         _crew("Mary", "Novel"),  # excluded — Letterboxd keeps source-material credits separate
+        _crew("DJ Source", "Music"),  # excluded — TMDB's loose job, credits source music too
     ]
     respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"crew": crew}))
     async with httpx.AsyncClient() as client:
@@ -344,6 +347,17 @@ async def test_fetch_credits_splits_crew_by_job():
     assert result.directors == "Jane Doe"
     assert result.producers == "John Smith, Alice"
     assert result.writers == "Wanda"
+    assert result.composers == "Nino R."
+
+
+@respx.mock
+async def test_fetch_credits_joins_multiple_composers():
+    """Co-composed scores are real (Reznor/Ross, Carpenter/Lang) — ~6% of films."""
+    crew = [_crew("Trent Reznor", "Original Music Composer"), _crew("Atticus Ross", "Original Music Composer")]
+    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"crew": crew}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_credits(client, "12345", "fake-key")
+    assert result.composers == "Trent Reznor, Atticus Ross"
 
 
 @respx.mock
@@ -367,6 +381,7 @@ async def test_fetch_credits_returns_none_fields_for_absent_roles():
     assert result.cast is None
     assert result.producers is None
     assert result.writers is None
+    assert result.composers is None
 
 
 async def test_fetch_credits_returns_empty_when_tmdb_id_falsy():
@@ -475,7 +490,12 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
             200,
             json={
                 "cast": [{"name": "Actor A", "order": 0}],
-                "crew": [_crew("Jane Doe", "Director"), _crew("John Smith", "Producer"), _crew("Wanda", "Screenplay")],
+                "crew": [
+                    _crew("Jane Doe", "Director"),
+                    _crew("John Smith", "Producer"),
+                    _crew("Wanda", "Screenplay"),
+                    _crew("Nino R.", "Original Music Composer"),
+                ],
             },
         )
     )
@@ -492,6 +512,7 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
     assert results[0]["directors"] == "Jane Doe"
     assert results[0]["producers"] == "John Smith"
     assert results[0]["writers"] == "Wanda"
+    assert results[0]["composers"] == "Nino R."
 
 
 @respx.mock
@@ -506,4 +527,5 @@ async def test_fetch_all_leaves_crew_null_without_api_key(mocker, make_movie):
     assert results[0]["directors"] is None
     assert results[0]["producers"] is None
     assert results[0]["writers"] is None
+    assert results[0]["composers"] is None
     assert results[0]["cast"] is None

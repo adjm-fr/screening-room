@@ -70,7 +70,7 @@ LETTERBOXD_DAYS_TO_UPDATE=365
 | `OUTPUT_PATH` | Yes | — | Directory path where parquet files will be saved |
 | `LETTERBOXD_DAYS_TO_UPDATE` | No | `365` | Number of days before cached movie metadata is refreshed |
 | `LETTERBOXD_REFRESH_LIMIT` | No | `1000` | Max stale/incomplete movies to refresh per run (raise to lift the cap) |
-| `TMDB_API_KEY` | No | — | TMDB API key for French title, cast, crew, and trailer enrichment (`french_title`, `cast`, `directors`, `producers`, `writers`, `trailer_url` columns). Pipeline runs without it, but those columns stay `null` — and a null `directors` degrades the dashboard's taste ranking and showtimes matching |
+| `TMDB_API_KEY` | No | — | TMDB API key for French title, cast, crew, and trailer enrichment (`french_title`, `cast`, `directors`, `producers`, `writers`, `composers`, `trailer_url` columns). Pipeline runs without it, but those columns stay `null` — and a null `directors` degrades the dashboard's taste ranking and showtimes matching |
 
 ## Usage
 
@@ -90,6 +90,8 @@ This will:
 5. Export enriched datasets
 
 Cache rows written before the `cast`/`trailer_url` columns existed are backfilled gradually: each run adds missing-cast rows to the refresh batch, still bounded by `LETTERBOXD_REFRESH_LIMIT`, so a large cache converges over a few runs. `--reset_database` remains the immediate full-rebuild escape hatch.
+
+`composers` deliberately does **not** join that backfill signal: it is legitimately `null` for ~26% of films (no original score), so treating a null as "incomplete" would re-queue a quarter of the cache on every run and consume the refresh budget forever. Existing rows gain `composers` when they next go stale, or immediately via `--reset_database`.
 
 ### Force Cache Refresh
 
@@ -162,10 +164,11 @@ fresh," and a validation error there would otherwise trigger a full, silent cach
 - `themes` - Comma-separated Letterboxd themes (e.g., "Time Travel, Alternate History")
 - `mini_themes` - Comma-separated Letterboxd mini-themes (more specific classifications)
 
-**Crew & cast** — all four come from TMDB's `/credits` endpoint in a single request (not from Letterboxd), and are `null` when `TMDB_API_KEY` is unset or the film has no `tmdb_id`:
+**Crew & cast** — all five come from TMDB's `/credits` endpoint in a single request (not from Letterboxd), and are `null` when `TMDB_API_KEY` is unset or the film has no `tmdb_id`:
 - `directors` - Comma-separated director names (TMDB job `Director`)
 - `producers` - Comma-separated producer names (TMDB job `Producer` only — narrower than Letterboxd's list, which also included line/associate/executive producers)
 - `writers` - Comma-separated writer names (TMDB jobs `Writer` and `Screenplay`; source-material credits like `Novel`/`Story` are excluded, matching Letterboxd's split)
+- `composers` - Comma-separated composer names (TMDB job `Original Music Composer` only). Populated for ~74% of films; the looser `Music` job would reach ~86% but also credits source music on films with no original score, so it is excluded. Co-composed scores are comma-joined.
 - `cast` - Top 8 billed cast names, comma-separated (leads only, kept short to keep the taste signal clean)
 
 > ⚠️ `directors` is the taste ranker's highest-weighted dimension and is what confirms the watchlist↔showtimes join in `cinema_dashboard`. Running without `TMDB_API_KEY` leaves it null and degrades both.
@@ -203,7 +206,7 @@ fresh," and a validation error there would otherwise trigger a full, silent cach
 - Core info (title, original_title, release_year, runtime, tagline, description, rating)
 - Media (poster_url, banner_url)
 - Classification (genres, themes, mini_themes)
-- Crew (directors, producers, writers)
+- Crew (directors, producers, writers, composers)
 - Details (studio, country, language, etc.)
 
 ### 3. `watchlist_with_letterboxd.parquet`
@@ -255,7 +258,7 @@ Split by source → Output files (ratings + watchlist)
 
 2. **Intelligent Refresh** - Movies older than `days_to_update` — plus rows missing the TMDB `cast`/`trailer_url` enrichment — are refreshed, reducing API load while keeping data relatively fresh; both share the per-run `LETTERBOXD_REFRESH_LIMIT` cap.
 
-3. **Parallel Fetching** - `asyncio` with a semaphore bounding 20 slugs in flight. The blocking Letterboxd scrape runs per slug via `asyncio.to_thread`; the three TMDB lookups for a movie (`french_title`, `/credits`, `trailer_url`) run concurrently in a nested `TaskGroup` over one shared `httpx.AsyncClient`, so connections are pooled across the whole batch. The `/credits` lookup fills four columns at once (`cast` plus the three crew columns), so moving the crew off Letterboxd added no extra request.
+3. **Parallel Fetching** - `asyncio` with a semaphore bounding 20 slugs in flight. The blocking Letterboxd scrape runs per slug via `asyncio.to_thread`; the three TMDB lookups for a movie (`french_title`, `/credits`, `trailer_url`) run concurrently in a nested `TaskGroup` over one shared `httpx.AsyncClient`, so connections are pooled across the whole batch. The `/credits` lookup fills five columns at once (`cast` plus the four crew columns), so moving the crew off Letterboxd added no extra request.
 
 4. **Unified DataFrame** - Ratings and watchlist rows are stacked into one DataFrame before any API calls. A single enrichment join produces both outputs, avoiding redundant merges.
 
@@ -266,7 +269,7 @@ Split by source → Output files (ratings + watchlist)
    - **Dynamic detail columns** - Automatically captures studio, country, language, and other attributes as separate columns
    - **Media assets** - Includes poster and banner URLs for visual integration
 
-   Crew roles (directors, producers, writers) are **not** taken from Letterboxd — they come from TMDB's `/credits`, one job filter per column. See the crew & cast section above.
+   Crew roles (directors, producers, writers, composers) are **not** taken from Letterboxd — they come from TMDB's `/credits`, one job filter per column. See the crew & cast section above.
 
 7. **Flexible Detail Handling** - Uses `**details_by_type` to dynamically expand Letterboxd detail data, so new detail types are automatically captured without code changes
 

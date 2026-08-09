@@ -86,7 +86,7 @@ async def _get_tmdb_credits(client: httpx.AsyncClient, tmdb_id: str, api_key: st
 
 
 class Credits(NamedTuple):
-    """The four cache columns TMDB's ``/credits`` endpoint fills in one round-trip.
+    """The five cache columns TMDB's ``/credits`` endpoint fills in one round-trip.
 
     Field names match the cache column names exactly.
     """
@@ -95,6 +95,7 @@ class Credits(NamedTuple):
     directors: str | None = None
     producers: str | None = None
     writers: str | None = None
+    composers: str | None = None
 
 
 # TMDB returns `cast` pre-sorted by billing `order`, so the first entries are the leads —
@@ -114,6 +115,13 @@ _PRODUCER_JOBS = frozenset({"Producer"})
 # `department == "Writing"` filter also sweeps in Novel/Story/Characters credits, which
 # Letterboxd keeps separate — it matched the cached strings on only 46% of the sample.
 _WRITER_JOBS = frozenset({"Writer", "Screenplay"})
+# The score's composer. Deliberately narrow: TMDB's older, looser `Music` job would lift
+# coverage from 74% to 86% (and pre-1950 from 67% to 84%), but it also credits *source*
+# music on films with no original score — `Ariel` comes back as six names ending in
+# Tchaikovsky. Precision over reach, same call as `_PRODUCER_JOBS`. `Composer` is not a
+# job string TMDB actually uses; adding it matched nothing. Multi-composer scores are real
+# (Reznor/Ross, Carpenter/Lang) at ~6% of films, hence the comma-join.
+_COMPOSER_JOBS = frozenset({"Original Music Composer"})
 
 
 def _join_crew(crew: list[dict], jobs: frozenset[str]) -> str | None:
@@ -132,9 +140,9 @@ def _join_crew(crew: list[dict], jobs: frozenset[str]) -> str | None:
 
 
 async def _fetch_credits(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> Credits:
-    """Fetch a film's billed cast and its director/producer/writer crew from TMDB.
+    """Fetch a film's billed cast and its director/producer/writer/composer crew from TMDB.
 
-    One ``/credits`` round-trip fills four cache columns; Letterboxd's own crew is
+    One ``/credits`` round-trip fills five cache columns; Letterboxd's own crew is
     deliberately not read (see ``_fetch_movie``).
 
     Returns an all-None ``Credits`` when ``tmdb_id`` or ``api_key`` is falsy, on any
@@ -156,6 +164,7 @@ async def _fetch_credits(client: httpx.AsyncClient, tmdb_id: str | None, api_key
                 directors=_join_crew(crew, _DIRECTOR_JOBS),
                 producers=_join_crew(crew, _PRODUCER_JOBS),
                 writers=_join_crew(crew, _WRITER_JOBS),
+                composers=_join_crew(crew, _COMPOSER_JOBS),
             )
         logger.debug("TMDB credits returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
     except Exception as e:
@@ -234,16 +243,17 @@ def _fetch_movie(slug: str) -> dict | None:
 
     Returns:
         Dictionary containing movie metadata (title, year, genres, ratings, etc.) with
-        ``french_title``, ``cast``, ``directors``, ``producers``, ``writers``, and
-        ``trailer_url`` left as None — they are filled in by ``_fetch_all`` via TMDB.
+        ``french_title``, ``cast``, ``directors``, ``producers``, ``writers``,
+        ``composers`` and ``trailer_url`` left as None — they are filled in by
+        ``_fetch_all`` via TMDB.
         Returns None if fetching fails.
 
     Note:
         - Letterboxd's own cast, crew, trailer, and popular_reviews fields are excluded
           from this output; ``cast`` (top-8 billed), the crew columns
-          (``directors``/``producers``/``writers``) and ``trailer_url`` are sourced from
-          TMDB instead, mirroring how ``french_title`` is added — see ``_fetch_credits``
-          / ``_fetch_trailer``.
+          (``directors``/``producers``/``writers``/``composers``) and ``trailer_url`` are
+          sourced from TMDB instead, mirroring how ``french_title`` is added — see
+          ``_fetch_credits`` / ``_fetch_trailer``.
         - genres is split into genres/themes/mini_themes based on the "type" field.
         - details are expanded into one key per type (e.g. "studio", "country", "language").
     """
@@ -286,6 +296,7 @@ def _fetch_movie(slug: str) -> dict | None:
             "directors": None,
             "producers": None,
             "writers": None,
+            "composers": None,
             "original_title": movie.original_title,
             "release_year": movie.year,
             "runtime": movie.runtime,
@@ -314,7 +325,7 @@ async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20)
     lookups reuse pooled connections; the blocking Letterboxd scrape still runs in a
     worker thread per slug. The three TMDB lookups (french_title, credits, trailer_url)
     for a given movie run concurrently in a nested ``asyncio.TaskGroup`` — ``credits``
-    alone fills four columns (cast + the three crew columns), so no extra round-trip
+    alone fills five columns (cast + the four crew columns), so no extra round-trip
     was added when the crew moved off Letterboxd.
     """
     sem = asyncio.Semaphore(concurrency)
@@ -341,6 +352,7 @@ async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20)
                 result["directors"] = film_credits.directors
                 result["producers"] = film_credits.producers
                 result["writers"] = film_credits.writers
+                result["composers"] = film_credits.composers
             results[i] = result
         done += 1
         if done % 50 == 0 or done == total:

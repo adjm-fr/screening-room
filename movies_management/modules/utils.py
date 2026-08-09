@@ -56,11 +56,28 @@ def build_movies_df(films_dict: dict, watchlist_dict: dict) -> pd.DataFrame:
 
 
 def merge_letterboxd_metadata(all_movies_df: pd.DataFrame, data_letterboxd_df: pd.DataFrame) -> pd.DataFrame:
-    """Left-join user movie data with the Letterboxd metadata cache on slug."""
+    """Left-join user movie data with the Letterboxd metadata cache on slug.
+
+    Both frames carry a ``source`` column and they do not mean the same thing, so
+    the two overlaps below resolve in *opposite* directions — don't harmonise them:
+
+    * ``release_year`` prefers the **cache**, which holds canonical TMDB/Letterboxd
+      metadata, falling back to the user value only where the cache is null.
+    * ``source`` prefers the **user** frame, which is this run's live Letterboxd
+      state. The cache's copy is a snapshot stamped by whichever run last saw the
+      film, and a film moves ``watchlist`` -> ``ratings`` the moment it is watched.
+      It is also *absent* whenever the film's metadata fetch failed, and a left join
+      then leaves NaN — which matches neither export filter in ``main.py``, silently
+      dropping the film from both parquets. The user column is total here
+      (``build_movies_df`` stamps every row), so it is always the safe side.
+    """
     merged = all_movies_df.merge(data_letterboxd_df, on="slug", how="left", suffixes=("_user", ""))
     if "release_year_user" in merged.columns:
         merged["release_year"] = merged["release_year"].fillna(merged["release_year_user"]).infer_objects()
         merged.drop(columns=["release_year_user"], inplace=True)
+    if "source_user" in merged.columns:
+        merged["source"] = merged["source_user"]
+        merged.drop(columns=["source_user"], inplace=True)
     for col in ("name", "integration_date"):
         if col in merged.columns:
             merged.drop(columns=[col], inplace=True)

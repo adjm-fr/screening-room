@@ -313,7 +313,13 @@ def get_letterboxd_data(all_slugs: list[str], output_path: str | os.PathLike, ap
         letterboxd_avg_rating, directors, imdb_id, tmdb_id, letterboxd_url, imdb_url,
         tmdb_url, integration_date. The caller persists it (and assigns ``source``).
     """
-    # Load existing cache to avoid refetching
+    # Load existing cache to avoid refetching. Deliberately unvalidated: this is the
+    # "no existing cache, start fresh" path (missing file, corrupt file, first run).
+    # If schema validation raised here it would be swallowed by the except below and
+    # silently rebuild the entire multi-thousand-film cache from scratch on what might
+    # be a transient/partial read — a catastrophic, expensive, silent failure. The
+    # single cache write each caller performs (write_parquet_validated against
+    # DATA_LETTERBOXD) is what actually enforces the contract.
     try:
         data_df = pd.read_parquet(output_path)
         logger.info("Loaded existing cache: %d movies", data_df.shape[0])

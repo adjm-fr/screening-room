@@ -109,7 +109,9 @@ uv run --no-sync --directory movies_management python main.py --enrich-from-allo
 
 This mode can be run standalone (no `--username` needed) or combined with `--username` in one call. The enrichment:
 
-1. Reads all unique `(title, original_title, director, release_year)` tuples from the showtimes parquet
+1. Reads the showtimes parquet via `common.read_parquet_validated` against `contracts.SHOWTIMES` (the
+   same contract `cinema_dashboard/sources/loader.py` enforces on its side of this file), then takes all
+   unique `(title, original_title, director, release_year)` tuples from it
 2. Resolves each to a Letterboxd slug via Letterboxd search (with year + director post-filtering); films that don't resolve are dropped from downstream processing
 3. Fetches and appends metadata for new slugs to `data_letterboxd.parquet` (idempotent — already-cached slugs are skipped)
 4. Writes tuples that could not be resolved to `{OUTPUT_PATH}/unresolved_allocine.parquet` for visibility
@@ -122,6 +124,14 @@ The application generates three parquet files in your `OUTPUT_PATH`:
 
 ### 1. `data_letterboxd.parquet`
 **Internal cache** of all movie metadata. Used for incremental updates.
+
+Every write is validated against the workspace's `contracts.DATA_LETTERBOXD` contract
+(`common.write_parquet_validated`) — writing a frame missing one of the stable-core columns below raises
+`SchemaValidationError` instead of silently shipping a malformed cache. `studio`/`country`/`language` are
+deliberately **not** part of that contract (see below); the two reads that reuse an existing cache to skip
+already-fetched slugs (in `get_letterboxd_data` and `enrich_cache_from_showtimes`) are deliberately left
+unvalidated, since both sit inside a `try`/`except` whose except-branch means "no usable cache — start
+fresh," and a validation error there would otherwise trigger a full, silent cache rebuild.
 
 **Identifier Columns:**
 - `slug` - Letterboxd unique identifier

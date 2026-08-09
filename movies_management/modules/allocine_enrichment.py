@@ -12,6 +12,8 @@ import os
 import unicodedata
 
 import pandas as pd
+from common.parquet_io import read_parquet_validated, write_parquet_validated
+from contracts import DATA_LETTERBOXD, SHOWTIMES
 from letterboxdpy.search import Search, SearchFilter
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -271,7 +273,7 @@ def enrich_cache_from_showtimes(
         api_key: TMDB API key; forwarded to ``get_letterboxd_data`` to fetch French titles.
     """
     logger.info("Enriching Letterboxd cache from showtimes: %s", showtimes_path)
-    showtimes_df = pd.read_parquet(showtimes_path)
+    showtimes_df = read_parquet_validated(showtimes_path, required_columns=SHOWTIMES.required_columns, label="showtimes")
 
     # One row per distinct film — not per showtime slot
     key_cols = [c for c in ("movie", "original_title", "director", "release_year") if c in showtimes_df.columns]
@@ -279,6 +281,11 @@ def enrich_cache_from_showtimes(
     logger.info("Unique films in showtimes: %d", len(unique_films))
 
     try:
+        # Deliberately unvalidated: this is the "no existing cache, start fresh" path.
+        # If schema validation raised here it would be swallowed by the except below and
+        # silently rebuild the entire 6,751-film cache from scratch on a transient/partial
+        # read — a catastrophic, expensive, silent failure. The cache write further down
+        # (write_parquet_validated) is what actually enforces the DATA_LETTERBOXD contract.
         cache_df = pd.read_parquet(cache_path)
         cached_slugs: set[str] = set(cache_df["slug"].dropna().unique())
     except Exception:
@@ -349,7 +356,9 @@ def enrich_cache_from_showtimes(
             # source — "allocine_showtimes" is written here and only here, never
             # overwriting a ratings/watchlist provenance set by the user-data pipeline.
             cache_df.loc[cache_df["slug"].isin(set(resolved)), "source"] = "allocine_showtimes"
-            cache_df.to_parquet(cache_path, index=False)
+            write_parquet_validated(
+                cache_df, cache_path, required_columns=DATA_LETTERBOXD.required_columns, label="data_letterboxd"
+            )
 
     pd.DataFrame(unresolved).to_parquet(unresolved_path, index=False)
     if unresolved:

@@ -4,6 +4,9 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pandas as pd
+import pytest
+from common.parquet_io import SchemaValidationError
+from contracts import DATA_LETTERBOXD
 from modules.allocine_enrichment import (
     _build_cache_index,
     _director_tokens,
@@ -182,7 +185,20 @@ def test_match_cache_returns_none_without_parseable_year():
 def test_enrich_resolves_from_cache_without_a_live_search(mocker, tmp_path):
     # RRR is already in the cache under a different director spacing — enrich should
     # find it via _match_cache and never touch the network or unresolved_allocine.
-    showtimes = pd.DataFrame([{"movie": "RRR", "original_title": "RRR", "director": "S.S. Rajamouli", "release_year": 2022}])
+    showtimes = pd.DataFrame(
+        [
+            {
+                "movie": "RRR",
+                "original_title": "RRR",
+                "director": "S.S. Rajamouli",
+                "release_year": 2022,
+                "theater_id": "t1",
+                "theater_name": "Cinema One",
+                "runtime": "3h 07min",
+                "showtimes": ["2026-08-10T20:00"],
+            }
+        ]
+    )
     showtimes_path = tmp_path / "showtimes.parquet"
     showtimes.to_parquet(showtimes_path)
 
@@ -202,17 +218,17 @@ def test_enrich_resolves_from_cache_without_a_live_search(mocker, tmp_path):
 
 
 def test_enrich_resolves_new_slugs_and_calls_get_letterboxd_data(mocker, tmp_path):
-    showtimes = pd.DataFrame(
-        [
-            {"movie": "Parasite", "original_title": "Gisaengchung", "director": "Bong Joon-ho", "release_year": 2019},
-            {
-                "movie": "Parasite",
-                "original_title": "Gisaengchung",
-                "director": "Bong Joon-ho",
-                "release_year": 2019,
-            },  # duplicate
-        ]
-    )
+    showtimes_row = {
+        "movie": "Parasite",
+        "original_title": "Gisaengchung",
+        "director": "Bong Joon-ho",
+        "release_year": 2019,
+        "theater_id": "t1",
+        "theater_name": "Cinema One",
+        "runtime": "2h 12min",
+        "showtimes": ["2026-08-10T20:00"],
+    }
+    showtimes = pd.DataFrame([showtimes_row, dict(showtimes_row)])  # second row is a duplicate
     showtimes_path = tmp_path / "showtimes.parquet"
     showtimes.to_parquet(showtimes_path)
 
@@ -233,7 +249,18 @@ def test_enrich_resolves_new_slugs_and_calls_get_letterboxd_data(mocker, tmp_pat
 
 def test_enrich_stamps_allocine_source_on_new_rows(mocker, tmp_path):
     showtimes = pd.DataFrame(
-        [{"movie": "Parasite", "original_title": "Gisaengchung", "director": "Bong Joon-ho", "release_year": 2019}]
+        [
+            {
+                "movie": "Parasite",
+                "original_title": "Gisaengchung",
+                "director": "Bong Joon-ho",
+                "release_year": 2019,
+                "theater_id": "t1",
+                "theater_name": "Cinema One",
+                "runtime": "2h 12min",
+                "showtimes": ["2026-08-10T20:00"],
+            }
+        ]
     )
     showtimes_path = tmp_path / "showtimes.parquet"
     showtimes.to_parquet(showtimes_path)
@@ -245,10 +272,13 @@ def test_enrich_stamps_allocine_source_on_new_rows(mocker, tmp_path):
         return_value="parasite-2019",
     )
     # get_letterboxd_data no longer persists — it returns the combined cache; the
-    # Allocine pipeline stamps "allocine_showtimes" and writes.
+    # Allocine pipeline stamps "allocine_showtimes" and writes. The returned frame must
+    # carry every DATA_LETTERBOXD required column since the write is now validated.
+    new_row = dict.fromkeys(DATA_LETTERBOXD.required_columns)
+    new_row.update({"slug": "parasite-2019", "title": "Parasite"})
     mocker.patch(
         "modules.allocine_enrichment.get_letterboxd_data",
-        return_value=pd.DataFrame([{"slug": "parasite-2019", "title": "Parasite"}]),
+        return_value=pd.DataFrame([new_row]),
     )
 
     enrich_cache_from_showtimes(showtimes_path, cache_path, tmp_path / "unresolved.parquet")
@@ -260,7 +290,16 @@ def test_enrich_stamps_allocine_source_on_new_rows(mocker, tmp_path):
 def test_enrich_skips_already_cached_slugs(mocker, tmp_path):
     showtimes = pd.DataFrame(
         [
-            {"movie": "Parasite", "original_title": None, "director": "Bong Joon-ho", "release_year": 2019},
+            {
+                "movie": "Parasite",
+                "original_title": None,
+                "director": "Bong Joon-ho",
+                "release_year": 2019,
+                "theater_id": "t1",
+                "theater_name": "Cinema One",
+                "runtime": "2h 12min",
+                "showtimes": ["2026-08-10T20:00"],
+            },
         ]
     )
     showtimes_path = tmp_path / "showtimes.parquet"
@@ -282,7 +321,16 @@ def test_enrich_skips_already_cached_slugs(mocker, tmp_path):
 def test_enrich_writes_unresolved_parquet(mocker, tmp_path):
     showtimes = pd.DataFrame(
         [
-            {"movie": "Unknown Film", "original_title": None, "director": None, "release_year": 2024},
+            {
+                "movie": "Unknown Film",
+                "original_title": None,
+                "director": None,
+                "release_year": 2024,
+                "theater_id": "t1",
+                "theater_name": "Cinema One",
+                "runtime": "1h 40min",
+                "showtimes": ["2026-08-10T20:00"],
+            },
         ]
     )
     showtimes_path = tmp_path / "showtimes.parquet"
@@ -297,3 +345,67 @@ def test_enrich_writes_unresolved_parquet(mocker, tmp_path):
     unresolved_df = pd.read_parquet(unresolved_path)
     assert len(unresolved_df) == 1
     assert unresolved_df.iloc[0]["movie"] == "Unknown Film"
+
+
+# ── contract enforcement ──────────────────────────────────────────────────────
+
+
+def test_enrich_rejects_showtimes_missing_a_required_column(tmp_path):
+    # No "showtimes" column (a SHOWTIMES-required column) — the validated read
+    # must reject this before any resolution logic runs.
+    showtimes = pd.DataFrame(
+        [
+            {
+                "movie": "RRR",
+                "original_title": "RRR",
+                "director": "S.S. Rajamouli",
+                "release_year": 2022,
+                "theater_id": "t1",
+                "theater_name": "Cinema One",
+                "runtime": "3h 07min",
+            }
+        ]
+    )
+    showtimes_path = tmp_path / "showtimes.parquet"
+    showtimes.to_parquet(showtimes_path)
+
+    with pytest.raises(SchemaValidationError, match="showtimes"):
+        enrich_cache_from_showtimes(showtimes_path, tmp_path / "cache.parquet", tmp_path / "unresolved.parquet")
+
+
+def test_enrich_rejects_a_cache_write_missing_a_required_column(mocker, tmp_path):
+    # get_letterboxd_data returns a frame missing DATA_LETTERBOXD-required columns
+    # (e.g. "title") — the validated cache write must reject it before persisting.
+    showtimes = pd.DataFrame(
+        [
+            {
+                "movie": "Parasite",
+                "original_title": "Gisaengchung",
+                "director": "Bong Joon-ho",
+                "release_year": 2019,
+                "theater_id": "t1",
+                "theater_name": "Cinema One",
+                "runtime": "2h 12min",
+                "showtimes": ["2026-08-10T20:00"],
+            }
+        ]
+    )
+    showtimes_path = tmp_path / "showtimes.parquet"
+    showtimes.to_parquet(showtimes_path)
+    cache_path = tmp_path / "cache.parquet"
+
+    mocker.patch(
+        "modules.allocine_enrichment.resolve_slug_from_allocine_tuple",
+        new_callable=mocker.AsyncMock,
+        return_value="parasite-2019",
+    )
+    incomplete_row = dict.fromkeys(DATA_LETTERBOXD.required_columns)
+    incomplete_row["slug"] = "parasite-2019"
+    del incomplete_row["title"]  # drop a required column
+    mocker.patch(
+        "modules.allocine_enrichment.get_letterboxd_data",
+        return_value=pd.DataFrame([incomplete_row]),
+    )
+
+    with pytest.raises(SchemaValidationError, match="title"):
+        enrich_cache_from_showtimes(showtimes_path, cache_path, tmp_path / "unresolved.parquet")

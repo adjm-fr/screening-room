@@ -26,11 +26,10 @@ def _instant_retries():
 def make_movie(mocker):
     """Factory fixture: returns a callable that builds a letterboxdpy Movie mock."""
 
-    def _factory(genres=None, details=None, crew=None):
+    def _factory(genres=None, details=None):
         m = mocker.MagicMock()
         m.genres = genres or []
         m.details = details or []
-        m.crew = crew or {}
         m.id = "id"
         m.url = "url"
         m.imdb_id = None

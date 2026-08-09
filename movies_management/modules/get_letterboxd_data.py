@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime
+from typing import NamedTuple
 
 import httpx
 import pandas as pd
@@ -84,27 +85,82 @@ async def _get_tmdb_credits(client: httpx.AsyncClient, tmdb_id: str, api_key: st
     return resp
 
 
-async def _fetch_cast(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> str | None:
-    """Fetch a film's top-8 billed cast from TMDB using an injected async client.
+class Credits(NamedTuple):
+    """The four cache columns TMDB's ``/credits`` endpoint fills in one round-trip.
 
-    TMDB returns ``cast`` pre-sorted by billing ``order``, so the first 8 entries are the
-    leads — kept intentionally short to keep the taste signal clean.
+    Field names match the cache column names exactly.
+    """
 
-    Returns None when ``tmdb_id`` or ``api_key`` is falsy, on any non-200 response, or
-    when the request keeps failing after retries — never raises into the batch.
+    cast: str | None = None
+    directors: str | None = None
+    producers: str | None = None
+    writers: str | None = None
+
+
+# TMDB returns `cast` pre-sorted by billing `order`, so the first entries are the leads —
+# kept intentionally short (a full TMDB cast list runs to ~28 names) to keep the taste
+# signal clean.
+_CAST_BILLING_LIMIT = 8
+
+# Crew job filters, one frozenset per cache column. Measured against the real cache
+# (250-film sample), these reproduce the strings letterboxdpy used to supply on 98.4%
+# (directors), 79.6% (writers) and 50.8% (producers) of films — and on 100% / 99.2% /
+# 99.6% under the token-containment rule the showtimes join actually applies.
+_DIRECTOR_JOBS = frozenset({"Director"})
+# Deliberately just "Producer": TMDB also carries Executive/Co-/Associate Producer, which
+# Letterboxd's `producer` list excludes. This is the closest semantic match, not the widest.
+_PRODUCER_JOBS = frozenset({"Producer"})
+# Letterboxd's flat `writer` list maps to these two TMDB jobs. The wider
+# `department == "Writing"` filter also sweeps in Novel/Story/Characters credits, which
+# Letterboxd keeps separate — it matched the cached strings on only 46% of the sample.
+_WRITER_JOBS = frozenset({"Writer", "Screenplay"})
+
+
+def _join_crew(crew: list[dict], jobs: frozenset[str]) -> str | None:
+    """Comma-join the names of every crew member holding one of ``jobs``, in API order.
+
+    Deduplicated because TMDB lists a person once *per job*, so anyone credited both
+    "Writer" and "Screenplay" would otherwise be named twice in ``writers``.
+    """
+    seen: set[str] = set()
+    names: list[str] = []
+    for member in crew:
+        if member.get("job") in jobs and (name := member.get("name")) and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return ", ".join(names) or None
+
+
+async def _fetch_credits(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> Credits:
+    """Fetch a film's billed cast and its director/producer/writer crew from TMDB.
+
+    One ``/credits`` round-trip fills four cache columns; Letterboxd's own crew is
+    deliberately not read (see ``_fetch_movie``).
+
+    Returns an all-None ``Credits`` when ``tmdb_id`` or ``api_key`` is falsy, on any
+    non-200 response, or when the request keeps failing after retries — never raises
+    into the batch. Note this makes ``directors`` null without a TMDB key, which the
+    taste ranker and the watchlist↔showtimes join both depend on.
     """
     if not tmdb_id or not api_key:
-        return None
+        return Credits()
     try:
         resp = await _get_tmdb_credits(client, tmdb_id, api_key)
         if resp.status_code == 200:
-            cast = resp.json().get("cast") or []
-            names = [member["name"] for member in cast[:8] if member.get("name")]
-            return ", ".join(names) or None
+            payload = resp.json()
+            cast = payload.get("cast") or []
+            crew = payload.get("crew") or []
+            names = [member["name"] for member in cast[:_CAST_BILLING_LIMIT] if member.get("name")]
+            return Credits(
+                cast=", ".join(names) or None,
+                directors=_join_crew(crew, _DIRECTOR_JOBS),
+                producers=_join_crew(crew, _PRODUCER_JOBS),
+                writers=_join_crew(crew, _WRITER_JOBS),
+            )
         logger.debug("TMDB credits returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
     except Exception as e:
         logger.debug("TMDB credits fetch failed for tmdb_id=%s: %s", tmdb_id, e)
-    return None
+    return Credits()
 
 
 @retry(
@@ -178,17 +234,18 @@ def _fetch_movie(slug: str) -> dict | None:
 
     Returns:
         Dictionary containing movie metadata (title, year, genres, ratings, etc.) with
-        ``french_title``, ``cast``, and ``trailer_url`` left as None — they are filled in
-        by ``_fetch_all`` via TMDB.
+        ``french_title``, ``cast``, ``directors``, ``producers``, ``writers``, and
+        ``trailer_url`` left as None — they are filled in by ``_fetch_all`` via TMDB.
         Returns None if fetching fails.
 
     Note:
-        - Letterboxd's own cast, trailer, and popular_reviews fields are excluded from this
-          output; ``cast`` (top-8 billed) and ``trailer_url`` are sourced from TMDB instead,
-          mirroring how ``french_title`` is added — see ``_fetch_cast`` / ``_fetch_trailer``.
+        - Letterboxd's own cast, crew, trailer, and popular_reviews fields are excluded
+          from this output; ``cast`` (top-8 billed), the crew columns
+          (``directors``/``producers``/``writers``) and ``trailer_url`` are sourced from
+          TMDB instead, mirroring how ``french_title`` is added — see ``_fetch_credits``
+          / ``_fetch_trailer``.
         - genres is split into genres/themes/mini_themes based on the "type" field.
         - details are expanded into one key per type (e.g. "studio", "country", "language").
-        - crew is filtered to director(s), producer(s), and writer(s) only.
     """
     try:
         movie = _build_movie(slug)
@@ -211,12 +268,6 @@ def _fetch_movie(slug: str) -> dict | None:
                 details_grouped.setdefault(t, []).append(d["name"])
         details_by_type = {t: ", ".join(names) for t, names in details_grouped.items()}
 
-        # --- Crew (director, producer, writer only) ---
-        crew = movie.crew or {}
-        directors = ", ".join(p["name"] for p in crew.get("director", [])) or None
-        producers = ", ".join(p["name"] for p in crew.get("producer", [])) or None
-        writers = ", ".join(p["name"] for p in crew.get("writer", [])) or None
-
         return {
             # Identifiers
             "slug": slug,
@@ -231,6 +282,10 @@ def _fetch_movie(slug: str) -> dict | None:
             "french_title": None,  # filled in by _fetch_all via TMDB
             "cast": None,  # filled in by _fetch_all via TMDB (top-8 billed)
             "trailer_url": None,  # filled in by _fetch_all via TMDB
+            # Crew — filled in by _fetch_all via TMDB /credits, see _fetch_credits
+            "directors": None,
+            "producers": None,
+            "writers": None,
             "original_title": movie.original_title,
             "release_year": movie.year,
             "runtime": movie.runtime,
@@ -244,10 +299,6 @@ def _fetch_movie(slug: str) -> dict | None:
             "genres": genres,
             "themes": themes,
             "mini_themes": mini_themes,
-            # Crew
-            "directors": directors,
-            "producers": producers,
-            "writers": writers,
             # Details — dynamic keys per type (e.g. studio, country, language)
             **details_by_type,
         }
@@ -261,8 +312,10 @@ async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20)
 
     A single shared ``httpx.AsyncClient`` is opened for the whole batch so all TMDB
     lookups reuse pooled connections; the blocking Letterboxd scrape still runs in a
-    worker thread per slug. The three TMDB lookups (french_title, cast, trailer_url)
-    for a given movie run concurrently in a nested ``asyncio.TaskGroup``.
+    worker thread per slug. The three TMDB lookups (french_title, credits, trailer_url)
+    for a given movie run concurrently in a nested ``asyncio.TaskGroup`` — ``credits``
+    alone fills four columns (cast + the three crew columns), so no extra round-trip
+    was added when the crew moved off Letterboxd.
     """
     sem = asyncio.Semaphore(concurrency)
     total = len(slugs)
@@ -277,11 +330,17 @@ async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20)
                 tmdb_id = result.get("tmdb_id")
                 async with asyncio.TaskGroup() as movie_tg:
                     french_title = movie_tg.create_task(_fetch_french_title(client, tmdb_id, api_key))
-                    cast = movie_tg.create_task(_fetch_cast(client, tmdb_id, api_key))
+                    credits = movie_tg.create_task(_fetch_credits(client, tmdb_id, api_key))
                     trailer_url = movie_tg.create_task(_fetch_trailer(client, tmdb_id, api_key))
                 result["french_title"] = french_title.result()
-                result["cast"] = cast.result()
                 result["trailer_url"] = trailer_url.result()
+                # Assigned column-by-column rather than via _asdict() so each cache column
+                # stays greppable from this module.
+                film_credits = credits.result()
+                result["cast"] = film_credits.cast
+                result["directors"] = film_credits.directors
+                result["producers"] = film_credits.producers
+                result["writers"] = film_credits.writers
             results[i] = result
         done += 1
         if done % 50 == 0 or done == total:

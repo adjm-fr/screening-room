@@ -250,3 +250,41 @@ def test_build_csv_rows_end_time_matches_screening_end():
     for (_, row), csv_row in zip(df.iterrows(), rows, strict=True):
         expected = screening_end(row, pd.to_datetime(row["showtimes"]))
         assert csv_row["End Time"] == expected.strftime("%H:%M:%S")
+
+
+def test_csv_export_neutralises_spreadsheet_formula_prefixes():
+    """A scraped title starting with ``=`` must not be evaluated on CSV import."""
+    df = pd.DataFrame(
+        [
+            {
+                "showtimes": pd.Timestamp("2026-08-12 20:00"),
+                "letterboxd_title": '=HYPERLINK("http://evil","click")',
+                "theater_name": "@Le Grand Rex",
+                "directors": "Nobody",
+                "runtime_minutes": 100,
+            }
+        ]
+    )
+    row = build_csv_rows(df)[0]
+    assert row["Subject"].startswith("'=")
+    assert row["Location"].startswith("'@")
+    # Generated date/time columns are untouched.
+    assert row["Start Date"] == "2026-08-12"
+
+
+def test_csv_export_leaves_ordinary_text_untouched():
+    df = pd.DataFrame(
+        [
+            {
+                "showtimes": pd.Timestamp("2026-08-12 20:00"),
+                "letterboxd_title": "Dune",
+                "theater_name": "Le Grand Rex",
+                "directors": "Denis Villeneuve",
+                "runtime_minutes": 155,
+            }
+        ]
+    )
+    row = build_csv_rows(df)[0]
+    assert row["Subject"] == "Dune"
+    assert row["Location"] == "Le Grand Rex"
+    assert not row["Description"].startswith("'")

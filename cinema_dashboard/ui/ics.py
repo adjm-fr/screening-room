@@ -87,8 +87,32 @@ def build_ics_events(df: pd.DataFrame) -> list[dict]:
     return events
 
 
+#: Leading characters that make a spreadsheet treat a cell as a formula.
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: str) -> str:
+    """Neutralise a spreadsheet formula prefix on an exported text cell.
+
+    Film titles, directors and theater names are scraped from Allocine/Letterboxd/
+    TMDB, so a title starting with ``=``/``+``/``-``/``@`` would be evaluated as a
+    formula when the export is opened in Excel or Sheets rather than shown as text.
+    Prefixing with an apostrophe is the standard fix — the spreadsheet consumes it
+    as a "treat the rest as text" marker instead of displaying it. Only touches
+    cells that actually start with one of those characters, so ordinary titles are
+    exported byte-for-byte.
+
+    Only the CSV path needs this; ICS is not formula-interpreted (see
+    :func:`_ics_escape`).
+    """
+    return f"'{value}" if value.startswith(_FORMULA_PREFIXES) else value
+
+
 def build_csv_rows(df: pd.DataFrame) -> list[dict]:
     """Build Google-Calendar CSV-import rows from a frame of screenings.
+
+    The three free-text columns pass through :func:`_csv_safe`; the date/time
+    columns are generated here and need no guard.
 
     The legacy import path, kept behind an expander in the export popover. Uses
     the same :func:`screening_end` sizing and the same skip rule as
@@ -103,14 +127,14 @@ def build_csv_rows(df: pd.DataFrame) -> list[dict]:
         end_time = screening_end(row, showtime)
         rows.append(
             {
-                "Subject": _summary_of(row),
+                "Subject": _csv_safe(_summary_of(row)),
                 "Start Date": showtime.strftime("%Y-%m-%d"),
                 "Start Time": showtime.strftime("%H:%M:%S"),
                 "End Date": end_time.strftime("%Y-%m-%d"),
                 "End Time": end_time.strftime("%H:%M:%S"),
                 "All Day Event": "False",
-                "Description": _description_of(row),
-                "Location": _location_of(row),
+                "Description": _csv_safe(_description_of(row)),
+                "Location": _csv_safe(_location_of(row)),
                 "Private": "False",
             }
         )

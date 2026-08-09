@@ -80,15 +80,15 @@ Every one of those filters narrows a single frame, and the agenda, both exports 
 
 Every other showtimes-driven page is built on `build_watchlist_showtimes`, an inner join that only ever surfaces films already on the watchlist — measured against the real parquets, 250 films screen across 13 tracked theaters in a week and that join surfaces 14 of them. This page joins the **full** showtimes against the Letterboxd metadata cache instead (`sources/discover.py`'s `build_screenings`), reusing the exact title-matched, director-confirmed contract `build_watchlist_showtimes` uses (see Watchlist Showtimes above), and like it dropping any showtime that never confirms a cache match — those are diagnosed on the Movies Database page's Unmatched tab, not here. Every film is labelled with a watch status — **New to you** (in the cache but neither rated nor watchlisted), **Watchlist**, or **Seen** (present in the ratings parquet) — and taste-ranked with the same `core/taste.py` ranker every other rail uses, so the match badge and "✓ because" chips mean the same thing here as on Home.
 
-The page is **curated sections, not a filter wall — there is no browse-everything rail**. The one control is the "Only times I'm free" toggle (`core.availability.free_time_mask`, identical semantics to the Watchlist Showtimes page below — weekends, French holidays, days off, or weekday evenings after a cutoff, minus days marked unavailable), which narrows every section to screenings the user can actually attend before any of them render. A KPI strip then counts unique films per status, followed by three rails, each answering one question and each omitted (not rendered empty) when nothing qualifies:
+The page is **one programme with three lenses**. Its toolbar is the Watchlist Showtimes machinery verbatim (`core.agenda.AgendaFilters` — search, theater multiselect, runtime buckets, min Letterboxd rating, time-of-day chips, the shared "Only times I'm free" toggle, and a Time/Match sort that appears only with a taste profile), every widget key namespaced `paris_*` so the two pages never leak filters into each other. What it deliberately lacks is the calendar's export popover, theater map and view switcher — this is a discovery surface, not a planning one. A KPI strip counts unique films per watch status across the whole filtered week. Below it, a single-select **lens** chip row scopes the day strip and agenda to one of three questions, each chip carrying its distinct-film count and omitted entirely when nothing qualifies:
 
-| Rail | What's in it |
+| Lens | What's in it |
 | --- | --- |
-| **Best matches — new to you** | Never rated, never watchlisted; highest taste match first. |
-| **Worth a second chance?** | Films you rated **< 2.5** that the ranker nonetheless scores **≥ 70** — the disagreement rail. Deliberately short: of the 24 films rated under 2.5 screening in a sample week, 3 cleared 70. |
-| **Worth a rewatch!** | Films you rated **≥ 4.0**, ordered by *your* rating — this rail is your verdict, not the ranker's. Last and biggest (up to 24 cards, vs. 12 for the other two): it draws on films the user has already vouched for, so there's less risk in showing more. |
+| **✨ New to you** | Never rated, never watchlisted. |
+| **🔄 Worth a second chance** | Films you rated **< 2.5** that the ranker nonetheless scores **≥ 70** — the disagreement lens. Deliberately narrow: of the 24 films rated under 2.5 screening in a sample week, 3 cleared 70. |
+| **⭐ Worth a rewatch** | Films you rated **≥ 4.0** — this lens is your verdict, not the ranker's. |
 
-The thresholds are constants at the top of `pages/paris.py` (`REWATCH_MIN_RATING`, `RETRY_MAX_RATING`, `RETRY_MIN_MATCH`, `REWATCH_RAIL_SIZE`). Every card also lists its upcoming showtimes (day, time, theater) beneath it — capped at `MAX_SHOWTIME_BADGES` (6) with a "+N more" suffix for a wide release, which can carry dozens of screenings in a week.
+The lens and the day strip beneath it scope only the agenda (the KPI strip stays week-wide), and every categorised row wears a matching glyph+text badge with a tinted left accent inside the agenda itself, so the three categories stay visible even while browsing "All". The thresholds are constants at the top of `pages/paris.py` (`REWATCH_MIN_RATING`, `RETRY_MAX_RATING`, `RETRY_MIN_MATCH`).
 
 **Requires**: `OUTPUT_PATH` + `ALLOCINE_OUTPUT_PATH`
 
@@ -187,7 +187,7 @@ cinema_dashboard/
 │   ├── database.py               # Movies Database page (Overview / Discover / Tables / Unmatched)
 │   ├── calendar.py               # Watchlist Showtimes page (top toolbar, day strip, vertical agenda, Time/Match sort, export popover, map view)
 │   ├── movie.py                  # Movie detail page — routed by ?movie=<slug>, not by st.navigation (no import-time main())
-│   ├── paris.py                  # Screening in Paris page — full showtimes×cache discovery, curated rewatch/second-chance rails
+│   ├── paris.py                  # Screening in Paris page — full showtimes×cache discovery, one agenda behind new/second-chance/rewatch lenses
 │   ├── streaming.py              # Streaming page — one poster rail per FR provider
 │   └── recommendations.py        # Recommendations chat page (calls chat.ui.render_chat)
 ├── core/                         # Streamlit-free domain logic

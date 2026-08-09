@@ -183,6 +183,59 @@ def test_no_match_block_when_the_row_is_unscored():
     assert "agenda-match" not in out
 
 
+# ── Lens-category badge (Screening in Paris) ─────────────────────────────────
+
+
+def test_category_badge_rendered_when_the_row_carries_a_category():
+    out = _agenda_row_html(_entry(_category="new"))
+    assert 'class="agenda-cat agenda-cat--new"' in out
+    assert "✨ New to you" in out
+    assert "agenda-row--cat-new" in out
+
+
+def test_second_chance_category_uses_the_hyphenated_css_slug():
+    out = _agenda_row_html(_entry(_category="second_chance"))
+    assert "agenda-cat--second-chance" in out
+    assert "agenda-row--cat-second-chance" in out
+    assert "🔄 Second chance" in out
+
+
+def test_rewatch_category_badge():
+    out = _agenda_row_html(_entry(_category="rewatch"))
+    assert "agenda-cat--rewatch" in out
+    assert "⭐ Rewatch" in out
+
+
+def test_row_without_category_column_renders_no_badge():
+    """The calendar page's frame carries no `_category` — its rows must be untouched."""
+    out = _agenda_row_html(_entry())
+    assert "agenda-cat" not in out
+    assert "agenda-row--cat" not in out
+
+
+def test_na_category_renders_no_badge():
+    """A Paris row outside every lens carries NA, and `bool(pd.NA)` raises — the guard must be isinstance."""
+    out = _agenda_row_html(_entry(_category=pd.NA))
+    assert "agenda-cat" not in out
+
+
+def test_unknown_category_value_renders_no_badge():
+    out = _agenda_row_html(_entry(_category="bogus"))
+    assert "agenda-cat" not in out
+
+
+def test_badge_is_a_span_never_a_second_anchor():
+    out = _agenda_row_html(_entry(_category="new"))
+    assert out.count("<a ") == 1
+
+
+def test_badge_alone_still_renders_the_sub_line():
+    """The sub line's render condition must include the badge, not just facts/rating."""
+    out = _agenda_row_html(_entry(directors="", runtime_minutes=None, letterboxd_avg_rating=float("nan"), _category="rewatch"))
+    assert 'class="agenda-sub"' in out
+    assert "agenda-cat--rewatch" in out
+
+
 # ── render_agenda ────────────────────────────────────────────────────────────
 
 

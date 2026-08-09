@@ -16,12 +16,19 @@ share one blob for the sticky heading to work at all. Do not "clean this up"
 into per-row calls.
 
 Rows link exactly like every other movie surface, with one simplification: the
-title is the only anchor in the row (time pills and the rating chip are
-``<span>``s, and there is deliberately no trailer chip), so it reuses
+title is the only anchor in the row (time pills, the rating chip and the lens
+badge are ``<span>``s, and there is deliberately no trailer chip), so it reuses
 ``.movie-card-link`` — inheriting that class's Streamlit specificity guard — and
 nothing needs lifting back above its stretched ``::after`` overlay with
 ``z-index``. **Do not add a second link to a row**; that reintroduces the
 nested-anchor problem ``ui.cards._movie_card_html`` had to solve.
+
+A row whose frame carries a non-null ``_category`` (the Screening in Paris
+page's lens vocabulary — see ``pages.paris.categorize``) gains a small
+``.agenda-cat`` badge beside the rating chip plus an ``agenda-row--cat-*``
+modifier for the row's left accent. Both stay ``<span>``/class-only — never an
+anchor (see above) — and the calendar page's frame has no ``_category`` column,
+so its rows render exactly as before.
 
 Public API:
     agenda_day_html(day, profile) -> str
@@ -47,6 +54,16 @@ from ui.theme import format_runtime, movie_href, row_slug
 #: indistinguishable from "nothing selected" in the widget's return value.
 DAY_ALL = "all"
 
+#: Lens-category badges, keyed by the exact ``_category`` values
+#: ``pages.paris.categorize`` emits → (CSS slug, glyph, label). The glyph and
+#: text ride together so the tint never carries the meaning alone (WCAG 1.4.1),
+#: and an unknown value simply renders no badge.
+_CATEGORY_BADGES: dict[str, tuple[str, str, str]] = {
+    "new": ("new", "✨", "New to you"),
+    "second_chance": ("second-chance", "🔄", "Second chance"),
+    "rewatch": ("rewatch", "⭐", "Rewatch"),
+}
+
 
 def _time_pill_html(showtime: AgendaShowtime) -> str:
     """One showtime as a static pill: the time, plus the theater when known."""
@@ -58,12 +75,14 @@ def _time_pill_html(showtime: AgendaShowtime) -> str:
 
 
 def _agenda_row_html(entry: AgendaEntry, profile: TasteProfile | None = None) -> str:
-    """One agenda row: thumbnail, title/meta, that day's time pills, match chips.
+    """One agenda row: thumbnail, title/meta, lens badge, time pills, match chips.
 
     Sections are omitted rather than rendered empty — a film with no runtime
     shows no runtime segment (not an em dash), and a row with no taste ``match``
     carries no ``.agenda-match`` block at all, which collapses the grid to two
-    columns.
+    columns. The lens badge appears only when the row carries a non-null
+    ``_category`` (the Paris page); the calendar frame has no such column and
+    renders untouched.
     """
     row = entry.row
     title = _title_of(row)
@@ -86,7 +105,20 @@ def _agenda_row_html(entry: AgendaEntry, profile: TasteProfile | None = None) ->
     facts = " · ".join(part for part in (html.escape(directors) if directors else "", runtime if runtime != "—" else "") if part)
     rating = row.get("letterboxd_avg_rating")
     rating_chip = _rating_chip_html(rating if isinstance(rating, (int, float)) else None)
-    sub_html = f'<div class="agenda-sub">{facts}{rating_chip}</div>' if facts or rating_chip else ""
+
+    # isinstance, not truthiness: a Paris row outside every lens carries
+    # None/NA and `bool(pd.NA)` raises; a calendar row has no column at all,
+    # so `get` returns None and the row renders exactly as before.
+    raw_category = row.get("_category")
+    badge = _CATEGORY_BADGES.get(raw_category) if isinstance(raw_category, str) else None
+    cat_chip = ""
+    cat_class = ""
+    if badge is not None:
+        css_slug, glyph, cat_label = badge
+        cat_chip = f'<span class="agenda-cat agenda-cat--{css_slug}">{glyph} {cat_label}</span>'
+        cat_class = f" agenda-row--cat-{css_slug}"
+
+    sub_html = f'<div class="agenda-sub">{facts}{rating_chip}{cat_chip}</div>' if facts or rating_chip or cat_chip else ""
 
     pills = "".join(_time_pill_html(s) for s in entry.showtimes)
     times_html = f'<div class="agenda-times">{pills}</div>' if pills else ""
@@ -95,7 +127,7 @@ def _agenda_row_html(entry: AgendaEntry, profile: TasteProfile | None = None) ->
     match_block = f'<div class="agenda-match">{match_html}</div>' if match_html else ""
 
     return (
-        f'<div class="agenda-row{" agenda-row--linked" if slug else ""}">'
+        f'<div class="agenda-row{" agenda-row--linked" if slug else ""}{cat_class}">'
         f"{poster_html}"
         f'<div class="agenda-main">'
         f'<div class="agenda-title">{title_html}</div>'

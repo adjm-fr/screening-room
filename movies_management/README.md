@@ -43,6 +43,7 @@ See the [root README](../README.md) for full workspace setup.
 
 - **pandas** - Data manipulation and parquet I/O
 - **click** - Command-line interface
+- **pydantic** - Validates TMDB API responses (`modules/tmdb.py`) so a payload shape change is caught, not silently swallowed
 - **pydantic-settings** - Typed, validated environment variable management (auto-loads `.env`)
 - **letterboxdpy** - Letterboxd API client
 - **httpx** - Async HTTP client for TMDB enrichment
@@ -177,6 +178,16 @@ fresh," and a validation error there would otherwise trigger a full, silent cach
 - `cast` - Top 8 billed cast names, comma-separated (leads only, kept short to keep the taste signal clean)
 
 > ⚠️ `directors` is the taste ranker's highest-weighted dimension and is what confirms the watchlist↔showtimes join in `cinema_dashboard`. Running without `TMDB_API_KEY` leaves it null and degrades both.
+
+All three TMDB responses (`/movie/{id}`, `/movie/{id}/credits`, `/movie/{id}/videos`) are parsed through Pydantic
+models in `modules/tmdb.py` before any field is read. A malformed payload — one whose *shape* no longer matches
+what these fetchers expect, e.g. TMDB changing a field's type — is logged at `logger.warning` (with the
+`tmdb_id` and the validation error) instead of the `logger.debug` every other failure path uses (missing
+`tmdb_id`/`TMDB_API_KEY`, a non-200 response, exhausted retries). **A `WARNING` from `get_letterboxd_data` at
+runtime therefore means TMDB's response shape drifted, not that a film is missing data** — the latter is
+normal and expected (most films have no French retitle, no trailer, or no composer) and stays silent at
+`debug`. Either way the affected column still comes back `null`/empty for that film; the warning never turns
+into a raised exception, so one malformed payload never aborts the batch.
 
 **Dynamic Details Columns:**
 - `studio` - Production studio(s)

@@ -14,7 +14,10 @@ from typing import NamedTuple
 import httpx
 import pandas as pd
 from letterboxdpy.movie import Movie
+from pydantic import ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+from modules.tmdb import CreditMember, CreditsResponse, MovieDetail, VideosResponse
 
 logger = logging.getLogger(__name__)
 
@@ -50,16 +53,22 @@ async def _get_tmdb_movie(client: httpx.AsyncClient, tmdb_id: str, api_key: str)
 async def _fetch_french_title(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> str | None:
     """Fetch a film's French title from TMDB using an injected async client.
 
-    Returns None when ``tmdb_id`` or ``api_key`` is falsy, on any non-200 response, or
-    when the request keeps failing after retries — never raises into the batch.
+    Returns None when ``tmdb_id`` or ``api_key`` is falsy, on any non-200 response, when
+    the payload fails validation (see ``modules.tmdb``), or when the request keeps
+    failing after retries — never raises into the batch.
     """
     if not tmdb_id or not api_key:
         return None
     try:
         resp = await _get_tmdb_movie(client, tmdb_id, api_key)
         if resp.status_code == 200:
-            return resp.json().get("title")
+            return MovieDetail.model_validate(resp.json()).title
         logger.debug("TMDB returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
+    except ValidationError as e:
+        # Distinct from the generic handler below: a shape TMDB's payload no longer
+        # matches is a schema-drift bug, not the normal "no French title" case, and
+        # would otherwise be swallowed identically at debug level. See modules.tmdb.
+        logger.warning("TMDB movie payload failed validation for tmdb_id=%s: %s", tmdb_id, e)
     except Exception as e:
         logger.debug("TMDB fetch failed for tmdb_id=%s: %s", tmdb_id, e)
     return None
@@ -124,7 +133,7 @@ _WRITER_JOBS = frozenset({"Writer", "Screenplay"})
 _COMPOSER_JOBS = frozenset({"Original Music Composer"})
 
 
-def _join_crew(crew: list[dict], jobs: frozenset[str]) -> str | None:
+def _join_crew(crew: list[CreditMember], jobs: frozenset[str]) -> str | None:
     """Comma-join the names of every crew member holding one of ``jobs``, in API order.
 
     Deduplicated because TMDB lists a person once *per job*, so anyone credited both
@@ -133,9 +142,9 @@ def _join_crew(crew: list[dict], jobs: frozenset[str]) -> str | None:
     seen: set[str] = set()
     names: list[str] = []
     for member in crew:
-        if member.get("job") in jobs and (name := member.get("name")) and name not in seen:
-            seen.add(name)
-            names.append(name)
+        if member.job in jobs and member.name and member.name not in seen:
+            seen.add(member.name)
+            names.append(member.name)
     return ", ".join(names) or None
 
 
@@ -146,27 +155,32 @@ async def _fetch_credits(client: httpx.AsyncClient, tmdb_id: str | None, api_key
     deliberately not read (see ``_fetch_movie``).
 
     Returns an all-None ``Credits`` when ``tmdb_id`` or ``api_key`` is falsy, on any
-    non-200 response, or when the request keeps failing after retries — never raises
-    into the batch. Note this makes ``directors`` null without a TMDB key, which the
-    taste ranker and the watchlist↔showtimes join both depend on.
+    non-200 response, when the payload fails validation (see ``modules.tmdb`` — this is
+    the case that matters most: a 250-film sample of the real cache found a ``Director``
+    credit on 100% of films, so a null ``directors`` from a malformed payload is far more
+    likely a bug than a fact), or when the request keeps failing after retries — never
+    raises into the batch. Note this makes ``directors`` null without a TMDB key, which
+    the taste ranker and the watchlist↔showtimes join both depend on.
     """
     if not tmdb_id or not api_key:
         return Credits()
     try:
         resp = await _get_tmdb_credits(client, tmdb_id, api_key)
         if resp.status_code == 200:
-            payload = resp.json()
-            cast = payload.get("cast") or []
-            crew = payload.get("crew") or []
-            names = [member["name"] for member in cast[:_CAST_BILLING_LIMIT] if member.get("name")]
+            payload = CreditsResponse.model_validate(resp.json())
+            names = [member.name for member in payload.cast[:_CAST_BILLING_LIMIT] if member.name]
             return Credits(
                 cast=", ".join(names) or None,
-                directors=_join_crew(crew, _DIRECTOR_JOBS),
-                producers=_join_crew(crew, _PRODUCER_JOBS),
-                writers=_join_crew(crew, _WRITER_JOBS),
-                composers=_join_crew(crew, _COMPOSER_JOBS),
+                directors=_join_crew(payload.crew, _DIRECTOR_JOBS),
+                producers=_join_crew(payload.crew, _PRODUCER_JOBS),
+                writers=_join_crew(payload.crew, _WRITER_JOBS),
+                composers=_join_crew(payload.crew, _COMPOSER_JOBS),
             )
         logger.debug("TMDB credits returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
+    except ValidationError as e:
+        # See _fetch_french_title: a dedicated clause, before the generic handler below,
+        # so a shape change surfaces at warning level instead of vanishing at debug.
+        logger.warning("TMDB credits payload failed validation for tmdb_id=%s: %s", tmdb_id, e)
     except Exception as e:
         logger.debug("TMDB credits fetch failed for tmdb_id=%s: %s", tmdb_id, e)
     return Credits()
@@ -194,7 +208,8 @@ async def _get_tmdb_videos(client: httpx.AsyncClient, tmdb_id: str, api_key: str
 
 # Lower is better: French trailers are preferred over English, which are preferred over
 # anything else. Anything not in this mapping (including missing iso_639_1) sorts last.
-_TRAILER_LANGUAGE_PRIORITY = {"fr": 0, "en": 1}
+# Keyed on str | None (not just str) because Video.iso_639_1 is nullable.
+_TRAILER_LANGUAGE_PRIORITY: dict[str | None, int] = {"fr": 0, "en": 1}
 
 
 async def _fetch_trailer(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> str | None:
@@ -205,24 +220,26 @@ async def _fetch_trailer(client: httpx.AsyncClient, tmdb_id: str | None, api_key
     language (see ``_TRAILER_LANGUAGE_PRIORITY``).
 
     Returns None when ``tmdb_id`` or ``api_key`` is falsy, when no video matches the
-    filters, on any non-200 response, or when the request keeps failing after retries —
-    never raises into the batch.
+    filters, on any non-200 response, when the payload fails validation (see
+    ``modules.tmdb``), or when the request keeps failing after retries — never raises
+    into the batch.
     """
     if not tmdb_id or not api_key:
         return None
     try:
         resp = await _get_tmdb_videos(client, tmdb_id, api_key)
         if resp.status_code == 200:
-            videos = resp.json().get("results") or []
-            trailers = [
-                v for v in videos if v.get("site") == "YouTube" and v.get("type") == "Trailer" and v.get("official") is True
-            ]
+            videos = VideosResponse.model_validate(resp.json()).results
+            trailers = [v for v in videos if v.site == "YouTube" and v.type == "Trailer" and v.official is True]
             if not trailers:
                 return None
-            best = min(trailers, key=lambda v: _TRAILER_LANGUAGE_PRIORITY.get(v.get("iso_639_1"), 2))
-            key = best.get("key")
-            return f"https://www.youtube.com/watch?v={key}" if key else None
+            best = min(trailers, key=lambda v: _TRAILER_LANGUAGE_PRIORITY.get(v.iso_639_1, 2))
+            return f"https://www.youtube.com/watch?v={best.key}" if best.key else None
         logger.debug("TMDB videos returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
+    except ValidationError as e:
+        # See _fetch_french_title: a dedicated clause, before the generic handler below,
+        # so a shape change surfaces at warning level instead of vanishing at debug.
+        logger.warning("TMDB videos payload failed validation for tmdb_id=%s: %s", tmdb_id, e)
     except Exception as e:
         logger.debug("TMDB videos fetch failed for tmdb_id=%s: %s", tmdb_id, e)
     return None

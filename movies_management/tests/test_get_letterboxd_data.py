@@ -309,6 +309,34 @@ async def test_fetch_french_title_returns_none_when_api_key_empty():
         assert await _fetch_french_title(client, "12345", "") is None
 
 
+@respx.mock
+async def test_fetch_french_title_tolerates_unknown_fields():
+    """extra="ignore" — TMDB sends far more fields than we read; none should reject the payload."""
+    respx.get(f"{TMDB_API_URL}/movie/12345").mock(
+        return_value=httpx.Response(
+            200, json={"title": "Le Syndicat du Crime", "budget": 5_000_000, "genres": [{"id": 1, "name": "Drame"}]}
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_french_title(client, "12345", "fake-key")
+    assert result == "Le Syndicat du Crime"
+
+
+@respx.mock
+async def test_fetch_french_title_logs_warning_on_shape_change(caplog):
+    """A payload missing the required ``title`` field is a schema-drift bug, not a
+    legitimate "no French title" case — it must log at WARNING (not the silent debug
+    level every other failure uses) and still return the safe None fallback.
+    """
+    respx.get(f"{TMDB_API_URL}/movie/12345").mock(return_value=httpx.Response(200, json={"budget": 5_000_000}))
+    with caplog.at_level(logging.WARNING, logger="modules.get_letterboxd_data"):
+        async with httpx.AsyncClient() as client:
+            result = await _fetch_french_title(client, "12345", "fake-key")
+    assert result is None
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert "tmdb_id=12345" in caplog.text
+
+
 # ── _fetch_credits (async, httpx + respx) ───────────────────────────────────────
 
 
@@ -409,6 +437,61 @@ async def test_fetch_credits_returns_empty_on_http_error():
     assert result == Credits()
 
 
+@respx.mock
+async def test_fetch_credits_tolerates_unknown_fields():
+    """extra="ignore" — a real cast/crew entry carries ~20 fields we never read."""
+    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 12345,
+                "cast": [
+                    {"name": "Actor A", "order": 0, "gender": 2, "popularity": 12.3, "profile_path": "/x.jpg"},
+                ],
+                "crew": [
+                    {"name": "Jane Doe", "job": "Director", "department": "Directing", "credit_id": "abc123"},
+                ],
+            },
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_credits(client, "12345", "fake-key")
+    assert result.cast == "Actor A"
+    assert result.directors == "Jane Doe"
+
+
+@respx.mock
+async def test_fetch_credits_logs_warning_when_cast_member_missing_name(caplog):
+    """A cast entry with no ``name`` at all is a shape change, not a normal cast gap
+    (real TMDB entries always carry a name) — must log at WARNING and still return the
+    safe empty ``Credits()`` fallback.
+    """
+    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"cast": [{"order": 0}]}))
+    with caplog.at_level(logging.WARNING, logger="modules.get_letterboxd_data"):
+        async with httpx.AsyncClient() as client:
+            result = await _fetch_credits(client, "12345", "fake-key")
+    assert result == Credits()
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert "tmdb_id=12345" in caplog.text
+
+
+@respx.mock
+async def test_fetch_credits_logs_warning_when_crew_is_wrong_type(caplog):
+    """``directors`` is the taste ranker's highest-weighted dimension and the join's
+    director confirmation — a ``crew`` field that stops being a list (e.g. TMDB starts
+    sending an error string in its place) must be loud, not silently null every film.
+    """
+    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(
+        return_value=httpx.Response(200, json={"cast": [], "crew": "unexpected string, not a list"})
+    )
+    with caplog.at_level(logging.WARNING, logger="modules.get_letterboxd_data"):
+        async with httpx.AsyncClient() as client:
+            result = await _fetch_credits(client, "12345", "fake-key")
+    assert result == Credits()
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert "tmdb_id=12345" in caplog.text
+
+
 # ── _fetch_trailer (async, httpx + respx) ───────────────────────────────────────
 
 
@@ -480,6 +563,32 @@ async def test_fetch_trailer_returns_none_on_http_error():
     async with httpx.AsyncClient() as client:
         result = await _fetch_trailer(client, "12345", "fake-key")
     assert result is None
+
+
+@respx.mock
+async def test_fetch_trailer_tolerates_unknown_fields():
+    """extra="ignore" — a real video entry carries fields (id, name, size, published_at, …) we never read."""
+    videos = [
+        {**_video("fr-key", "fr"), "id": "abc", "name": "Bande-annonce officielle", "size": 1080, "published_at": "2024-01-01"}
+    ]
+    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": videos}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_trailer(client, "12345", "fake-key")
+    assert result == "https://www.youtube.com/watch?v=fr-key"
+
+
+@respx.mock
+async def test_fetch_trailer_logs_warning_on_shape_change(caplog):
+    """``results`` no longer being a list (e.g. TMDB starts sending a dict/error blob in
+    its place) must log at WARNING and still return the safe None fallback.
+    """
+    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": "oops"}))
+    with caplog.at_level(logging.WARNING, logger="modules.get_letterboxd_data"):
+        async with httpx.AsyncClient() as client:
+            result = await _fetch_trailer(client, "12345", "fake-key")
+    assert result is None
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert "tmdb_id=12345" in caplog.text
 
 
 # ── _fetch_all TMDB enrichment integration ──────────────────────────────────────

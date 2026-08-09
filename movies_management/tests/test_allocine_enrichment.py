@@ -5,10 +5,41 @@ from unittest.mock import AsyncMock
 
 import pandas as pd
 from modules.allocine_enrichment import (
+    _build_cache_index,
+    _director_tokens,
+    _directors_overlap,
+    _match_cache,
+    _normalize_title,
     _search_letterboxd_slug,
+    _split_director_tokens,
     enrich_cache_from_showtimes,
     resolve_slug_from_allocine_tuple,
 )
+
+# ── director token matching ───────────────────────────────────────────────────
+
+
+def test_director_tokens_strips_accents_and_punctuation():
+    assert _director_tokens("S.S. Rajamouli") == frozenset({"s", "rajamouli"})
+    assert _director_tokens("S. S. Rajamouli") == frozenset({"s", "rajamouli"})
+    assert _director_tokens("Víctor Erice") == _director_tokens("Victor Erice")
+
+
+def test_directors_overlap_is_containment_not_equality():
+    # Allocine's dotted-initial spacing differs from Letterboxd's, but tokens match
+    assert _directors_overlap(_split_director_tokens("S.S. Rajamouli", "|"), _split_director_tokens("S. S. Rajamouli", "|"))
+    # A suffix like "Jr." on one side still overlaps
+    assert _directors_overlap(_split_director_tokens("Akinola Davies Jr.", "|"), _split_director_tokens("Akinola Davies", "|"))
+    # Genuinely different directors never overlap
+    assert not _directors_overlap(_split_director_tokens("Ridley Scott", "|"), _split_director_tokens("Someone Else", "|"))
+
+
+def test_normalize_title_strips_accents_and_case():
+    assert _normalize_title("RRR") == "rrr"
+    assert _normalize_title("L'Esprit de la ruche") == _normalize_title("l esprit de la ruche")
+    assert _normalize_title(None) == ""
+    assert _normalize_title(float("nan")) == ""
+
 
 # ── _search_letterboxd_slug ───────────────────────────────────────────────────
 
@@ -35,6 +66,17 @@ def test_search_returns_none_when_director_does_not_match(mocker):
     )
     # Year matches but director doesn't — no slug returned (no year-only fallback)
     assert _search_letterboxd_slug("Blade Runner", "1982", "Unknown Director") is None
+
+
+def test_search_matches_director_with_different_initial_spacing(mocker):
+    # Regression: Allocine sends "S.S. Rajamouli", Letterboxd carries "S. S. Rajamouli" —
+    # exact string/set equality used to reject this and drop RRR as unresolved.
+    results = [{"slug": "rrr", "year": 2022, "directors": [{"name": "S. S. Rajamouli"}]}]
+    mocker.patch(
+        "modules.allocine_enrichment.Search",
+        return_value=mocker.MagicMock(results={"results": results}),
+    )
+    assert _search_letterboxd_slug("RRR", "2022", "S.S. Rajamouli") == "rrr"
 
 
 def test_search_returns_none_on_exception(mocker):
@@ -77,7 +119,86 @@ def test_resolve_returns_none_when_letterboxd_misses(mocker):
     assert asyncio.run(resolve_slug_from_allocine_tuple("Unknown Film", None, None, 2024)) is None
 
 
+# ── _build_cache_index / _match_cache ────────────────────────────────────────
+
+
+def test_match_cache_recovers_director_spelling_drift():
+    cache_df = pd.DataFrame(
+        [
+            {
+                "slug": "rrr",
+                "title": "RRR",
+                "french_title": "Rise Roar Revolt (RRR)",
+                "directors": "S. S. Rajamouli",
+                "release_year": 2022,
+            }
+        ]
+    )
+    index = _build_cache_index(cache_df)
+    film = {"title": "RRR", "original_title": "RRR", "director": "S.S. Rajamouli", "release_year": 2022}
+    assert _match_cache(film, index) == "rrr"
+
+
+def test_match_cache_rejects_year_mismatch_on_recurring_title():
+    # "Le Retour" — two unrelated films sharing a French title, different years/directors
+    cache_df = pd.DataFrame(
+        [
+            {"slug": "the-return", "french_title": "Le Retour", "directors": "Andrey Zvyagintsev", "release_year": 2003},
+            {"slug": "homecoming-2023", "french_title": "Le retour", "directors": "Catherine Corsini", "release_year": 2023},
+        ]
+    )
+    index = _build_cache_index(cache_df)
+    film = {"title": "Le Retour", "original_title": None, "director": "Andrey Zvyagintsev", "release_year": 2023}
+    # Year (2023) matches the Corsini row, but its director doesn't overlap — no match
+    assert _match_cache(film, index) is None
+
+
+def test_match_cache_requires_director_on_both_sides():
+    cache_df = pd.DataFrame([{"slug": "some-film", "title": "Some Film", "directors": None, "release_year": 2020}])
+    index = _build_cache_index(cache_df)
+    film = {"title": "Some Film", "original_title": None, "director": "A Director", "release_year": 2020}
+    assert _match_cache(film, index) is None
+
+
+def test_build_cache_index_tolerates_nan_directors():
+    # Regression: a real cache row can carry a NaN `directors` cell (float, not str/None).
+    # bool(float("nan")) is True, so a plain `if not value` guard lets it reach .split()
+    # and crash — this must not raise.
+    cache_df = pd.DataFrame([{"slug": "some-film", "title": "Some Film", "directors": float("nan"), "release_year": 2020}])
+    index = _build_cache_index(cache_df)
+    film = {"title": "Some Film", "original_title": None, "director": "A Director", "release_year": 2020}
+    assert _match_cache(film, index) is None
+
+
+def test_match_cache_returns_none_without_parseable_year():
+    index = _build_cache_index(pd.DataFrame([{"slug": "x", "title": "X", "directors": "A B", "release_year": 2020}]))
+    film = {"title": "X", "original_title": None, "director": "A B", "release_year": None}
+    assert _match_cache(film, index) is None
+
+
 # ── enrich_cache_from_showtimes ───────────────────────────────────────────────
+
+
+def test_enrich_resolves_from_cache_without_a_live_search(mocker, tmp_path):
+    # RRR is already in the cache under a different director spacing — enrich should
+    # find it via _match_cache and never touch the network or unresolved_allocine.
+    showtimes = pd.DataFrame([{"movie": "RRR", "original_title": "RRR", "director": "S.S. Rajamouli", "release_year": 2022}])
+    showtimes_path = tmp_path / "showtimes.parquet"
+    showtimes.to_parquet(showtimes_path)
+
+    cache_df = pd.DataFrame([{"slug": "rrr", "title": "RRR", "directors": "S. S. Rajamouli", "release_year": 2022}])
+    cache_path = tmp_path / "cache.parquet"
+    cache_df.to_parquet(cache_path)
+
+    resolve_mock = mocker.patch("modules.allocine_enrichment.resolve_slug_from_allocine_tuple", new_callable=AsyncMock)
+    get_data_mock = mocker.patch("modules.allocine_enrichment.get_letterboxd_data")
+
+    unresolved_path = tmp_path / "unresolved.parquet"
+    enrich_cache_from_showtimes(showtimes_path, cache_path, unresolved_path)
+
+    resolve_mock.assert_not_called()
+    get_data_mock.assert_not_called()
+    assert pd.read_parquet(unresolved_path).empty
 
 
 def test_enrich_resolves_new_slugs_and_calls_get_letterboxd_data(mocker, tmp_path):

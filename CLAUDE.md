@@ -487,6 +487,9 @@ typecheck, security, test.
   uncommitted diff in whatever checkout it ran in. Git worktrees have independent working directories, so that
   diff does **not** propagate to sibling worktrees or the main checkout — commit the refresh on `main` and let
   branches pick it up, rather than expecting a worktree to see another checkout's uncommitted change.
+  `_update_display_names_catalog` follows its `json.dump` with an explicit `f.write("\n")` because `json.dump`
+  emits no trailing newline — that one line is what keeps each rewrite clean under `end-of-file-fixer`, so
+  dropping it as redundant would put a spurious ± newline on every refresh commit.
 - **Free streaming providers are never gated by `STREAMING_SERVICES`.**
   `sources.streaming.STREAMING_COLUMNS = ("flatrate", "free")` is the single source of truth for the
   provider list-columns consumers join on. Free platforms (Arte.tv, France.tv, …) are watchable by
@@ -549,19 +552,16 @@ typecheck, security, test.
 - **Git hooks (`.pre-commit-config.yaml`, run by [prek](https://prek.j178.dev)) mirror CI, split by measured
   cost:** pre-commit is ruff + `uv lock --check` + file hygiene + gitleaks (~0.5s), commit-msg is the
   Conventional Commits check, pre-push is mypy + bandit (12.8s cold / 0.27s warm on `cinema_dashboard`).
-  Tests (~40s) and pip-audit (network) stay CI-only. Five things not to undo: **ruff/mypy/bandit are `local`
+  Tests (~40s) and pip-audit (network) stay CI-only. Four things not to undo: **ruff/mypy/bandit are `local`
   hooks shelling out to `uv run --no-sync`, deliberately not `astral-sh/ruff-pre-commit`** — a `rev:` would
   be a second ruff pin beside the root pyproject's `ruff==0.16.1`, bumped by Dependabot in a *separate* PR
   from the `uv` group, so the hook could format differently from CI until both landed; **`make hooks` passes
   `--hook-type` explicitly** because prek does not read `default_install_hook_types`, and a bare
   `prek install` wires up pre-commit only, silently dropping commit-msg and pre-push; **the mypy hooks set
   `pass_filenames: false`** and re-check their whole CI area (mypy over a partial file list is unsound),
-  scoped by `files:` so you only pay for areas you touched; **`check-added-large-files` needs
-  `--maxkb=1024`** because the default 500 rejects the 739 KB `uv.lock`; and **`end-of-file-fixer` excludes
-  `cinema_dashboard/assets/provider_display_names.json`** — `sources/streaming.py`'s `json.dump` writes no
-  trailing newline, so fixing it here would add a spurious ± line to every refresh commit (see the
-  runtime-mutated-file bullet above). The `local` hooks need a synced venv, so a fresh worktree needs
-  `make install` before it can commit — the same setup step as copying `.env`.
+  scoped by `files:` so you only pay for areas you touched; and **`check-added-large-files` needs
+  `--maxkb=1024`** because the default 500 rejects the 739 KB `uv.lock`. The `local` hooks need a synced venv,
+  so a fresh worktree needs `make install` before it can commit — the same setup step as copying `.env`.
 - **The calendar page's export mirrors its on-screen filters — now structurally, not by discipline.**
   `core.agenda.apply_filters(wl_shows, AgendaFilters(...))` applies every control *except* the day strip
   (search over both titles + directors, theater multiselect — empty selection = all theaters — runtime

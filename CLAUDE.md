@@ -158,7 +158,8 @@ typecheck, security, test.
   horizontal variant for narrow columns (44px thumbnail, no chips, `.movie-row--linked`) — it reuses the
   `.movie-card-link` class rather than declaring its own so it inherits that class's specificity guard.
   `ui/agenda.py`'s `_agenda_row_html` does the same, and is the *simple* case: the row carries no second
-  anchor (time pills and the rating chip are `<span>`s, and it deliberately has no trailer chip), so unlike
+  anchor (time pills, the rating chip and the Paris lens badge are `<span>`s, and it deliberately has no
+  trailer chip), so unlike
   the card nothing needs lifting back above the `::after` overlay with `z-index` — don't add a second link
   to an agenda row.
   **A renderer only links a row that still carries a slug**, which is why anything persisting a row
@@ -337,32 +338,60 @@ typecheck, security, test.
   skipping that step produces two identically-named columns and pandas raises `InvalidIndexError`, a bug
   only the real parquets caught (most cache rows carry both `title` and `french_title`; the unit tests'
   synthetic cache rows mostly didn't).
-- **The Paris page is curated sections, not a filter wall — there is no browse-everything rail.** The one
-  control is "Only times I'm free" (`core.availability.free_time_mask`, identical semantics to the
-  Watchlist Showtimes page — day-off vs unavailable, weekday cutoff), applied to `screenings` before any
-  section is built, so the KPI strip and every rail below only ever show attendable screenings. Three rails
-  follow, each answering one question and each *omitted rather than rendered empty*, in this order:
-  "Best matches — new to you" (`untracked`, by match), "Worth a second chance?" (`user_rating <
-  RETRY_MAX_RATING` 2.5 **and** `match >= RETRY_MIN_MATCH` 70 — the disagreement rail), and last "Worth a
-  rewatch!" (`user_rating >= REWATCH_MIN_RATING` 4.0, ordered by the user's own rating — this rail is their
-  verdict, not the ranker's). Rewatch alone gets a bigger cap (`REWATCH_RAIL_SIZE` 24 vs. `TOP_MATCHES_SIZE`
-  12 for the other two) because it draws on films the user has already vouched for, not a ranker guess, so
-  there's less risk in showing more. The three score/rating thresholds are page constants calibrated on the
+- **The Paris page is one programme with three lenses — no rails.** It runs the *same* filter machinery as
+  the calendar page — `core.agenda.AgendaFilters` + `apply_filters` + `apply_day`, one chain and one frame —
+  behind a `_render_toolbar` modelled on the calendar's (search, a badged "Filters" popover with
+  theaters/runtime buckets/min Letterboxd rating, a Time/Match sort shown only with a taste profile,
+  time-of-day chips, and the shared `ui.render_free_time_filter` whose selection is *folded into*
+  `AgendaFilters` rather than applied on the spot — don't also call `FreeTimeSelection.apply`). What it
+  deliberately does **not** carry is the calendar's ICS/CSV export, its pydeck theater map and its
+  Agenda/Map view switcher: this is a discovery surface, not a planning one. **Every widget key is
+  namespaced `paris_*`** (`paris_search`, `paris_theaters`, …, `paris_lens`, `paris_day`,
+  `key_prefix="paris"`) — both
+  pages can live in one Streamlit session, so a shared `cal_*` key would make one page's filters follow the
+  user onto the other; `_filters_badge()` reads those same `paris_*` session keys. `narrowed =
+  apply_filters(screenings, filters)` is what everything below reads, and `pages.paris.categorize` (pure,
+  total — a missing column just means that category never fires) then assigns each row at most one lens
+  category as `_category`: `"new"` (`watch_status == "untracked"`), `"second_chance"` (`user_rating <
+  RETRY_MAX_RATING` 2.5 **and** `match >= RETRY_MIN_MATCH` 70 — the disagreement lens), `"rewatch"`
+  (`user_rating >= REWATCH_MIN_RATING` 4.0), else `None` — mutually exclusive by construction (untracked
+  rows carry no rating; the two rating cuts are disjoint), coerced through `pd.to_numeric(...)` +
+  `.fillna(False)` because `series >= x` on the nullable `user_rating` yields `NA`, which pandas rejects as
+  a boolean mask. The KPI strip stays the page's own
+  watch-status counts (Films screening / New to you / On your watchlist / Already seen, computed on
+  `narrowed`), **not** `agenda_kpis` — the question here is "how much of the week is new to me?" — and stays
+  on the whole post-`apply_filters` frame, every lens included. The lens control is a single-select chip row
+  directly above the day strip (`st.segmented_control`, key `paris_lens`), built like `render_day_strip`:
+  stable option values with the label + distinct-film count (`_film_key` nunique — the same slug-first
+  identity the agenda groups on) riding in `format_func`, so the stored selection survives count changes;
+  zero-count lenses are omitted rather than disabled (the old omit-empty-rail rule — "second chance" needs
+  `match`, so it vanishes by itself without a taste profile), and when no lens applies at all the strip
+  renders no control. **The lens is a scoping step like the day strip, deliberately not an `AgendaFilters`
+  field**: the categories are a Paris-only concept (`watch_status`/`user_rating` don't exist on the
+  calendar's `wl_shows` frame), so it follows `apply_day`'s precedent — `lensed =
+  narrowed[narrowed["_category"] == lens]`, then `day_chips(lensed)` → `render_day_strip(key="paris_day")` →
+  `apply_day` → `build_agenda`. Lens and day strip therefore scope only the agenda; the KPIs stay week-wide.
+  Every categorised row also carries its lens into the agenda itself: `ui.agenda._agenda_row_html` renders
+  an `.agenda-cat` badge (glyph + text, never color alone) plus an `agenda-row--cat-*` left-accent modifier
+  **only when the row carries a non-null string `_category`** — the calendar page's frame has no such
+  column, so its rows render exactly as before. The three score/rating thresholds are page constants
+  calibrated on the
   real parquets (Aug 2026): 61 films clear the rewatch bar in a week, and of the 24 rated-below-2.5 films
-  screening, match≥60 keeps 9, ≥65 keeps 6, ≥70 keeps 3 — 70 is chosen so the rail shows only strong
-  disagreement. `user_rating` arrives nullable, so the masks coerce with `pd.to_numeric(...)` and
-  `.fillna(False)`: `series >= x` on a nullable dtype yields `NA`, which pandas rejects as a boolean mask.
-  Every card also lists its upcoming showtimes (`_showtime_badges_html`, one `.showtime-badge` div per
-  screening — the `.showtime-badge` class the movie detail page also uses, distinct from the calendar
-  agenda's `.time-pill`, and per-card here since these rails
-  aren't grouped by date), capped at `MAX_SHOWTIME_BADGES` (6, "+N more" beyond that — a wide release can
-  carry dozens of screenings in a week, measured max 86) and grouped once per render from the full
-  (post-free-time-filter) multi-row frame, not the single row a rail dedupes each card down to.
+  screening, match≥60 keeps 9, ≥65 keeps 6, ≥70 keeps 3 — 70 is chosen so the lens shows only strong
+  disagreement. **A seen film that clears neither "worth" lens is dropped from `narrowed` outright**, right
+  after `categorize` runs and before the KPI strip — `pages.paris.drop_uninteresting_seen` (pure, total,
+  same missing-column convention as `categorize`). This page's whole premise is "what in this week's
+  programme is worth your time", and an already-seen film the ranker didn't flag for a second chance and
+  that didn't clear the rewatch bar answers "no" regardless of which lens is selected — so it is cut from
+  the frame every lens and the KPI strip read, not just hidden behind one. "Already seen" on the KPI strip
+  therefore only ever counts seen films that survived the drop (i.e. still worth a second chance or a
+  rewatch), not every seen film screening this week.
 - **`dict(some_groupby_object)` breaks on this project's pandas (3.x).** `DataFrameGroupBy` now exposes a
   public `.keys` attribute — the grouping column name(s), a plain string here — which shadows the mapping
   protocol `dict()` checks for (`hasattr(obj, "keys")` then calls it), raising `TypeError: 'str' object is
-  not callable`. Caught building `pages/paris.py`'s per-film showtime lookup against the real data, not by
-  the unit tests (synthetic fixtures never exercised the actual `groupby` call). Use a dict/generator
+  not callable`. Caught against the real data (not by the unit tests — synthetic fixtures never exercised
+  the actual `groupby` call) in an earlier `pages/paris.py` revision's per-film showtime lookup, since
+  removed with the rails. Use a dict/generator
   comprehension over the groupby's `(key, frame)` iteration instead — `{k: g for k, g in df.groupby(col)}`
   — which sidesteps the mapping-protocol check entirely.
 - **Taste ranker lives in `core/taste.py`** (all formulas + constants in one place). `build_affinity`
@@ -377,7 +406,8 @@ typecheck, security, test.
   with `quality_prior` sum back to `_raw_score` exactly, so the breakdown always reconciles with the badge;
   `attach_match` joins scores onto candidate rows. Home's "Top matches this week" rail, home's streaming
   rail (ordering), the streaming page's per-provider rails (ordering, plus the match badge/"because"
-  chips on each card), and the Screening in Paris page's "Best matches — new to you" rail consume it.
+  chips on each card), and the Screening in Paris page (the "second chance" lens cut, the agenda's Match
+  sort and its per-row match chips) consume it.
   `sources.loader.build_taste_profile` (the chat-prompt string) is a thin formatter
   over the same profile — its line prefixes ("Average rating given:", "Favourite genres:", …) are a
   contract pinned by `tests/sources/test_loader.py` and the eval goldens: extend with new lines, don't reword.
@@ -538,11 +568,11 @@ typecheck, security, test.
 - **The free-time control is one widget shared by two pages, rendered and applied at different moments.**
   `ui/availability.py` is the Streamlit half of `core/availability.py`: `render_free_time_filter(rows,
   key_prefix=...)` mounts the toggle plus its three pickers and returns a frozen `FreeTimeSelection`, whose
-  `.apply(df)` does the masking. Render and apply are split because the two call sites need the mask at
-  different points — `pages/calendar.py` mounts the control at the page top but applies it *late*, as one
-  link in the filter chain whose final frame also feeds the ICS/CSV export, while `pages/paris.py` applies
-  it immediately so every curated rail below is built from attendable screenings only. Both pass the
-  *unfiltered* frame as the picker's date source, so another filter can't drop a date out from under it,
+  `.apply(df)` does the masking. Render and apply are split because the selection is consumed late: both
+  `pages/calendar.py` and `pages/paris.py` mount the control in their toolbar and then fold its four fields
+  into `AgendaFilters`, so `core.agenda.apply_filters` — not `.apply` — does the masking as one link in the
+  single filter chain. **Don't call both**; `.apply` exists for a caller that isn't on that chain. Both pass
+  the *unfiltered* frame as the picker's date source, so another filter can't drop a date out from under it,
   and `key_prefix` namespaces the four widget keys since both pages can live in one session. A disabled
   selection is a passthrough that ignores its own other fields, and `.apply` short-circuits on an empty
   frame (which has no `showtimes` column to mask). Don't re-inline this into a page — it was duplicated

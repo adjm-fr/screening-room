@@ -29,6 +29,7 @@ _FILM = {
     "directors": "Andrei Tarkovsky",
     "writers": "Fridrikh Gorenshtein",
     "producers": "Viacheslav Tarasov",
+    "composers": "Eduard Artemyev",
     "studio": "Mosfilm",
     "cast": "Natalya Bondarchuk, Donatas Banionis",
     "genres": "Science Fiction, Drama",
@@ -48,7 +49,17 @@ _FILM = {
     "tmdb_url": "https://www.themoviedb.org/movie/593",
 }
 
-_OTHER = {**_FILM, "slug": "stalker", "title": "Stalker", "themes": "Faith", "mini_themes": None, "tmdb_id": "1398"}
+#: composers is null here on purpose: ~21% of the real cache has no original score, so the
+#: omit-when-null path is the common case, not an edge case.
+_OTHER = {
+    **_FILM,
+    "slug": "stalker",
+    "title": "Stalker",
+    "themes": "Faith",
+    "mini_themes": None,
+    "composers": None,
+    "tmdb_id": "1398",
+}
 
 
 @pytest.fixture
@@ -145,6 +156,8 @@ def test_detail_page_renders_the_sections_it_has_data_for(app: AppTest):
     assert "Credits" in body
     assert "Andrei Tarkovsky" in body
     assert "Mosfilm" in body
+    assert "Composer" in body
+    assert "Eduard Artemyev" in body
     assert "Themes" in body
     assert "Memory" in body  # mini_themes fold into the theme chips
     assert "Who are we, out here?" in body  # tagline
@@ -158,6 +171,18 @@ def test_detail_page_omits_sections_without_data(app: AppTest):
 
     assert "Trailer</div>" not in _markdown(app)
     assert not app.get("video")
+
+
+def test_credits_omit_the_composer_row_when_there_is_no_score(app: AppTest):
+    """A scoreless film must drop the Composer row entirely, not render an empty one."""
+    app.query_params["movie"] = "stalker"
+    app.run()
+    body = _markdown(app)
+
+    assert "Credits" in body  # the rest of the block still renders
+    assert "Andrei Tarkovsky" in body
+    assert "Composer" not in body
+    assert "Eduard Artemyev" not in body
 
 
 def test_unrated_watchlist_film_shows_the_watchlist_state(app: AppTest):

@@ -197,8 +197,11 @@ typecheck, security, test.
   all-zero `liked` column stays unused). Because the cache is a clean superset of ratings+watchlist, every
   film the app can render a card for has a page, and the screenings section re-uses
   `build_watchlist_showtimes` keyed on the *cache* so rated/cache-only films list screenings too. Sections
-  are omitted, never rendered empty — cache coverage is uneven (`trailer_url` ~67% null, `cast` ~41%,
-  `themes` ~31%, `tagline` ~30%; the first two are an in-flight TMDB backfill).
+  are omitted, never rendered empty — cache coverage is uneven (measured Aug 2026, after the TMDB credits
+  backfill: `trailer_url` ~46% null, `themes` ~31%, `mini_themes` ~31%, `tagline` ~30%, `composers` ~21%,
+  `cast` ~1%). `composers` is the one that will *stay* null at that rate — it is TMDB's
+  "Original Music Composer" only, so a film with no original score legitimately has none; it is data, not
+  an unfinished backfill, and the Credits block drops the row rather than showing it empty.
   **The one section that does *not* read the whole cache is "More like this":** the page passes
   `watchlist_slugs` into `similar_films`, because that same superset property means an unfiltered rail is
   78% films already rated (already seen) against 20% watchlisted — the inverse of a what-to-watch-next

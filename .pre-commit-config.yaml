@@ -98,10 +98,6 @@ repos:
       - id: trailing-whitespace
         args: [--markdown-linebreak-ext=md]  # keep two-space Markdown line breaks
       - id: end-of-file-fixer
-        # orchestrate.py rewrites this file whenever TMDB returns a new provider,
-        # and sources/streaming.py's json.dump emits no trailing newline — so
-        # fixing it here just adds a spurious ± line to every refresh commit.
-        exclude: ^cinema_dashboard/assets/provider_display_names\.json$
       - id: check-yaml
       - id: check-toml
       - id: check-merge-conflict

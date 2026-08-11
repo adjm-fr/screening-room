@@ -16,7 +16,7 @@ screening-room/
 ├── .github/workflows/ci.yml  # ONE pipeline for the whole workspace
 ├── packages/
 │   ├── common/    src/common/     # AppSettings, configure_logging, validated parquet IO
-│   └── contracts/ src/contracts/  # SHOWTIMES parquet schema (the integration contract)
+│   └── contracts/ src/contracts/  # SHOWTIMES / DATA_LETTERBOXD parquet schemas (the integration contract)
 ├── movies_management/      # Letterboxd fetcher/enricher (CLI: main.py + modules/)
 └── cinema_dashboard/       # Streamlit app (app.py config.py + core/ sources/ integrations/ chat/ ui/ pages/ pipeline/ + orchestrate.py)
 ```
@@ -110,9 +110,27 @@ typecheck, security, test.
     explicitly (so it takes effect under pytest's log capture), and quiets noisy network loggers. Used by
     `movies_management/main.py`, `cinema_dashboard/app.py`, and `orchestrate.py`.
   - `parquet_io.py`: `read_parquet_validated` / `write_parquet_validated` + `SchemaValidationError`.
-- **`contracts`** (`packages/contracts`) — `SHOWTIMES` (a frozen `ParquetContract`) declares the 8 columns
-  consumed from `showtimes.parquet`. Enforced at the seam: `sources.loader.load_showtimes` reads via
-  `read_parquet_validated(..., required_columns=SHOWTIMES.required_columns)`, so upstream drift fails loud.
+- **`contracts`** (`packages/contracts`) — frozen `ParquetContract`s declaring the columns each consumer
+  depends on, enforced at every producer/consumer seam via `read_parquet_validated` /
+  `write_parquet_validated`:
+  - `SHOWTIMES` — the 8 columns consumed from `showtimes.parquet` (produced by the standalone Allocine
+    scraper). Read validated on **both** sides that consume it: `cinema_dashboard/sources/loader.py`'s
+    `load_showtimes` and `movies_management/modules/allocine_enrichment.py`'s
+    `enrich_cache_from_showtimes`.
+  - `DATA_LETTERBOXD` — the stable-core columns of `data_letterboxd.parquet` (produced by
+    `movies_management`, consumed by `cinema_dashboard/sources/loader.py`, `core/movie.py`,
+    `sources/discover.py`). `studio`/`country`/`language` are deliberately excluded — `_fetch_movie`
+    expands them dynamically via `**details_by_type` from whatever Letterboxd detail types a film
+    happens to carry, so they aren't guaranteed on every row. Write-validated at both cache writers:
+    `movies_management/main.py` (the user-data pipeline) and `allocine_enrichment.py`'s
+    `enrich_cache_from_showtimes`. **Two cache reads are deliberately left unvalidated** — the
+    "no existing cache, start fresh" branches in `get_letterboxd_data.get_letterboxd_data` and
+    `allocine_enrichment.enrich_cache_from_showtimes`, each inside a `try/except` whose except-branch
+    means exactly that. If validation raised there it would be swallowed by the `except` and silently
+    rebuild the entire multi-thousand-film cache from scratch — a catastrophic, expensive, silent
+    failure; the enforcement point is the write, not these reads. `ratings_with_letterboxd.parquet` /
+    `watchlist_with_letterboxd.parquet` (`movies_management/modules/utils.py`'s `save_parquet`) have no
+    contract yet — a follow-up, not covered here.
 
 ## cinema_dashboard architecture
 

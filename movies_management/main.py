@@ -32,6 +32,8 @@ import click
 import modules.get_letterboxd_data as ldm
 import pandas as pd
 from common import configure_logging
+from common.parquet_io import write_parquet_validated
+from contracts import DATA_LETTERBOXD
 from letterboxdpy.user import User
 from modules.allocine_enrichment import enrich_cache_from_showtimes
 from modules.config import Settings
@@ -190,7 +192,12 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
         ratings_slugs = set(all_movies_df.loc[all_movies_df["source"] == "ratings", "slug"])
         watchlist_slugs = set(all_movies_df.loc[all_movies_df["source"] == "watchlist", "slug"])
         data_letterboxd_df = assign_cache_source(data_letterboxd_df, ratings_slugs, watchlist_slugs)
-        data_letterboxd_df.to_parquet(letterboxd_data_output_path, index=False)
+        write_parquet_validated(
+            data_letterboxd_df,
+            letterboxd_data_output_path,
+            required_columns=DATA_LETTERBOXD.required_columns,
+            label="data_letterboxd",
+        )
 
         # === ENRICH AND EXPORT ===
         all_movies_df = merge_letterboxd_metadata(all_movies_df, data_letterboxd_df)

@@ -49,10 +49,12 @@ uv run --no-sync --directory cinema_dashboard  python orchestrate.py   # refresh
 
 # Everyday shortcuts: the root Makefile wraps the four commands above
 #   make install   → uv sync --all-packages
+#   make hooks     → install the git hooks (prek); see "Git hooks" below
 #   make run       → streamlit dashboard
 #   make orchestrate → refresh stale data (ARGS="--force" / "--days 7 …" passes flags through)
 #   make update    → git pull this repo + the external Allocine repo ($ALLOCINE_DIR)
 # The quality gates below are deliberately NOT in the Makefile — CI owns them. Run them by hand.
+# (`make hooks` only *installs* hooks; it doesn't run gates, so that rule holds.)
 
 # Lint & format (always after a code change) — config is single-sourced in the root pyproject
 uv run ruff check . --fix && uv run ruff format .
@@ -544,6 +546,22 @@ typecheck, security, test.
 - **Coverage gates:** movies 90 (97% actual), dashboard 75 (85% actual), common 90 (100%). The dashboard
   ran no gate before the merge; 75 gives buffer over its real number. The gates are deliberately slack —
   raise one only if you intend the headroom to disappear.
+- **Git hooks (`.pre-commit-config.yaml`, run by [prek](https://prek.j178.dev)) mirror CI, split by measured
+  cost:** pre-commit is ruff + `uv lock --check` + file hygiene + gitleaks (~0.5s), commit-msg is the
+  Conventional Commits check, pre-push is mypy + bandit (12.8s cold / 0.27s warm on `cinema_dashboard`).
+  Tests (~40s) and pip-audit (network) stay CI-only. Five things not to undo: **ruff/mypy/bandit are `local`
+  hooks shelling out to `uv run --no-sync`, deliberately not `astral-sh/ruff-pre-commit`** — a `rev:` would
+  be a second ruff pin beside the root pyproject's `ruff==0.16.1`, bumped by Dependabot in a *separate* PR
+  from the `uv` group, so the hook could format differently from CI until both landed; **`make hooks` passes
+  `--hook-type` explicitly** because prek does not read `default_install_hook_types`, and a bare
+  `prek install` wires up pre-commit only, silently dropping commit-msg and pre-push; **the mypy hooks set
+  `pass_filenames: false`** and re-check their whole CI area (mypy over a partial file list is unsound),
+  scoped by `files:` so you only pay for areas you touched; **`check-added-large-files` needs
+  `--maxkb=1024`** because the default 500 rejects the 739 KB `uv.lock`; and **`end-of-file-fixer` excludes
+  `cinema_dashboard/assets/provider_display_names.json`** — `sources/streaming.py`'s `json.dump` writes no
+  trailing newline, so fixing it here would add a spurious ± line to every refresh commit (see the
+  runtime-mutated-file bullet above). The `local` hooks need a synced venv, so a fresh worktree needs
+  `make install` before it can commit — the same setup step as copying `.env`.
 - **The calendar page's export mirrors its on-screen filters — now structurally, not by discipline.**
   `core.agenda.apply_filters(wl_shows, AgendaFilters(...))` applies every control *except* the day strip
   (search over both titles + directors, theater multiselect — empty selection = all theaters — runtime

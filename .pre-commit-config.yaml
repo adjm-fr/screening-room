@@ -1,0 +1,128 @@
+# Git hooks for the whole workspace. Runner: prek (https://prek.j178.dev) —
+# `make hooks` installs it. The file format is plain pre-commit, so classic
+# `pre-commit` works too; nothing here is prek-specific.
+#
+# Stages are split by measured cost, so committing stays sub-second:
+#   pre-commit  ruff + file hygiene + secrets   (~0.5s)
+#   commit-msg  Conventional Commits            (instant)
+#   pre-push    mypy + bandit                   (~13s cold, <1s warm)
+# Tests (~40s) and pip-audit (network) stay in CI only — see .github/workflows/ci.yml.
+#
+# The `local` hooks below deliberately shell out to the workspace venv instead of
+# using astral-sh/ruff-pre-commit. The root pyproject pins `ruff==0.16.1` exactly,
+# and a `rev:` here would be a SECOND version pin that Dependabot bumps in its own
+# PR — so the hook could format differently from CI until both landed. Reading
+# uv.lock makes that skew impossible, the same reason ruff/mypy config lives only
+# in the root pyproject. Cost is nil: ruff over the whole workspace is ~0.1s.
+#
+# Corollary: these need a synced venv. A fresh worktree has none — run
+# `make install` there first (alongside copying .env), or the hooks fail to spawn.
+
+repos:
+  - repo: local
+    hooks:
+      # --force-exclude matters: pre-commit passes explicit filenames, which
+      # would otherwise bypass ruff's own exclude configuration.
+      - id: ruff-check
+        name: ruff check --fix
+        entry: uv run --no-sync ruff check --force-exclude --fix
+        language: system
+        types_or: [python, pyi]
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --no-sync ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+
+      # CI's lint job runs this FIRST — the other jobs use `uv sync`, which
+      # silently re-resolves a stale lock and would mask the drift.
+      - id: uv-lock-check
+        name: uv lock --check
+        entry: uv lock --check
+        language: system
+        files: (^|/)pyproject\.toml$|^uv\.lock$
+        pass_filenames: false
+
+      # ── pre-push ────────────────────────────────────────────────────────────
+      # mypy over a partial file list is unsound, so each hook re-checks its
+      # whole CI area with pass_filenames: false. `files:` keeps you from paying
+      # for areas you didn't touch.
+      - id: mypy-packages
+        name: mypy (packages)
+        entry: uv run --no-sync mypy packages/common/src/common packages/contracts/src/contracts
+        language: system
+        files: ^packages/
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: mypy-movies
+        name: mypy (movies_management)
+        entry: uv run --no-sync --directory movies_management mypy main.py modules/
+        language: system
+        files: ^movies_management/
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: mypy-dashboard
+        name: mypy (cinema_dashboard)
+        entry: >-
+          uv run --no-sync --directory cinema_dashboard mypy
+          app.py config.py core/ sources/ integrations/ chat/ ui/ pages/ pipeline/
+          orchestrate.py backtest.py
+        language: system
+        files: ^cinema_dashboard/
+        pass_filenames: false
+        stages: [pre-push]
+
+      # Mirrors the CI security job's path list exactly. No -c flag: there is no
+      # [tool.bandit] section, and bandit errors on a config file without one.
+      - id: bandit
+        name: bandit
+        entry: >-
+          uv run --no-sync bandit -r -ll -q
+          packages/common/src packages/contracts/src
+          movies_management/main.py movies_management/modules
+          cinema_dashboard/app.py cinema_dashboard/config.py
+          cinema_dashboard/orchestrate.py cinema_dashboard/backtest.py
+          cinema_dashboard/core cinema_dashboard/sources cinema_dashboard/integrations
+          cinema_dashboard/chat cinema_dashboard/ui cinema_dashboard/pages cinema_dashboard/pipeline
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-push]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]  # keep two-space Markdown line breaks
+      - id: end-of-file-fixer
+        # orchestrate.py rewrites this file whenever TMDB returns a new provider,
+        # and sources/streaming.py's json.dump emits no trailing newline — so
+        # fixing it here just adds a spurious ± line to every refresh commit.
+        exclude: ^cinema_dashboard/assets/provider_display_names\.json$
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-case-conflict  # macOS is case-insensitive; CI's Linux runner is not
+      - id: detect-private-key
+      # *.parquet and data/ are gitignored, but one `git add -f` puts a multi-MB
+      # cache in history permanently. The default 500 would reject uv.lock (739 KB).
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+
+  # TMDB_API_KEY / GEMINI_API_KEY are real values, and the Allocine sibling repo
+  # is meant to be publishable. .env.example uses empty placeholders, so no
+  # false positives from it.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
+        args: [feat, fix, build, chore, ci, docs, perf, refactor, style, test, revert]

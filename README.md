@@ -35,6 +35,30 @@ Each member reads only the keys it declares and ignores the rest, so the one fil
 member's variables. The dashboard locates the standalone Allocine checkout via the `ALLOCINE_DIR` env var
 (defaults to a sibling of this repo).
 
+### Git hooks
+
+Optional but recommended — catches lint, type, secret and commit-message problems before CI does:
+
+```bash
+make hooks                    # installs prek + wires up the three hook stages
+```
+
+[`prek`](https://prek.j178.dev) runs `.pre-commit-config.yaml`; it's a single binary and uses `uv` for hook
+environments. The config is plain pre-commit format, so classic `pre-commit` works too.
+
+| Stage | Runs | Cost |
+| --- | --- | --- |
+| `pre-commit` | ruff check + format, `uv lock --check`, file hygiene, gitleaks | ~0.5s |
+| `commit-msg` | Conventional Commits check | instant |
+| `pre-push` | mypy (per area touched), bandit | ~13s cold, <1s warm |
+
+Tests (~40s) and `pip-audit` (needs network) stay in CI only. ruff, mypy and bandit run as `local` hooks
+against the workspace venv rather than pinned hook mirrors, so they can't drift from the versions CI uses.
+
+> **Worktrees:** hooks install into the shared git dir, so one `make hooks` covers every worktree — but the
+> `local` hooks need a venv. Run `make install` in a new worktree (alongside copying `.env`) or they'll fail
+> to spawn. Use `git commit --no-verify` to bypass in a pinch.
+
 ## Run
 
 ```bash
@@ -44,9 +68,10 @@ uv run --no-sync --directory cinema_dashboard  streamlit run app.py
 
 `--no-sync` reuses the shared venv from `uv sync --all-packages` without re-resolving to a single member.
 
-> **Shortcut:** a root `Makefile` wraps these everyday commands — `make install`, `make run`,
+> **Shortcut:** a root `Makefile` wraps these everyday commands — `make install`, `make hooks`, `make run`,
 > `make orchestrate`, and `make update` (pull this monorepo + the external Allocine repo). Run `make` on its
-> own for the full list. The quality gates below are deliberately left out of it; CI owns them.
+> own for the full list. The quality gates below are deliberately left out of it; CI owns them. (`make hooks`
+> only *installs* the git hooks, it doesn't run the gates, so that rule still holds.)
 
 ### Refresh the data
 

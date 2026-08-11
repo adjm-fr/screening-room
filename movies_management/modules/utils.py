@@ -63,13 +63,17 @@ def merge_letterboxd_metadata(all_movies_df: pd.DataFrame, data_letterboxd_df: p
 
     * ``release_year`` prefers the **cache**, which holds canonical TMDB/Letterboxd
       metadata, falling back to the user value only where the cache is null.
-    * ``source`` prefers the **user** frame, which is this run's live Letterboxd
-      state. The cache's copy is a snapshot stamped by whichever run last saw the
-      film, and a film moves ``watchlist`` -> ``ratings`` the moment it is watched.
-      It is also *absent* whenever the film's metadata fetch failed, and a left join
-      then leaves NaN — which matches neither export filter in ``main.py``, silently
-      dropping the film from both parquets. The user column is total here
+    * ``source`` prefers the **user** frame, because the cache's copy is not always
+      present. For a slug the cache *has*, the two agree by construction —
+      ``main.py`` calls :func:`assign_cache_source` immediately before this merge,
+      restamping the cache from this run's user slugs. But a film whose metadata
+      fetch failed has no cache row at all, so there is nothing to stamp: the left
+      join leaves ``NaN``, which matches neither export filter in ``main.py`` and
+      silently drops the film from *both* parquets. The user column is total
       (``build_movies_df`` stamps every row), so it is always the safe side.
+
+      Taking it here also means this function no longer depends on that ordering:
+      the export split stays correct however ``assign_cache_source`` evolves.
     """
     merged = all_movies_df.merge(data_letterboxd_df, on="slug", how="left", suffixes=("_user", ""))
     if "release_year_user" in merged.columns:

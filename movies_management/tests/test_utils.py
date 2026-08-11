@@ -97,8 +97,14 @@ def test_merge_preserves_unmatched_slug_with_nulls():
     assert result.iloc[0]["source"] == "watchlist"
 
 
-def test_merge_takes_the_live_user_source_over_the_cache_snapshot():
-    """A film watched since the last run moved watchlist -> ratings; the cache lags."""
+def test_merge_does_not_depend_on_the_cache_source_being_pre_synced():
+    """Disagreeing frames resolve to the user's value, decoupling this from call order.
+
+    ``main.py`` runs ``assign_cache_source`` just before the merge, so in practice the
+    two columns agree for any slug the cache holds — this input does not occur today.
+    The test pins the contract anyway: the export split must not silently depend on a
+    caller having restamped the cache first.
+    """
     movies = pd.DataFrame([{"slug": "slug-a", "release_year": 2020, "name": "A", "source": "ratings"}])
     cache = pd.DataFrame(
         [{"slug": "slug-a", "title": "Movie A", "release_year": 2020, "source": "watchlist", "integration_date": "2024-01-01"}]

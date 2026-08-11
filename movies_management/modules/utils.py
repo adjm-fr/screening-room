@@ -58,30 +58,32 @@ def build_movies_df(films_dict: dict, watchlist_dict: dict) -> pd.DataFrame:
 def merge_letterboxd_metadata(all_movies_df: pd.DataFrame, data_letterboxd_df: pd.DataFrame) -> pd.DataFrame:
     """Left-join user movie data with the Letterboxd metadata cache on slug.
 
-    Both frames carry a ``source`` column and they do not mean the same thing, so
-    the two overlaps below resolve in *opposite* directions — don't harmonise them:
+    Both frames carry a ``source`` column, and they do not mean the same thing: the
+    user's records which Letterboxd list the film came from and drives ``main.py``'s
+    export split, while the cache's is a write-only ingest stamp nothing reads back.
+    The cache's is therefore dropped *before* the join rather than reconciled after
+    it — otherwise ``suffixes=("_user", "")`` keeps the cache's copy under the plain
+    name and a film absent from the cache (its metadata fetch failed, so there is no
+    row for :func:`assign_cache_source` to stamp) left-joins to ``NaN``, matching
+    neither export filter and silently vanishing from *both* parquets.
 
-    * ``release_year`` prefers the **cache**, which holds canonical TMDB/Letterboxd
-      metadata, falling back to the user value only where the cache is null.
-    * ``source`` prefers the **user** frame, because the cache's copy is not always
-      present. For a slug the cache *has*, the two agree by construction —
-      ``main.py`` calls :func:`assign_cache_source` immediately before this merge,
-      restamping the cache from this run's user slugs. But a film whose metadata
-      fetch failed has no cache row at all, so there is nothing to stamp: the left
-      join leaves ``NaN``, which matches neither export filter in ``main.py`` and
-      silently drops the film from *both* parquets. The user column is total
-      (``build_movies_df`` stamps every row), so it is always the safe side.
+    Dropping it pre-merge, rather than overwriting post-merge, also keeps the export
+    split independent of call order: it stays correct however ``assign_cache_source``
+    evolves, and no stray ``source_user`` column is ever created to clean up.
 
-      Taking it here also means this function no longer depends on that ordering:
-      the export split stays correct however ``assign_cache_source`` evolves.
+    ``release_year`` overlaps too and resolves the *other* way — cache first, since
+    it holds canonical TMDB/Letterboxd metadata, falling back to the user value only
+    where the cache is null. The two are deliberately asymmetric; don't harmonise them.
     """
-    merged = all_movies_df.merge(data_letterboxd_df, on="slug", how="left", suffixes=("_user", ""))
+    merged = all_movies_df.merge(
+        data_letterboxd_df.drop(columns=["source"], errors="ignore"),
+        on="slug",
+        how="left",
+        suffixes=("_user", ""),
+    )
     if "release_year_user" in merged.columns:
         merged["release_year"] = merged["release_year"].fillna(merged["release_year_user"]).infer_objects()
         merged.drop(columns=["release_year_user"], inplace=True)
-    if "source_user" in merged.columns:
-        merged["source"] = merged["source_user"]
-        merged.drop(columns=["source_user"], inplace=True)
     for col in ("name", "integration_date"):
         if col in merged.columns:
             merged.drop(columns=[col], inplace=True)

@@ -66,6 +66,7 @@ def test_data_letterboxd_declares_the_stable_core_columns() -> None:
             "producers",
             "writers",
             "cast",
+            "composers",
             "trailer_url",
             "integration_date",
             "source",

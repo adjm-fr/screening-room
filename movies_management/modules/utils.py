@@ -56,8 +56,35 @@ def build_movies_df(films_dict: dict, watchlist_dict: dict) -> pd.DataFrame:
 
 
 def merge_letterboxd_metadata(all_movies_df: pd.DataFrame, data_letterboxd_df: pd.DataFrame) -> pd.DataFrame:
-    """Left-join user movie data with the Letterboxd metadata cache on slug."""
-    merged = all_movies_df.merge(data_letterboxd_df, on="slug", how="left", suffixes=("_user", ""))
+    """Left-join user movie data with the Letterboxd metadata cache on slug.
+
+    The cache's ``source`` is dropped before the join, because **both frames carry
+    one** and they answer different questions: the user's says which Letterboxd list
+    the film came from and drives ``main.py``'s export split, while the cache's is
+    display-only provenance (rendered in the dashboard's Tables tab) saying which
+    pipeline ingested the row — including ``allocine_showtimes`` for films the user
+    never listed.
+
+    Keeping both is not a *correctness* problem: ``main.py`` calls
+    :func:`assign_cache_source` immediately before this merge, so on the overlap the
+    two columns hold identical values and the export split is right either way. It is
+    a leak. ``suffixes=("_user", "")`` renames the user's copy to ``source_user`` and
+    keeps the cache's under the plain name, so ``main.py``'s
+    ``.drop(columns=["source"])`` removes the redundant one and lets ``source_user``
+    through into both exported parquets — where it is also rendered as a constant
+    column in the Ratings and Watchlist tables. Dropping pre-merge means no duplicate
+    is created, so there is nothing left to leak.
+
+    ``release_year`` overlaps too and resolves the *other* way — cache first, since
+    it holds canonical TMDB/Letterboxd metadata, falling back to the user value only
+    where the cache is null. The two are deliberately asymmetric; don't harmonise them.
+    """
+    merged = all_movies_df.merge(
+        data_letterboxd_df.drop(columns=["source"], errors="ignore"),
+        on="slug",
+        how="left",
+        suffixes=("_user", ""),
+    )
     if "release_year_user" in merged.columns:
         merged["release_year"] = merged["release_year"].fillna(merged["release_year_user"]).infer_objects()
         merged.drop(columns=["release_year_user"], inplace=True)

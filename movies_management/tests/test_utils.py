@@ -83,10 +83,52 @@ def test_merge_drops_integration_date_column():
 
 def test_merge_preserves_unmatched_slug_with_nulls():
     movies = pd.DataFrame([{"slug": "slug-z", "release_year": 2020, "name": "Z", "source": "watchlist"}])
-    cache = pd.DataFrame([{"slug": "slug-a", "title": "Movie A", "release_year": 2020, "integration_date": "2024-01-01"}])
+    # The real cache always carries `source` (assign_cache_source stamps it), so it
+    # must be present here: without it there is no merge collision and this fixture
+    # silently stops exercising the unmatched-slug path it exists to cover.
+    cache = pd.DataFrame(
+        [{"slug": "slug-a", "title": "Movie A", "release_year": 2020, "source": "ratings", "integration_date": "2024-01-01"}]
+    )
     result = merge_letterboxd_metadata(movies, cache)
     assert len(result) == 1
     assert pd.isna(result.iloc[0]["title"])
+    # A film absent from the cache keeps its live source, so main.py's export split
+    # still routes it to a parquet instead of dropping it from both.
+    assert result.iloc[0]["source"] == "watchlist"
+
+
+def test_merge_does_not_leak_a_source_user_column():
+    """The point of dropping the cache's source pre-merge: no duplicate to leak.
+
+    Both frames carry ``source``, so a plain merge suffixes the user's copy to
+    ``source_user`` — which ``main.py``'s ``.drop(columns=["source"])`` does not
+    remove, sending a redundant constant column into both exported parquets (and
+    into the dashboard's Ratings/Watchlist tables, which render them as-is).
+    """
+    movies = pd.DataFrame([{"slug": "slug-a", "release_year": 2020, "name": "A", "source": "ratings"}])
+    cache = pd.DataFrame(
+        [{"slug": "slug-a", "title": "Movie A", "release_year": 2020, "source": "ratings", "integration_date": "2024-01-01"}]
+    )
+    result = merge_letterboxd_metadata(movies, cache)
+    assert "source_user" not in result.columns
+    assert result.iloc[0]["source"] == "ratings"
+
+
+def test_merge_does_not_depend_on_the_cache_source_being_pre_synced():
+    """Disagreeing frames resolve to the user's value, decoupling this from call order.
+
+    ``main.py`` runs ``assign_cache_source`` just before the merge, so in practice the
+    two columns agree for any slug the cache holds — this input does not occur today.
+    The test pins the contract anyway: the export split must not silently depend on a
+    caller having restamped the cache first.
+    """
+    movies = pd.DataFrame([{"slug": "slug-a", "release_year": 2020, "name": "A", "source": "ratings"}])
+    cache = pd.DataFrame(
+        [{"slug": "slug-a", "title": "Movie A", "release_year": 2020, "source": "watchlist", "integration_date": "2024-01-01"}]
+    )
+    result = merge_letterboxd_metadata(movies, cache)
+    assert result.iloc[0]["source"] == "ratings"
+    assert "source_user" not in result.columns
 
 
 # ── reorder_columns ───────────────────────────────────────────────────────────

@@ -38,6 +38,7 @@ DATA_LETTERBOXD = ParquetContract(
             "producers",
             "writers",
             "cast",
+            "composers",
             "trailer_url",
             "integration_date",
             "source",
@@ -55,6 +56,11 @@ DATA_LETTERBOXD = ParquetContract(
         "`allocine_showtimes` (see main.py's `assign_cache_source` and "
         "allocine_enrichment's own stamp). The `liked` column carried in "
         "ratings_with_letterboxd.parquet is all-zero and unused — pulled from "
-        "letterboxdpy but never populated."
+        "letterboxdpy but never populated. `composers` is sourced from TMDB job "
+        '"Original Music Composer" only, and is legitimately null on ~26% of films '
+        "(no original score) — that null is data, not incompleteness, so it must NOT "
+        "become a backfill signal (never add it to `find_missing_cast_slugs`). Its "
+        'column presence is guaranteed regardless: `_fetch_movie` seeds `"composers": '
+        "None` on every row, TMDB credits or not."
     ),
 )

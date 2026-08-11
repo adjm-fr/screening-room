@@ -13,8 +13,9 @@ import pytest
 import respx
 from modules.get_letterboxd_data import (
     TMDB_API_URL,
+    Credits,
     _fetch_all,
-    _fetch_cast,
+    _fetch_credits,
     _fetch_french_title,
     _fetch_movie,
     _fetch_trailer,
@@ -76,20 +77,20 @@ def test_details_grouped_by_type(mocker, make_movie):
     assert result["country"] == "USA, UK"
 
 
-def test_crew_filtered_to_director_producer_writer(mocker, make_movie):
-    crew = {
-        "director": [{"name": "Jane Doe"}],
-        "producer": [{"name": "John Smith"}, {"name": "Alice"}],
-        "writer": [],
-        "editor": [{"name": "Bob"}],  # should be excluded
-    }
-    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(crew=crew))
+def test_crew_columns_left_for_tmdb_and_letterboxd_crew_ignored(mocker, make_movie):
+    """The crew columns are TMDB's job now — _fetch_movie must not read letterboxdpy's crew.
+
+    Regression guard: a MagicMock returns a truthy auto-attribute for ``movie.crew``, so
+    if the old Letterboxd extraction came back it would silently repopulate these columns
+    instead of leaving them for ``_fetch_credits``.
+    """
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie())
     result = _fetch_movie("some-slug")
     assert result is not None
-    assert result["directors"] == "Jane Doe"
-    assert result["producers"] == "John Smith, Alice"
+    assert result["directors"] is None
+    assert result["producers"] is None
     assert result["writers"] is None
-    assert "editor" not in result
+    assert result["composers"] is None
 
 
 def test_exception_returns_none(mocker):
@@ -231,16 +232,21 @@ def test_refresh_adds_columns_missing_from_target_cache(mocker):
         return_value={"slug": "slug-a", "title": "New Title", "tmdb_id": "42"},
     )
     mocker.patch("modules.get_letterboxd_data._fetch_french_title", return_value=None)
-    mocker.patch("modules.get_letterboxd_data._fetch_cast", return_value="Actor A, Actor B")
+    mocker.patch(
+        "modules.get_letterboxd_data._fetch_credits",
+        return_value=Credits(cast="Actor A, Actor B", directors="Jane Doe"),
+    )
     mocker.patch("modules.get_letterboxd_data._fetch_trailer", return_value="https://www.youtube.com/watch?v=abc123")
 
     result = refresh_letterboxd_data(df, ["slug-a"], "fake-key")
 
     assert "cast" in result.columns
     assert "trailer_url" in result.columns
+    assert "directors" in result.columns
     row = result.loc[result["slug"] == "slug-a"].iloc[0]
     assert row["cast"] == "Actor A, Actor B"
     assert row["trailer_url"] == "https://www.youtube.com/watch?v=abc123"
+    assert row["directors"] == "Jane Doe"
 
 
 # ── retry behaviour ───────────────────────────────────────────────────────────
@@ -297,44 +303,104 @@ async def test_fetch_french_title_returns_none_when_api_key_empty():
         assert await _fetch_french_title(client, "12345", "") is None
 
 
-# ── _fetch_cast (async, httpx + respx) ──────────────────────────────────────────
+# ── _fetch_credits (async, httpx + respx) ───────────────────────────────────────
+
+
+def _crew(name: str, job: str) -> dict:
+    return {"name": name, "job": job, "department": "Directing"}
 
 
 @respx.mock
-async def test_fetch_cast_truncates_to_top_8_comma_joined():
+async def test_fetch_credits_truncates_cast_to_top_8_comma_joined():
     cast = [{"name": f"Actor {i}", "order": i} for i in range(12)]
     respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"cast": cast}))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_cast(client, "12345", "fake-key")
-    assert result == ", ".join(f"Actor {i}" for i in range(8))
+        result = await _fetch_credits(client, "12345", "fake-key")
+    assert result.cast == ", ".join(f"Actor {i}" for i in range(8))
 
 
 @respx.mock
-async def test_fetch_cast_joins_all_when_fewer_than_8():
+async def test_fetch_credits_joins_all_cast_when_fewer_than_8():
     cast = [{"name": "Actor A", "order": 0}, {"name": "Actor B", "order": 1}]
     respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"cast": cast}))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_cast(client, "12345", "fake-key")
-    assert result == "Actor A, Actor B"
-
-
-async def test_fetch_cast_returns_none_when_tmdb_id_falsy():
-    async with httpx.AsyncClient() as client:
-        assert await _fetch_cast(client, None, "fake-key") is None
-        assert await _fetch_cast(client, "", "fake-key") is None
-
-
-async def test_fetch_cast_returns_none_when_api_key_empty():
-    async with httpx.AsyncClient() as client:
-        assert await _fetch_cast(client, "12345", "") is None
+        result = await _fetch_credits(client, "12345", "fake-key")
+    assert result.cast == "Actor A, Actor B"
 
 
 @respx.mock
-async def test_fetch_cast_returns_none_on_http_error():
+async def test_fetch_credits_splits_crew_by_job():
+    crew = [
+        _crew("Jane Doe", "Director"),
+        _crew("John Smith", "Producer"),
+        _crew("Alice", "Producer"),
+        _crew("Wanda", "Screenplay"),
+        _crew("Nino R.", "Original Music Composer"),
+        _crew("Bob", "Editor"),  # excluded — not a tracked job
+        _crew("Eve", "Executive Producer"),  # excluded — narrower than TMDB's producer set
+        _crew("Mary", "Novel"),  # excluded — Letterboxd keeps source-material credits separate
+        _crew("DJ Source", "Music"),  # excluded — TMDB's loose job, credits source music too
+    ]
+    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"crew": crew}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_credits(client, "12345", "fake-key")
+    assert result.directors == "Jane Doe"
+    assert result.producers == "John Smith, Alice"
+    assert result.writers == "Wanda"
+    assert result.composers == "Nino R."
+
+
+@respx.mock
+async def test_fetch_credits_joins_multiple_composers():
+    """Co-composed scores are real (Reznor/Ross, Carpenter/Lang) — ~6% of films."""
+    crew = [_crew("Trent Reznor", "Original Music Composer"), _crew("Atticus Ross", "Original Music Composer")]
+    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"crew": crew}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_credits(client, "12345", "fake-key")
+    assert result.composers == "Trent Reznor, Atticus Ross"
+
+
+@respx.mock
+async def test_fetch_credits_dedupes_person_credited_under_two_jobs():
+    """TMDB lists a person once per job, so a Writer+Screenplay credit must not double up."""
+    crew = [_crew("Ann Writer", "Writer"), _crew("Ann Writer", "Screenplay"), _crew("Zed", "Writer")]
+    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"crew": crew}))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_credits(client, "12345", "fake-key")
+    assert result.writers == "Ann Writer, Zed"
+
+
+@respx.mock
+async def test_fetch_credits_returns_none_fields_for_absent_roles():
+    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(
+        return_value=httpx.Response(200, json={"cast": [], "crew": [_crew("Jane Doe", "Director")]})
+    )
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_credits(client, "12345", "fake-key")
+    assert result.directors == "Jane Doe"
+    assert result.cast is None
+    assert result.producers is None
+    assert result.writers is None
+    assert result.composers is None
+
+
+async def test_fetch_credits_returns_empty_when_tmdb_id_falsy():
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_credits(client, None, "fake-key") == Credits()
+        assert await _fetch_credits(client, "", "fake-key") == Credits()
+
+
+async def test_fetch_credits_returns_empty_when_api_key_empty():
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_credits(client, "12345", "") == Credits()
+
+
+@respx.mock
+async def test_fetch_credits_returns_empty_on_http_error():
     respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(404))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_cast(client, "12345", "fake-key")
-    assert result is None
+        result = await _fetch_credits(client, "12345", "fake-key")
+    assert result == Credits()
 
 
 # ── _fetch_trailer (async, httpx + respx) ───────────────────────────────────────
@@ -414,13 +480,24 @@ async def test_fetch_trailer_returns_none_on_http_error():
 
 
 @respx.mock
-async def test_fetch_all_attaches_french_title(mocker, make_movie):
+async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
     movie_mock = make_movie()
     movie_mock.tmdb_id = "42"
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=movie_mock)
     respx.get(f"{TMDB_API_URL}/movie/42").mock(return_value=httpx.Response(200, json={"title": "Titre Français"}))
     respx.get(f"{TMDB_API_URL}/movie/42/credits").mock(
-        return_value=httpx.Response(200, json={"cast": [{"name": "Actor A", "order": 0}]})
+        return_value=httpx.Response(
+            200,
+            json={
+                "cast": [{"name": "Actor A", "order": 0}],
+                "crew": [
+                    _crew("Jane Doe", "Director"),
+                    _crew("John Smith", "Producer"),
+                    _crew("Wanda", "Screenplay"),
+                    _crew("Nino R.", "Original Music Composer"),
+                ],
+            },
+        )
     )
     respx.get(f"{TMDB_API_URL}/movie/42/videos").mock(
         return_value=httpx.Response(200, json={"results": [_video("fr-key", "fr")]})
@@ -431,3 +508,24 @@ async def test_fetch_all_attaches_french_title(mocker, make_movie):
     assert results[0]["french_title"] == "Titre Français"
     assert results[0]["cast"] == "Actor A"
     assert results[0]["trailer_url"] == "https://www.youtube.com/watch?v=fr-key"
+    # The crew columns now come from the same /credits round-trip as the cast.
+    assert results[0]["directors"] == "Jane Doe"
+    assert results[0]["producers"] == "John Smith"
+    assert results[0]["writers"] == "Wanda"
+    assert results[0]["composers"] == "Nino R."
+
+
+@respx.mock
+async def test_fetch_all_leaves_crew_null_without_api_key(mocker, make_movie):
+    """Without a TMDB key the crew columns are null — `directors` included."""
+    movie_mock = make_movie()
+    movie_mock.tmdb_id = "42"
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=movie_mock)
+
+    results = await _fetch_all(["some-slug"], api_key="")
+    assert results[0] is not None
+    assert results[0]["directors"] is None
+    assert results[0]["producers"] is None
+    assert results[0]["writers"] is None
+    assert results[0]["composers"] is None
+    assert results[0]["cast"] is None

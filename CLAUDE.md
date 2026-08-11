@@ -500,12 +500,30 @@ typecheck, security, test.
   the target frame.** Any new `data_letterboxd.parquet` column must be pre-seeded on the target
   (`data_df[col] = None`) before `update()`, or refreshed rows never gain it — no error, just missing
   data. Add a regression test when introducing cache columns.
-- **`cast` and `trailer_url` are TMDB-sourced cache columns** in `data_letterboxd.parquet` (not from
-  letterboxdpy): `cast` is the top-8 billed names `", "`-joined, `trailer_url` a YouTube link preferring FR
-  over EN — fetched beside `_fetch_french_title` on the same client, `None` without a `tmdb_id`. Backfill
-  is incremental: `main.py` adds missing-`cast` slugs to the refresh queue bounded by
+- **`cast`, the four crew columns, and `trailer_url` are TMDB-sourced cache columns** in
+  `data_letterboxd.parquet` (not from letterboxdpy): `_fetch_credits` fills `cast` (top-8 billed, `", "`-joined)
+  *and* `directors`/`producers`/`writers`/`composers` from **one** `/credits` round-trip, alongside `trailer_url`
+  (a YouTube link preferring FR over EN) — all fetched beside `_fetch_french_title` on the same client, `None`
+  without a `tmdb_id`. Each crew column is a job filter
+  (`_DIRECTOR_JOBS`/`_PRODUCER_JOBS`/`_WRITER_JOBS`/`_COMPOSER_JOBS`), deduped because
+  TMDB lists a person once *per job*. `_COMPOSER_JOBS` is `{"Original Music Composer"}` only: TMDB's looser
+  `Music` job would take coverage from 74% to 86% (pre-1950: 67% → 84%) but also credits *source* music on
+  films with no original score (*Ariel* returns six names ending in Tchaikovsky), so precision won — the same
+  call as `_PRODUCER_JOBS`. `Composer` is not a job string TMDB uses. **`composers` is legitimately null ~26% of
+  the time, so it is NOT a valid backfill signal** the way `cast` is — don't add it to `find_missing_cast_slugs`
+  or a quarter of the cache would re-refresh every run forever, burning the 1000-slug budget. Two calibration notes, measured on a 250-film sample of the real cache:
+  writers use `job in {Writer, Screenplay}` because the wider `department == "Writing"` sweeps in Novel/Story
+  credits Letterboxd keeps separate (46% vs 80% agreement with the cached strings); `producers` is deliberately
+  just `Producer`, so it is *narrower* than the old Letterboxd list (50.8% exact agreement — it drops
+  line/associate/executive producers) and that column visibly changed content at the swap. `directors` matched
+  98.4% exactly and **100% under the token-containment rule** `_directors_overlap` applies, which is what made
+  the swap safe for the watchlist↔showtimes join.
+  **Corollary: without `TMDB_API_KEY`, `directors` is now null**, which silently guts the taste ranker's
+  highest-weighted dimension *and* the join's director confirmation — `main.py` warns about this at startup.
+  Backfill is incremental: `main.py` adds missing-`cast` slugs to the refresh queue bounded by
   `letterboxd_refresh_limit` (1000/run), so a large cache converges over 2–3 runs; `--reset_database` is
-  the escape hatch.
+  the escape hatch. Until it converges the cache holds a *mix* of Letterboxd- and TMDB-spelled crew, so a
+  director carrying a Letterboxd disambiguation suffix (`Kirk Jones (II)`) briefly scores as two affinity keys.
 - **Showtimes datetimes are naive Paris wall-clock.** The Allocine scraper emits no timezone;
   `data_loader.future_showtimes` anchors "now" to `Europe/Paris` accordingly. Other contract quirks:
   `runtime` is a raw string (`"1h 52min"`), `director` may be `" | "`-joined, `release_year` is nullable

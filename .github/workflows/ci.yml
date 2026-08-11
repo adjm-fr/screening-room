@@ -14,7 +14,7 @@ concurrency:
 
 # One workflow for the whole workspace — replaces the near-identical lint/
 # typecheck/security/test jobs that were duplicated across the two former repos.
-# ruff/mypy config and dev tooling versions are single-sourced (root pyproject +
+# ruff/mypy/ty config and dev tooling versions are single-sourced (root pyproject +
 # uv.lock), so every job here uses exactly the same toolchain.
 
 jobs:
@@ -46,6 +46,21 @@ jobs:
       - run: uv run --no-sync mypy packages/common/src/common packages/contracts/src/contracts
       - run: uv run --no-sync --directory movies_management mypy main.py modules/
       - run: uv run --no-sync --directory cinema_dashboard mypy app.py config.py core/ sources/ integrations/ chat/ ui/ pages/ pipeline/ orchestrate.py backtest.py
+      # Advisory only: mypy above is the gate. ty is pre-1.0, so a diagnostic
+      # change on a version bump must not be able to redden the build. One
+      # invocation covers every area the three mypy runs do. Promote it to
+      # blocking (and drop `continue-on-error`) once it reaches 1.0 and has run
+      # clean here for a while; see the note in the root pyproject.
+      - name: ty (advisory)
+        continue-on-error: true
+        run: >
+          uv run --no-sync ty check
+          packages/common/src/common packages/contracts/src/contracts
+          movies_management/main.py movies_management/modules
+          cinema_dashboard/app.py cinema_dashboard/config.py cinema_dashboard/core
+          cinema_dashboard/sources cinema_dashboard/integrations cinema_dashboard/chat
+          cinema_dashboard/ui cinema_dashboard/pages cinema_dashboard/pipeline
+          cinema_dashboard/orchestrate.py cinema_dashboard/backtest.py
 
   security:
     runs-on: ubuntu-latest

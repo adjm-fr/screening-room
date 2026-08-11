@@ -70,6 +70,16 @@ uv run --no-sync mypy packages/common/src/common packages/contracts/src/contract
 uv run --no-sync --directory movies_management mypy main.py modules/
 uv run --no-sync --directory cinema_dashboard  mypy app.py config.py core/ sources/ integrations/ chat/ ui/ pages/ pipeline/ orchestrate.py backtest.py
 
+# ty (Astral) runs beside mypy, NON-BLOCKING in CI while it is pre-1.0 — mypy is still
+# the gate. One invocation covers every area the three above do (~0.2s vs mypy's ~22s).
+uv run --no-sync ty check \
+  packages/common/src/common packages/contracts/src/contracts \
+  movies_management/main.py movies_management/modules \
+  cinema_dashboard/app.py cinema_dashboard/config.py cinema_dashboard/core \
+  cinema_dashboard/sources cinema_dashboard/integrations cinema_dashboard/chat \
+  cinema_dashboard/ui cinema_dashboard/pages cinema_dashboard/pipeline \
+  cinema_dashboard/orchestrate.py cinema_dashboard/backtest.py
+
 # Security: bandit on source; pip-audit on SHIPPED runtime deps only
 uv run --no-sync bandit -r -ll packages/common/src packages/contracts/src \
   movies_management/main.py movies_management/modules \
@@ -99,7 +109,7 @@ uv run --no-sync --directory cinema_dashboard  python backtest.py --sweep
 ```
 
 CI (`.github/workflows/ci.yml`) runs four jobs for the whole workspace: lint (incl. `uv lock --check`),
-typecheck, security, test.
+typecheck (mypy blocking + ty advisory), security, test.
 
 ## Shared packages
 
@@ -662,9 +672,19 @@ typecheck, security, test.
 ## Conventions
 
 - Python 3.13+, `uv` for everything. Line length 130, ruff rules `E/W/F/I/UP`, mypy `ignore_missing_imports`.
-- ruff + mypy config live ONLY in the root `pyproject.toml`. Each member keeps its own
+- **Two type checkers, one gate.** mypy is authoritative; `ty` runs beside it in CI with
+  `continue-on-error` because it is pre-1.0 (pinned exactly, `ty==0.0.70`) and a diagnostic change on a
+  version bump must not redden the build. It needs no config — the Python version comes from
+  `requires-python` and it resolves `cinema_dashboard`'s bare-name layer imports (`core.taste`,
+  `sources.loader`) from the file's own directory, so no `extra-paths`. Two differences to know before
+  promoting it: it has **no `ignore_missing_imports` equivalent** (an unresolvable import is an error —
+  stricter than mypy here, which silently swallows a misspelled third-party import), and it infers pandas
+  types far more precisely, which is what `core.agenda._as_date` and `common.parquet_io.StrPath` exist to
+  satisfy. It is deliberately **not** a pre-push hook: a hook either blocks or does nothing, with no
+  advisory mode. Keep new code passing both.
+- ruff + mypy config live ONLY in the root `pyproject.toml` (ty needs none). Each member keeps its own
   `[tool.pytest.ini_options]` (pythonpath/markers/asyncio/filterwarnings differ) and `filterwarnings=["error"]`.
-- The shared dev toolchain (ruff, mypy, bandit, pytest*, pip-audit, ipykernel) is the root `dev` group; only
+- The shared dev toolchain (ruff, mypy, ty, bandit, pytest*, pip-audit, ipykernel) is the root `dev` group; only
   `cinema_dashboard` carries member-specific dev deps (the `deepeval`/`langchain`/`llama-index` eval tooling).
 - `uv.lock` and this `CLAUDE.md` are committed (single reproducible workspace lock, and shared guidance for
   every worktree/checkout); `.env` stays gitignored (secrets).

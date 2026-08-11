@@ -10,10 +10,16 @@ parquet is missing one.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from pathlib import Path
 
 import pandas as pd
+
+#: Anything usable as a filesystem path. Deliberately wider than ``str | Path``:
+#: callers such as ``movies_management.modules.allocine_enrichment`` declare their
+#: own path parameters as ``str | os.PathLike``, which is not assignable to ``Path``.
+StrPath = str | os.PathLike[str]
 
 
 class SchemaValidationError(ValueError):
@@ -28,7 +34,7 @@ def _check(df: pd.DataFrame, required: Iterable[str], label: str) -> None:
 
 
 def read_parquet_validated(
-    path: str | Path,
+    path: StrPath,
     *,
     required_columns: Iterable[str] | None = None,
     label: str = "parquet",
@@ -42,7 +48,7 @@ def read_parquet_validated(
 
 def write_parquet_validated(
     df: pd.DataFrame,
-    path: str | Path,
+    path: StrPath,
     *,
     required_columns: Iterable[str] | None = None,
     label: str = "parquet",

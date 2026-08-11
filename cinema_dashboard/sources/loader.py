@@ -420,8 +420,12 @@ def coerce_str_list(value: object) -> list[str]:
         return []
     if isinstance(value, (list, tuple)):
         return [str(v) for v in value if v]
-    if hasattr(value, "tolist"):
-        return [str(v) for v in value.tolist() if v]  # type: ignore[union-attr]
+    # ``getattr`` + ``callable`` rather than ``hasattr`` + a direct call: the latter
+    # narrows nothing, so the call reads as an attribute on ``object``. Same coverage
+    # (any ``.tolist()``-bearing array, not just ``np.ndarray``), no type suppression.
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        return [str(v) for v in tolist() if v]
     return []
 
 

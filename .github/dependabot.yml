@@ -18,3 +18,16 @@ updates:
       # once an upstream release is verified to run the dashboard on macOS.
       - dependency-name: "pyarrow"
         versions: [">=25.0.0"]
+
+  # Keeps the pinned `rev:`s in .pre-commit-config.yaml current. Only the
+  # upstream hooks appear here — ruff/mypy/bandit run as `local` hooks off the
+  # workspace venv, so they are already covered by the `uv` group above and have
+  # no rev to bump.
+  - package-ecosystem: pre-commit
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      pre-commit:
+        patterns:
+          - "*"

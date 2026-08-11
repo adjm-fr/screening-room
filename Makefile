@@ -16,7 +16,7 @@ ALLOCINE_DIR ?= ../Allocine-Showtimes-Scraping
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help install run orchestrate update
+.PHONY: help install hooks run orchestrate update
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -24,6 +24,15 @@ help: ## Show this help
 
 install: ## Sync the whole workspace into one shared .venv
 	uv sync --all-packages
+
+# Installs the hooks; it does not run the gates, so the "CI owns the gates" rule
+# above still holds. The --hook-type flags are load-bearing: prek does not read
+# `default_install_hook_types`, so a bare `prek install` wires up pre-commit only
+# and the commit-msg + pre-push hooks would silently never fire.
+hooks: ## Install the git hooks (prek) — run once per clone
+	uv tool install --quiet prek
+	uv tool run prek install \
+		--hook-type pre-commit --hook-type commit-msg --hook-type pre-push
 
 run: ## Launch the Streamlit dashboard
 	uv run --no-sync --directory cinema_dashboard streamlit run app.py

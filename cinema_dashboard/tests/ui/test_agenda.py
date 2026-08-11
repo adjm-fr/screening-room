@@ -11,9 +11,9 @@ import datetime as dt
 
 import pandas as pd
 
-from core.agenda import AgendaDay, AgendaEntry, AgendaShowtime
+from core.agenda import AgendaDay, AgendaEntry, AgendaShowtime, DayChip
 from core.taste import TasteProfile
-from ui.agenda import _agenda_row_html, agenda_day_html, render_agenda
+from ui.agenda import CHIP_STRIP_CONTAINER_PREFIX, _agenda_row_html, agenda_day_html, render_agenda, render_day_strip
 
 
 def _make_profile() -> TasteProfile:
@@ -250,3 +250,36 @@ def test_render_agenda_emits_one_markdown_call_per_day(mocker):
     markdown = mocker.patch("ui.agenda.st.markdown")
     render_agenda([_day([_entry()]), _day([_entry()], label="Tomorrow", is_today=False)])
     assert markdown.call_count == 2
+
+
+# ── render_day_strip ─────────────────────────────────────────────────────────
+
+
+def test_render_day_strip_wraps_the_control_in_the_chip_strip_container(mocker):
+    """The CSS that stops a wrapped chip from stretching selects on this container."""
+    container = mocker.patch("ui.agenda.st.container")
+    mocker.patch("ui.agenda.st.segmented_control", return_value="all")
+    render_day_strip([DayChip(day=None, label="All", count=3)], key="cal_day")
+    container.assert_called_once_with(key=f"{CHIP_STRIP_CONTAINER_PREFIX}cal_day")
+
+
+def test_render_day_strip_container_key_follows_the_widget_key(mocker):
+    """Two pages mount this strip in one session, so the container key namespaces too."""
+    container = mocker.patch("ui.agenda.st.container")
+    mocker.patch("ui.agenda.st.segmented_control", return_value="all")
+    render_day_strip([DayChip(day=None, label="All", count=1)], key="paris_day")
+    container.assert_called_once_with(key=f"{CHIP_STRIP_CONTAINER_PREFIX}paris_day")
+
+
+def test_render_day_strip_of_nothing_mounts_no_container(mocker):
+    container = mocker.patch("ui.agenda.st.container")
+    render_day_strip([])
+    container.assert_not_called()
+
+
+def test_render_day_strip_is_content_width_not_stretched(mocker):
+    """width="stretch" blows the chips left alone on a wrapped line up to full width."""
+    mocker.patch("ui.agenda.st.container")
+    control = mocker.patch("ui.agenda.st.segmented_control", return_value="all")
+    render_day_strip([DayChip(day=None, label="All", count=3)], key="cal_day")
+    assert control.call_args.kwargs["width"] == "content"

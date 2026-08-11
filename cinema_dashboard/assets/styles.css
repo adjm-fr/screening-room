@@ -343,6 +343,23 @@ html, body, .stMarkdown, .stText {
 .agenda-row--cat-second-chance { box-shadow: inset 2px 0 0 rgba(230, 126, 34, 0.55); }
 .agenda-row--cat-rewatch { box-shadow: inset 2px 0 0 rgba(46, 125, 50, 0.55); }
 
+/* Wrapping chip strips ---------------------------------------------------- */
+
+/* The day strip is a segmented control with one option per day in the data, so
+ * it wraps onto several lines. Its chips are kept content-width in Python
+ * (width="content" — see ui.agenda.CHIP_STRIP_CONTAINER_PREFIX for why stretch
+ * is wrong there); this only adds breathing room between the wrapped lines,
+ * which otherwise sit flush against each other.
+ *
+ * Scoped to containers keyed with that prefix (st.container(key=X) emits
+ * .st-key-X) rather than to every stButtonGroup: every other segmented control
+ * here (the lens strip, Sort, Agenda/Map) is single-line and stretched, and
+ * wants no extra row spacing. */
+[class*="st-key-chipstrip-"] [data-testid="stButtonGroup"] {
+  flex-wrap: wrap;
+  row-gap: 0.4rem;
+}
+
 /* Hero card --------------------------------------------------------------- */
 
 .hero-card {

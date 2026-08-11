@@ -214,6 +214,11 @@ def _render_lens_strip(narrowed: pd.DataFrame) -> str:
     total = int(narrowed["_film_key"].nunique())
     labels = {LENS_ALL: f"All · {_films(total)}"}
     labels |= {lens: f"{LENS_LABELS[lens]} · {_films(n)}" for lens, n in counts.items()}
+    # Stretched, unlike the day strip: this strip holds at most four options, so
+    # it fills one line rather than wrapping, and Streamlit's default full-width
+    # segmented control is the look we want. The day strip has to opt out of it
+    # (see ui.agenda.CHIP_STRIP_CONTAINER_PREFIX) only because its option count
+    # grows with the data until it wraps.
     selection = st.segmented_control(
         "Lens",
         options=list(labels),

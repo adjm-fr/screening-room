@@ -54,6 +54,23 @@ from ui.theme import format_runtime, movie_href, row_slug
 #: indistinguishable from "nothing selected" in the widget's return value.
 DAY_ALL = "all"
 
+#: Container-key prefix marking the day strip as a *wrapping* chip strip.
+#: ``st.container(key=X)`` emits a ``st-key-X`` class, so the stylesheet can
+#: select it (``[class*="st-key-chipstrip-"]``) to space the wrapped lines
+#: apart.
+#:
+#: The day strip takes ``width="content"`` (the widget default), **not**
+#: ``width="stretch"``: stretch makes each chip grow to fill its line, which
+#: looks deliberate while they all fit on one — and then, the moment the strip
+#: wraps, blows whatever lands alone on the last line up to the full page width
+#: (a single "Mon 24" chip as wide as the screen). This strip's option count is
+#: one per day in the data, so it *will* wrap.
+#:
+#: Every other segmented control on both pages keeps the stretched default:
+#: the Paris lens strip holds at most four options and the Sort and Agenda/Map
+#: controls two, so none of them wrap, and filling the width is the look there.
+CHIP_STRIP_CONTAINER_PREFIX = "chipstrip-"
+
 #: Lens-category badges, keyed by the exact ``_category`` values
 #: ``pages.paris.categorize`` emits → (CSS slug, glyph, label). The glyph and
 #: text ride together so the tint never carries the meaning alone (WCAG 1.4.1),
@@ -183,21 +200,26 @@ def render_day_strip(chips: list[DayChip], *, key: str = "cal_day") -> date | No
     any *other* filter can delete the day that is currently selected. Anything
     that does not resolve to an offered option falls back to "all" — showing the
     user every screening beats showing them an empty agenda.
+
+    Sized ``width="content"`` and wrapped in a
+    :data:`CHIP_STRIP_CONTAINER_PREFIX` container — see that constant for why
+    this strip must not stretch.
     """
     if not chips:
         return None
 
     by_value = {(DAY_ALL if chip.day is None else chip.day.isoformat()): chip for chip in chips}
-    selection = st.segmented_control(
-        "Day",
-        options=list(by_value),
-        selection_mode="single",
-        default=DAY_ALL,
-        format_func=lambda value: f"{by_value[value].label} · {by_value[value].count}",
-        key=key,
-        label_visibility="collapsed",
-        width="stretch",
-    )
+    with st.container(key=f"{CHIP_STRIP_CONTAINER_PREFIX}{key}"):
+        selection = st.segmented_control(
+            "Day",
+            options=list(by_value),
+            selection_mode="single",
+            default=DAY_ALL,
+            format_func=lambda value: f"{by_value[value].label} · {by_value[value].count}",
+            key=key,
+            label_visibility="collapsed",
+            width="content",
+        )
     if not isinstance(selection, str) or selection not in by_value or selection == DAY_ALL:
         return None
     try:

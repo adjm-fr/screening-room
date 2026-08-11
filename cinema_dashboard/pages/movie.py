@@ -70,10 +70,15 @@ _DIMENSION_LABELS = {
 }
 
 #: Credit fields rendered as a plain "label — value" list, in billing order.
+#: ``composers`` sits with the rest of the crew, above the studio and the performers. It is
+#: null for ~21% of the cache by design — films with no original score, since
+#: ``movies_management``'s ``_COMPOSER_JOBS`` takes only TMDB's "Original Music Composer" —
+#: which the omit-when-null rule in :func:`_render_credits` already covers.
 _CREDIT_FIELDS = (
     ("directors", "Director"),
     ("writers", "Writer"),
     ("producers", "Producer"),
+    ("composers", "Composer"),
     ("studio", "Studio"),
     ("cast", "Cast"),
 )
@@ -230,7 +235,7 @@ def _render_match(movie: pd.Series, profile: TasteProfile | None) -> None:
 
 
 def _render_credits(movie: pd.Series) -> None:
-    """Directors, writers, producers, studio and billed cast — each row omitted when null."""
+    """Directors, writers, producers, composers, studio and billed cast — each row omitted when null."""
     rows = [(label, _text(movie, column)) for column, label in _CREDIT_FIELDS]
     present = [(label, value) for label, value in rows if value]
     if not present:

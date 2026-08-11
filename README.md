@@ -54,6 +54,7 @@ environments. The config is plain pre-commit format, so classic `pre-commit` wor
 
 Tests (~40s) and `pip-audit` (needs network) stay in CI only. ruff, mypy and bandit run as `local` hooks
 against the workspace venv rather than pinned hook mirrors, so they can't drift from the versions CI uses.
+`ty` is not a hook: it's advisory in CI, and a hook has no non-blocking mode.
 
 > **Worktrees:** hooks install into the shared git dir, so one `make hooks` covers every worktree — but the
 > `local` hooks need a venv. Run `make install` in a new worktree (alongside copying `.env`) or they'll fail
@@ -103,6 +104,15 @@ uv run ruff check . --fix && uv run ruff format .
 uv run --no-sync mypy packages/common/src/common packages/contracts/src/contracts
 uv run --no-sync --directory movies_management mypy main.py modules/
 uv run --no-sync --directory cinema_dashboard  mypy app.py config.py core/ sources/ integrations/ chat/ ui/ pages/ pipeline/ orchestrate.py backtest.py
+# ty runs beside mypy, non-blocking (`continue-on-error`) while it is pre-1.0 —
+# mypy stays the gate. One invocation covers every area the three above do, in ~0.2s.
+uv run --no-sync ty check \
+  packages/common/src/common packages/contracts/src/contracts \
+  movies_management/main.py movies_management/modules \
+  cinema_dashboard/app.py cinema_dashboard/config.py cinema_dashboard/core \
+  cinema_dashboard/sources cinema_dashboard/integrations cinema_dashboard/chat \
+  cinema_dashboard/ui cinema_dashboard/pages cinema_dashboard/pipeline \
+  cinema_dashboard/orchestrate.py cinema_dashboard/backtest.py
 uv run --no-sync bandit -r -ll packages/common/src packages/contracts/src \
   movies_management/main.py movies_management/modules \
   cinema_dashboard/app.py cinema_dashboard/config.py cinema_dashboard/orchestrate.py cinema_dashboard/backtest.py \

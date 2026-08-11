@@ -17,6 +17,10 @@ contracts = { workspace = true }
 dev = [
     "ruff==0.16.1",
     "mypy>=2.3.0",
+    # Advisory second type checker, non-blocking in CI while it is pre-1.0 — see
+    # the `ty` note under [tool.mypy] below. Pinned exactly (like ruff and bandit)
+    # because a 0.0.x bump can change diagnostics without a stability guarantee.
+    "ty==0.0.70",
     "bandit==1.9.4",
     "pytest>=9.1.1",
     "pytest-mock>=3.15.1",
@@ -49,3 +53,16 @@ known-first-party = ["chat", "config", "core", "integrations", "pages", "pipelin
 [tool.mypy]
 python_version = "3.13"
 ignore_missing_imports = true
+
+# ty (Astral's checker) runs beside mypy in CI, non-blocking. mypy stays the gate:
+# ty is pre-1.0 and makes no stability promise yet. It needs no config here — the
+# Python version comes from `requires-python`, and it resolves each member's
+# bare-name imports (`core.taste`, `sources.loader`) from the file's own project
+# directory, so no `extra-paths` is required. Two behavioural differences worth
+# knowing before promoting it to the gate:
+#   - It has no `ignore_missing_imports` equivalent; an unresolvable import is an
+#     error. That is stricter than the setting above, which silently swallows a
+#     misspelled third-party import. The workspace currently has none.
+#   - It infers pandas types more precisely, so it reports narrowing gaps mypy
+#     accepts (see the `_as_date` / `StrPath` helpers added for exactly that).
+# One invocation covers every area; ~0.2s against mypy's ~22s.

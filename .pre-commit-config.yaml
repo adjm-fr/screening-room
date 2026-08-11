@@ -48,6 +48,9 @@ repos:
       # mypy over a partial file list is unsound, so each hook re-checks its
       # whole CI area with pass_filenames: false. `files:` keeps you from paying
       # for areas you didn't touch.
+      # ty is deliberately NOT here: it is advisory (non-blocking) in CI, and a
+      # hook has no such mode — it either blocks the push or does nothing. Add it
+      # when it is promoted to a blocking gate, not before.
       - id: mypy-packages
         name: mypy (packages)
         entry: uv run --no-sync mypy packages/common/src/common packages/contracts/src/contracts

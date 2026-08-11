@@ -47,7 +47,10 @@ def screening_end(row: pd.Series, showtime: pd.Timestamp) -> pd.Timestamp:
         runtime_min = int(float(runtime)) if runtime and not pd.isna(runtime) else 120
     except (ValueError, TypeError):
         runtime_min = 120
-    return showtime + pd.Timedelta(minutes=_ads_minutes(row.get("theater_name")) + runtime_min)
+    end = showtime + pd.Timedelta(minutes=_ads_minutes(row.get("theater_name")) + runtime_min)
+    # Arithmetic on a ``NaT`` showtime propagates ``NaT``; hand that back unchanged
+    # rather than pretending the block has an end (``pd.NaT`` is not a ``Timestamp``).
+    return end if isinstance(end, pd.Timestamp) else showtime
 
 
 def _summary_of(row: pd.Series) -> str:

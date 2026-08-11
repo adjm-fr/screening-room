@@ -42,7 +42,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Literal
 
 import pandas as pd
@@ -157,6 +157,26 @@ def day_chip_label(day: date) -> str:
     glibc/BSD ``strftime`` extension and not portable.
     """
     return f"{day:%a} {day.day}"
+
+
+def _as_date(value: object) -> date | None:
+    """Coerce a ``_day`` groupby key into a ``date``, or ``None`` if it isn't one.
+
+    ``groupby`` keys are typed ``Hashable`` and, because every ``_day`` grouping
+    here passes ``dropna=False``, a null ``_day`` surfaces as a ``NaT``/``NaN``
+    key rather than being dropped. That key would reach ``day_chip_label``'s
+    ``%a`` formatting and raise, so both callers skip whatever this rejects.
+    """
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        timestamp = pd.Timestamp(str(value))
+    except ValueError:
+        return None
+    # ``pd.NaT`` is not a ``Timestamp`` instance, so this rejects null keys too.
+    return timestamp.date() if isinstance(timestamp, pd.Timestamp) else None
 
 
 def _film_key_series(df: pd.DataFrame) -> pd.Series:
@@ -314,7 +334,10 @@ def day_chips(df: pd.DataFrame) -> list[DayChip]:
         return []
     counts = df.groupby("_day", sort=True, dropna=False).size()
     chips = [DayChip(day=None, label="All", count=int(len(df)))]
-    chips.extend(DayChip(day=day, label=day_chip_label(day), count=int(n)) for day, n in counts.items())
+    for key, n in zip(counts.index, counts.to_numpy(), strict=True):
+        day = _as_date(key)
+        if day is not None:
+            chips.append(DayChip(day=day, label=day_chip_label(day), count=int(n)))
     return chips
 
 
@@ -405,7 +428,9 @@ def build_agenda(
         else:
             entries.sort(key=lambda e: (e.earliest, str(e.row.get("_film_key", ""))))
 
-        day_value = pd.Timestamp(str(day)).date() if not isinstance(day, date) else day
+        day_value = _as_date(day)
+        if day_value is None:
+            continue
         days.append(
             AgendaDay(
                 day=day_value,

@@ -221,11 +221,14 @@ def _render_map(filtered: pd.DataFrame, theaters_csv: object) -> None:
     except Exception as exc:
         st.warning(f"Geocoding unavailable: {exc}")
         return
-    counts = (
-        filtered.groupby("theater_id").size().rename("count").reset_index()
-        if "theater_id" in filtered.columns
-        else pd.DataFrame(columns=["theater_id", "count"])
-    )
+    # Built column-wise rather than via ``.size().rename("count").reset_index()``:
+    # ``DataFrameGroupBy.size`` is typed ``DataFrame | Series``, and ``rename`` on the
+    # DataFrame arm takes no positional string, so the chained form matches no overload.
+    if "theater_id" in filtered.columns:
+        sizes = filtered.groupby("theater_id").size()
+        counts = pd.DataFrame({"theater_id": sizes.index, "count": sizes.to_numpy()})
+    else:
+        counts = pd.DataFrame(columns=["theater_id", "count"])
     merged = geo.merge(counts, left_on="id", right_on="theater_id", how="left").fillna({"count": 0})
     merged = merged[merged["count"] > 0]
     render_theater_map(merged, count_col="count", popup_col="name")

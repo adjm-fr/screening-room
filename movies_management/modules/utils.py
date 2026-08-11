@@ -58,18 +58,22 @@ def build_movies_df(films_dict: dict, watchlist_dict: dict) -> pd.DataFrame:
 def merge_letterboxd_metadata(all_movies_df: pd.DataFrame, data_letterboxd_df: pd.DataFrame) -> pd.DataFrame:
     """Left-join user movie data with the Letterboxd metadata cache on slug.
 
-    Both frames carry a ``source`` column, and they do not mean the same thing: the
-    user's records which Letterboxd list the film came from and drives ``main.py``'s
-    export split, while the cache's is a write-only ingest stamp nothing reads back.
-    The cache's is therefore dropped *before* the join rather than reconciled after
-    it — otherwise ``suffixes=("_user", "")`` keeps the cache's copy under the plain
-    name and a film absent from the cache (its metadata fetch failed, so there is no
-    row for :func:`assign_cache_source` to stamp) left-joins to ``NaN``, matching
-    neither export filter and silently vanishing from *both* parquets.
+    The cache's ``source`` is dropped before the join, because **both frames carry
+    one** and they answer different questions: the user's says which Letterboxd list
+    the film came from and drives ``main.py``'s export split, while the cache's is
+    display-only provenance (rendered in the dashboard's Tables tab) saying which
+    pipeline ingested the row — including ``allocine_showtimes`` for films the user
+    never listed.
 
-    Dropping it pre-merge, rather than overwriting post-merge, also keeps the export
-    split independent of call order: it stays correct however ``assign_cache_source``
-    evolves, and no stray ``source_user`` column is ever created to clean up.
+    Keeping both is not a *correctness* problem: ``main.py`` calls
+    :func:`assign_cache_source` immediately before this merge, so on the overlap the
+    two columns hold identical values and the export split is right either way. It is
+    a leak. ``suffixes=("_user", "")`` renames the user's copy to ``source_user`` and
+    keeps the cache's under the plain name, so ``main.py``'s
+    ``.drop(columns=["source"])`` removes the redundant one and lets ``source_user``
+    through into both exported parquets — where it is also rendered as a constant
+    column in the Ratings and Watchlist tables. Dropping pre-merge means no duplicate
+    is created, so there is nothing left to leak.
 
     ``release_year`` overlaps too and resolves the *other* way — cache first, since
     it holds canonical TMDB/Letterboxd metadata, falling back to the user value only

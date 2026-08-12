@@ -126,6 +126,19 @@ SENTIMENT_PIVOT = 2.25
 # Letterboxd vocabulary, split upstream by the scraper's "type" field) to lift
 # coverage — plain themes are missing on ~35% of watchlist rows. The decade
 # dimension is derived from release_year and handled separately.
+#
+# `composers` is deliberately NOT a dimension here. Evaluated Aug 2026, once the
+# TMDB credits swap made the column available: it does carry standalone signal
+# (held-out spearman 0.393 on its own — above genres' 0.254, below cast's 0.453),
+# but it mostly restates `directors`, which already carries weight 1.0. Per-film
+# composer and director scores correlate at pearson 0.61 on held-out films where
+# both fire (persistent director↔composer pairings), and it covers only 81% of
+# rated films against directors' 100%. Adding it degrades the blend monotonically
+# above weight 0.1 (Δspearman −0.0003 at 0.2, −0.014 at 0.8), and even on the
+# slice where its collinearity with directors is weakest — held-out films whose
+# director the profile has never seen, ~207 of ~824 per split — it is a coin flip
+# (Δspearman +0.0015, 11/20 splits). Don't plug it in; the column's home is the
+# detail page's Credits block, not the ranker.
 _DIM_COLUMNS: dict[str, tuple[str, ...]] = {
     "directors": ("directors",),
     "genres": ("genres",),

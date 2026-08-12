@@ -168,7 +168,7 @@ def snapshot(row: Mapping[str, object] | pd.Series) -> dict[str, object]:
     """The :data:`CART_SNAPSHOT_FIELDS` of one screening row, JSON-safe.
 
     A snapshot, and it stays one. CLAUDE.md's "anything persisting a row snapshot
-    must re-resolve it at render time" rule (``chat.ui.resolve_pin``) does **not**
+    must re-resolve it at render time" rule (``chat.pins.resolve_pin``) does **not**
     transfer here, for two reasons worth stating so nobody bolts it on: a pin is a
     *film* kept indefinitely, whose frozen shape drifts as cache columns are added
     over months, whereas a cart item is a *screening* pruned the moment it starts,

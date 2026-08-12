@@ -151,7 +151,7 @@ typecheck (mypy blocking + ty advisory), security, test.
     hand-written list per entry point was the weak link — add a fourth credential and nothing
     fails or warns, its value just starts appearing in the logs.
     `common.reveal(secret)` unwraps the optional ones at the wire boundary (`app.py`,
-    `orchestrate.py`, `chat/ui.py`, `pipeline/resources.py`). **Never `str()` a `SecretStr` to pass it on** —
+    `orchestrate.py`, `chat/transport.py`, `pipeline/resources.py`). **Never `str()` a `SecretStr` to pass it on** —
     that yields the literal mask and buys a silent 401 instead of a crash; `pipeline/resources.py`
     does it correctly beside four neighbours that *are* plain `str()` calls. `bool()` still tracks
     emptiness, so the `if not settings.tmdb_api_key` guards kept working across the switch.
@@ -254,16 +254,27 @@ typecheck (mypy blocking + ty advisory), security, test.
   rail. The watchlist alone leaves a median ~99 candidates per film (limit is 12), and the ~19% of films it
   empties fall through to the omit-the-section rule. `watchlist_slugs=None` (no watchlist parquet) means
   "don't filter"; an empty set is a real empty watchlist and correctly yields no rail.
-- **The Gemini chat assistant has two surfaces, one state.** `chat/ui.py` owns the LLM transport and
-  UI (`render_chat()`); context assembly (`ChatContext`, `build_chat_context()`, the system prompt) lives
+- **The Gemini chat assistant has two surfaces, one state, and five modules.** `chat/transport.py` owns the
+  Gemini round-trip (the tool declarations, `_run_tool`'s dispatch, `_ask_gemini`'s bounded loop);
+  `chat/pins.py` the *pure* pinned-recommendation logic (`resolve_pin`, `_find_pinnable_titles`,
+  `_pin_candidates`); `chat/ui.py` only `render_chat()` and the surface it draws. Context assembly
+  (`ChatContext`, `build_chat_context()`, the system prompt) lives
   in `chat/prompt.py`, and conversation state + disk persistence (`ChatState`, `save_chat_state()` /
-  `load_chat_state()` / `delete_chat_state()`) lives in `chat/state.py`. **`chat/__init__.py` re-exports
+  `load_chat_state()` / `delete_chat_state()`) lives in `chat/state.py`. Transport and pins were split out
+  of a 639-line `chat/ui.py` in Aug 2026; the tests mirror the five modules
+  (`tests/chat/test_{prompt,state,pins,transport,ui}.py`). **`chat/pins.py` keeps its `ChatContext` import
+  under `TYPE_CHECKING`** — `_pin_candidates` only annotates with it — which keeps `chat.prompt`,
+  `google.genai` and ~240 modules out of the pure module's import graph (1694 → 1452). It is *calls*-pure,
+  not imports-pure: `sources.loader` is `@st.cache_data`-decorated, so Streamlit still arrives
+  transitively and always will while pins reuses the loader's title/director helpers.
+  **`chat/__init__.py` re-exports
   nothing** — every name is imported from its owning submodule (`from chat.prompt import
   build_chat_context`), because importing *any* `chat.*` submodule executes the package `__init__` first:
   a convenience re-export there would make the deliberately-leaf `chat.tools` pull in `chat.prompt` and,
   through it, `config`/`core.taste`/`integrations.allocine`/`sources.loader` (measured: 2171 → 2202
   modules), and would put an import cycle one edit away the moment `chat/prompt.py` wanted a helper from
-  `chat/tools.py`. `chat/ui.py` likewise imports only the names its own code calls, so callers needing
+  `chat/tools.py`. `chat/ui.py`, `chat/transport.py` and `chat/pins.py` likewise import only the names
+  their own code calls, so callers needing
   both (e.g. `pages/recommendations.py`, `ui/cmdk.py`) take `render_chat` from `chat.ui` and
   `build_chat_context` from `chat.prompt`. It is mounted
   full-page by `pages/recommendations.py` (prompt chips, pinned-recs column, export) and compact by
@@ -273,7 +284,7 @@ typecheck (mypy blocking + ty advisory), security, test.
   (`CHAT_STATE_PATH`, patchable in tests) and reloaded on launch — corrupt/absent file falls back to a
   fresh state, and "Clear conversation" deletes the file. The model gets taste profile + showtimes +
   streaming availability as markdown context, plus four tools: `search_theater` (live Allocine lookup,
-  declared in `chat/ui.py`) and `top_matches` / `showtimes_query` / `streaming_query` (declared with their
+  declared in `chat/transport.py`) and `top_matches` / `showtimes_query` / `streaming_query` (declared with their
   pure handlers in `chat/tools.py`). `_ask_gemini` dispatches them through a bounded loop (`MAX_TOOL_ROUNDS = 2`,
   plus one final pass to stream the answer); only `search_theater` sets `pending_ref`. **A round is a
   round-trip, not a single call — one model turn can carry several parallel `function_call` parts** (asking
@@ -288,7 +299,7 @@ typecheck (mypy blocking + ty advisory), security, test.
   the eval goldens: append new segments (e.g. `; free=…`), never reword the existing prefix. The system
   prompt's existing rules are likewise pinned: **insert** new paragraphs, never reword or reflow old ones.
 - **The pin picker's candidate set must be the model's whole closed set, or a recommendation can't be
-  kept.** `chat.ui._pin_candidates` returns `(wl_shows, _streamable(streaming_df))` — the frame behind the
+  kept.** `chat.pins._pin_candidates` returns `(wl_shows, _streamable(streaming_df))` — the frame behind the
   showtimes block/`top_matches`/`showtimes_query` *and* the provider-carrying rows behind the streaming
   block/`streaming_query`, filtered by the same "non-empty `flatrate`/`free` list" rule those two apply.
   Scoping it to `wl_shows` alone was issue #53: ask "what can I watch on Netflix?" and every answer is
@@ -301,7 +312,7 @@ typecheck (mypy blocking + ty advisory), security, test.
   derived per render, not accumulated, so a follow-up question can't un-offer the previous answer's films
   and a transcript reloaded from `data/chat_state.json` comes back pinnable. Add a new source of films the
   model may name (a new tool, a new context block) and it must be added to `_pin_candidates` too.
-- **A persisted pin is a frozen row snapshot, so `chat.ui.resolve_pin` re-resolves it at render time.**
+- **A persisted pin is a frozen row snapshot, so `chat.pins.resolve_pin` re-resolves it at render time.**
   `pinned_recs` stores a whole `wl_shows` row, which freezes that row's *shape*: pins taken before
   `letterboxd_slug` was carried through the showtimes join carry no slug, so `row_slug` finds nothing and
   the card renders as unclickable plain text. Re-resolving beats migrating the file because it also
@@ -342,7 +353,7 @@ typecheck (mypy blocking + ty advisory), security, test.
   the pinned `- {title} — flatrate=…` shape, so it can't be read as a film entry.
 - **`chat/tools.py` is Streamlit-free and imports only pandas, `google.genai.types`, and
   `_normalize_title`** — that purity is what keeps the closed set true by construction. Its handlers take
-  a DataFrame, *not* `ChatContext` (which would also cycle the import back into `chat.ui`): `top_matches`
+  a DataFrame, *not* `ChatContext` (which would also cycle the import back into `chat.transport`): `top_matches`
   and `showtimes_query` take `ctx.wl_scored`, `streaming_query` takes `ctx.streaming_df`. New tools belong
   here and must follow both rules; they must also be total (missing columns / NaN / junk args return `[]`,
   never raise) since a raised exception would kill the streaming generator mid-reply.
@@ -545,7 +556,7 @@ typecheck (mypy blocking + ty advisory), security, test.
   that day), which `ui/agenda.py` renders. Three things not to undo: it **groups on `letterboxd_slug`, not
   the title** — 22 real watchlist titles name two different films (*King Lear* is Brook's *and* Godard's),
   and a title-keyed group merges them into one row carrying both films' showtimes (the same hazard
-  `chat.ui.resolve_pin` maps around); `_film_key` is always a string with an `""` fallback because
+  `chat.pins.resolve_pin` maps around); `_film_key` is always a string with an `""` fallback because
   `groupby` defaults to `dropna=True` and would make a NaN-keyed row vanish silently; and `today` is an
   injected parameter, never `date.today()` inline, so the day labels are testable rather than going red at
   midnight. `sort="match"` reorders entries *within* a day and never across days — the day strip is itself

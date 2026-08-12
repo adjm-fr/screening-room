@@ -5,7 +5,11 @@ The Gemini chat assistant, split by responsibility.
   ``build_chat_context``, the pinned ``build_system_message`` prompt)
 - :mod:`chat.state` — conversation state + ``data/chat_state.json`` persistence
 - :mod:`chat.tools` — the pure ``top_matches`` / ``showtimes_query`` handlers
-- :mod:`chat.ui` — the LLM transport and ``render_chat``
+- :mod:`chat.transport` — the Gemini round-trip: tool declarations, tool
+  dispatch, and the bounded streaming loop (``_ask_gemini``)
+- :mod:`chat.pins` — pure pin resolution: which films a reply offers
+  (``_find_pinnable_titles``) and which film a pin means (``resolve_pin``)
+- :mod:`chat.ui` — ``render_chat`` and the surface it draws
 
 This ``__init__`` deliberately re-exports **nothing**: importing any single
 submodule executes the package ``__init__`` first, so a re-export here would

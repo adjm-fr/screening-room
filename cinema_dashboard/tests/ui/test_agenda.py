@@ -239,6 +239,19 @@ def test_badge_alone_still_renders_the_sub_line():
 # ── render_agenda ────────────────────────────────────────────────────────────
 
 
+def test_row_renders_the_time_pills_by_default():
+    """Browse mode must be untouched by plan mode's ``show_times`` opt-out."""
+    assert 'class="agenda-times"' in _agenda_row_html(_entry())
+
+
+def test_row_omits_the_time_pills_when_show_times_is_false():
+    """``ui.cart`` replaces them with a real widget beside the row."""
+    out = _agenda_row_html(_entry(), show_times=False)
+    assert "agenda-times" not in out
+    assert "time-pill" not in out
+    assert 'class="agenda-title"' in out  # everything else still renders
+
+
 def test_render_agenda_of_nothing_does_not_raise(mocker):
     markdown = mocker.patch("ui.agenda.st.markdown")
     render_agenda([])

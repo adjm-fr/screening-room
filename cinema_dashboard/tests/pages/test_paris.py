@@ -223,6 +223,29 @@ def test_page_uses_the_shared_filter_chain():
     assert pages.paris.day_chips is core.agenda.day_chips
 
 
+def test_page_uses_the_shared_cart_helpers():
+    """Same guard for the cart: the page wires the shared code, it does not fork it."""
+    import core.cart
+    import pages.paris
+    import ui.cart
+
+    assert pages.paris.cart_index is core.cart.cart_index
+    assert pages.paris.save_cart is core.cart.save_cart
+    assert pages.paris.cart_state is ui.cart.cart_state
+    assert pages.paris.render_plan_agenda is ui.cart.render_plan_agenda
+    assert pages.paris.render_cart_panel is ui.cart.render_cart_panel
+
+
+def test_cart_keys_are_paris_namespaced():
+    """A ``cal_*`` collision would make one page's plan mode follow the user onto the other."""
+    import ui.cart
+
+    assert ui.cart.CART_SESSION_KEY.startswith("paris_")
+    assert ui.cart.PICK_KEY_PREFIX.startswith("paris_")
+    # The cart itself must survive the pick-widget sweep on "Clear plan".
+    assert not ui.cart.CART_SESSION_KEY.startswith(ui.cart.PICK_KEY_PREFIX)
+
+
 def test_filters_badge_is_plain_when_nothing_is_set(mocker):
     import pages.paris
 

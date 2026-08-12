@@ -329,6 +329,19 @@ def test_rows_without_any_identity_are_still_grouped_not_dropped():
     assert days[0].film_count == 1
 
 
+def test_showtimes_carry_the_theater_id_as_well_as_the_name():
+    """``theater_id`` is the identity half — ``core.cart.showtime_id`` keys on it."""
+    entry = build_agenda(_frame({"theater_id": "C0071"}), today=TODAY)[0].entries[0]
+    assert entry.showtimes[0].theater == "Le Champo"
+    assert entry.showtimes[0].theater_id == "C0071"
+
+
+def test_showtime_theater_id_is_an_empty_string_when_the_column_is_missing():
+    """Never None: it is hashed into an id, and the calendar frame may omit it."""
+    entry = build_agenda(_frame({}), today=TODAY)[0].entries[0]
+    assert entry.showtimes[0].theater_id == ""
+
+
 def test_representative_row_carries_the_earliest_showtime():
     df = _frame({"showtimes": "2026-08-04 21:30"}, {"showtimes": "2026-08-04 19:00"})
     entry = build_agenda(df, today=TODAY)[0].entries[0]

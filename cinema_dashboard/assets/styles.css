@@ -343,6 +343,55 @@ html, body, .stMarkdown, .stText {
 .agenda-row--cat-second-chance { box-shadow: inset 2px 0 0 rgba(230, 126, 34, 0.55); }
 .agenda-row--cat-rewatch { box-shadow: inset 2px 0 0 rgba(46, 125, 50, 0.55); }
 
+/* Plan mode + cart (Screening in Paris) ------------------------------------
+ * Plan mode swaps the static .time-pill spans for a real st.pills widget beside
+ * each row, so a film's showtimes become selectable and land in the cart.
+ *
+ * That costs the sticky day header, and the trade is deliberate: a widget cannot
+ * live inside a markdown blob, and header+rows sharing ONE blob is the only
+ * reason `position: sticky` works up in the agenda block. Unstick it explicitly
+ * here rather than leaving a declaration that silently does nothing — a reader
+ * should be able to tell this was a decision and not an oversight. Browse mode
+ * is untouched, which is the whole point of the toggle. */
+.agenda-day--plan .agenda-day-head { position: static; }
+
+/* One markdown call per row in plan mode means each row is its own Streamlit
+ * element container, so the `.agenda-row + .agenda-row` separator up in the
+ * agenda block never matches. Restate it on the wrapper ui.cart emits. */
+.plan-row { border-top: 1px solid rgba(127, 127, 127, 0.12); }
+
+/* Same precedent as [class*="st-key-chipstrip-"] below: scoped to the containers
+ * ui.cart keys (PICK_CONTAINER_PREFIX), because a film with five or six
+ * showtimes wraps onto a second line while every other pills/segmented control
+ * in the app is single-line and wants no extra row spacing. */
+[class*="st-key-cartpick-"] [data-testid="stButtonGroup"] {
+  flex-wrap: wrap;
+  row-gap: 0.3rem;
+}
+
+/* One picked screening inside the cart popover. Time first: a plan is read as a
+ * timeline, so the column that varies most is the one that gets scanned. */
+.plan-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  font-size: 0.85rem;
+}
+.plan-item + .plan-item { border-top: 1px solid rgba(127, 127, 127, 0.12); }
+.plan-item-when {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.plan-item-title { min-width: 0; }
+.plan-item-venue {
+  margin-left: auto;
+  font-size: 0.75rem;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
 /* Wrapping chip strips ---------------------------------------------------- */
 
 /* The day strip is a segmented control with one option per day in the data, so

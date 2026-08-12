@@ -49,6 +49,7 @@ from typing import cast
 
 import pandas as pd
 import streamlit as st
+from common import reveal
 from google import genai
 from google.genai import types
 
@@ -213,7 +214,7 @@ def _ask_gemini(ctx: ChatContext, history: list[dict]) -> tuple[Iterator[str], l
     list of theater suggestions awaiting user confirmation (or ``None``).
     """
     log.debug("Calling Gemini API — model: %s, history length: %d messages", settings.gemini_model, len(history))
-    client = genai.Client(api_key=settings.gemini_api_key)
+    client = genai.Client(api_key=reveal(settings.gemini_api_key))
     system_instruction = build_system_message(ctx)["content"]
     contents = _history_to_contents(history)
     cfg = types.GenerateContentConfig(

@@ -88,7 +88,8 @@ def test_gemini_overrides(tmp_path, monkeypatch):
     monkeypatch.setenv("GEMINI_MODEL", "gemini-2.5-flash")
     monkeypatch.setenv("GEMINI_MAX_TOKENS", "512")
     s = _settings(tmp_path)
-    assert s.gemini_api_key == "test-key"
+    assert s.gemini_api_key is not None
+    assert s.gemini_api_key.get_secret_value() == "test-key"
     assert s.gemini_model == "gemini-2.5-flash"
     assert s.gemini_max_tokens == 512
 

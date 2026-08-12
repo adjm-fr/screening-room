@@ -51,14 +51,25 @@ def test_refresh_limit_set(tmp_path, monkeypatch):
 def test_tmdb_api_key_defaults_to_empty(tmp_path, monkeypatch):
     monkeypatch.setenv("OUTPUT_PATH", str(tmp_path / "output"))
     s = _settings(tmp_path)
-    assert s.tmdb_api_key == ""
+    assert s.tmdb_api_key.get_secret_value() == ""
 
 
 def test_tmdb_api_key_set(tmp_path, monkeypatch):
     monkeypatch.setenv("OUTPUT_PATH", str(tmp_path / "output"))
     monkeypatch.setenv("TMDB_API_KEY", "abc123")
     s = _settings(tmp_path)
-    assert s.tmdb_api_key == "abc123"
+    assert s.tmdb_api_key.get_secret_value() == "abc123"
+
+
+def test_tmdb_api_key_is_masked_when_printed(tmp_path, monkeypatch):
+    """The point of SecretStr: the credential cannot be printed by accident."""
+    monkeypatch.setenv("OUTPUT_PATH", str(tmp_path / "output"))
+    monkeypatch.setenv("TMDB_API_KEY", "abc123")
+    s = _settings(tmp_path)
+    assert "abc123" not in str(s.tmdb_api_key)
+    assert "abc123" not in repr(s.tmdb_api_key)
+    assert "abc123" not in f"{s.tmdb_api_key}"
+    assert "abc123" not in repr(s)
 
 
 def test_extra_env_vars_ignored(tmp_path, monkeypatch):

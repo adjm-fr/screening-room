@@ -17,14 +17,18 @@ with every section has no page of its own to be routed to.
 
 import plotly.io as pio
 import streamlit as st
-from common import configure_logging
+from common import configure_logging, secret_values
 
 from config import settings
 from pages.movie import main as render_movie_detail
 from ui import MOVIE_QUERY_PARAM, inject_css
 from ui.cmdk import mount_cmdk
 
-configure_logging(settings.log_level, quiet=("httpx", "httpcore", "google_genai", "urllib3"))
+configure_logging(
+    settings.log_level,
+    quiet=("httpx", "httpcore", "google_genai", "urllib3"),
+    secrets=secret_values(settings),
+)
 
 st.set_page_config(
     page_title="Cinema Dashboard",

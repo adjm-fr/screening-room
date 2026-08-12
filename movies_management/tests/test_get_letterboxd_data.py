@@ -5,12 +5,14 @@ All tests are offline — no real API calls are made.
 _fetch_movie and parquet I/O are mocked where needed.
 """
 
+import logging
 from datetime import date
 
 import httpx
 import pandas as pd
 import pytest
 import respx
+from common.logging import RedactingFormatter
 from modules.get_letterboxd_data import (
     TMDB_API_URL,
     Credits,
@@ -19,9 +21,13 @@ from modules.get_letterboxd_data import (
     _fetch_french_title,
     _fetch_movie,
     _fetch_trailer,
+    _get_tmdb_credits,
+    _get_tmdb_movie,
+    _get_tmdb_videos,
     get_letterboxd_data,
     refresh_letterboxd_data,
 )
+from tenacity import wait_none
 
 # ── fixtures ─────────────────────────────────────────────────────────────────
 
@@ -529,3 +535,37 @@ async def test_fetch_all_leaves_crew_null_without_api_key(mocker, make_movie):
     assert results[0]["writers"] is None
     assert results[0]["composers"] is None
     assert results[0]["cast"] is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_tmdb_failures_never_log_the_api_key(caplog):
+    """The key must not survive into a rendered log line, on the real fetch path.
+
+    Uses a 500 because that is the branch that actually raises: ``_get_tmdb_*`` only
+    calls ``raise_for_status`` for 429/5xx, and it is ``HTTPStatusError``'s string
+    form that carries the full request URL (key included) into the log record.
+
+    The record itself is *expected* to hold the key — the guarantee lives at the
+    output boundary, in the formatter ``common.configure_logging`` installs, so it
+    covers tracebacks and third-party loggers too. This renders the real records
+    through that formatter, which is what the entry point wires up for production.
+    """
+    respx.get(url__startswith="https://api.themoviedb.org/3/movie/42").mock(return_value=httpx.Response(500))
+    caplog.set_level(logging.DEBUG, logger="modules.get_letterboxd_data")
+    # Retries are exponentially backed off; drop the wait so the test stays fast.
+    for fn in (_get_tmdb_movie, _get_tmdb_credits, _get_tmdb_videos):
+        fn.retry.wait = wait_none()
+
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_french_title(client, "42", "SUPERSECRETKEY") is None
+        assert await _fetch_credits(client, "42", "SUPERSECRETKEY") == Credits()
+        assert await _fetch_trailer(client, "42", "SUPERSECRETKEY") is None
+
+    assert caplog.records, "expected the failures to be logged at DEBUG"
+    assert "api_key" in caplog.text, "expected the request URL in the log, else this test proves nothing"
+
+    formatter = RedactingFormatter("%(message)s", secrets=["SUPERSECRETKEY"])
+    rendered = "\n".join(formatter.format(record) for record in caplog.records)
+    assert "SUPERSECRETKEY" not in rendered
+    assert "***" in rendered

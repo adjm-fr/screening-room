@@ -15,7 +15,7 @@ loaders, not here, so this very-hot import path stays light.
 from pathlib import Path
 
 from common import AppSettings, make_settings_config
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 _ROOT = Path(__file__).resolve().parents[0]
 
@@ -48,14 +48,14 @@ class Settings(AppSettings):
     letterboxd_days_to_update: int = 365
 
     # Gemini (Recommendations page)
-    gemini_api_key: str | None = None
+    gemini_api_key: SecretStr | None = None
     gemini_model: str = "gemini-3.1-flash-lite"
     gemini_max_tokens: int = 1024
     gemini_temperature: float = 0.2
     gemini_top_p: float = 0.8
 
     # TMDB watch providers
-    tmdb_api_key: str | None = None
+    tmdb_api_key: SecretStr | None = None
     streaming_services: str = ""  # comma-separated provider slugs the user subscribes to
 
     @property

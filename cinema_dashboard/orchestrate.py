@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 
 import click
-from common import configure_logging
+from common import configure_logging, reveal, secret_values
 
 from config import settings
 from integrations.scrapers import (
@@ -38,7 +38,7 @@ from sources.streaming import refresh_streaming_providers
 
 # configure_logging quiets httpx (one INFO line per request) so the streaming
 # refresh doesn't spam one line per TMDB call (can be thousands for a watchlist).
-configure_logging(settings.log_level)
+configure_logging(settings.log_level, secrets=secret_values(settings))
 logger = logging.getLogger(__name__)
 
 # Staleness rules and scraper argv lists live in modules/scrapers.py — the
@@ -183,7 +183,7 @@ def main(force: bool, days: int, reset: bool, reset_db: bool) -> None:
         logger.info("Refreshing TMDB watch providers (FR)…")
         summary = refresh_streaming_providers(
             movies_output=str(settings.movies_output_path),
-            tmdb_api_key=settings.tmdb_api_key,
+            tmdb_api_key=reveal(settings.tmdb_api_key),
             force=force,
         )
         _log_result("streaming", summary.get("errors", 0) == 0)

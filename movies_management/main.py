@@ -31,7 +31,7 @@ from pathlib import Path
 import click
 import modules.get_letterboxd_data as ldm
 import pandas as pd
-from common import configure_logging
+from common import configure_logging, secret_values
 from common.parquet_io import write_parquet_validated
 from contracts import DATA_LETTERBOXD
 from letterboxdpy.user import User
@@ -47,11 +47,13 @@ from modules.utils import (
     save_parquet,
 )
 
-# Structured logging with timestamps and level indicators (shared helper).
-configure_logging("INFO")
-logger = logging.getLogger(__name__)
-
 settings = Settings()  # type: ignore[call-arg]
+
+# Structured logging with timestamps and level indicators (shared helper). The TMDB
+# key is passed so it can never reach the log: it travels as a query parameter, so
+# httpx errors carry it inside the request URL they embed in their message.
+configure_logging("INFO", secrets=secret_values(settings))
+logger = logging.getLogger(__name__)
 
 
 @click.command()
@@ -98,7 +100,7 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
     output_path = settings.output_path
     days_to_update = settings.letterboxd_days_to_update
     refresh_limit = settings.letterboxd_refresh_limit
-    tmdb_api_key = settings.tmdb_api_key
+    tmdb_api_key = settings.tmdb_api_key.get_secret_value()
     if not tmdb_api_key:
         logger.warning(
             "TMDB_API_KEY is not set — french_title, cast, the crew columns "

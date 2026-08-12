@@ -473,9 +473,23 @@ typecheck (mypy blocking + ty advisory), security, test.
   and rank-order tie-breaking would let DataFrame row order bias which tied rows land in the top quartile.
   A single seeded generator drives every split, so a sweep compares candidates on identical partitions
   instead of confounding the weight change with a different random split. Current numbers on the real
-  ratings (Aug 2026, ~3.3k rated films, μ=2.48), as a regression reference: **spearman 0.677 /
-  quartile lift 2.03**, against a quality-prior-only baseline of 0.603 / 1.81. Beating that baseline is the
-  bar — a constants change that drops toward it has removed the personalisation, not tuned it.
+  ratings (Aug 2026, 4119 rated films, μ=2.48), as a regression reference: **spearman 0.667 /
+  quartile lift 1.98**, against a quality-prior-only baseline of 0.590 / 1.78. Beating that baseline is the
+  bar — a constants change that drops toward it has removed the personalisation, not tuned it. (Those
+  figures replace an earlier 0.677 / 2.03 measured on a smaller history; the drift is the history growing,
+  not a regression — re-measure rather than comparing against a number taken at a different row count.)
+- **The TMDB cast/crew swap did not move the ranker, and `composers` is not a taste dimension.** Verified
+  Aug 2026 by re-scoring the ratings history with `directors`/`cast` refreshed from the post-swap cache:
+  Δspearman −0.0000, Δlift +0.0000 on identical seeded splits. The swap is model-neutral because 99.78% of
+  rated films keep an *identical director set* — of 81 rows whose director string changed, 72 are pure
+  re-ordering (`_film_features` splits on commas and averages, so order is invariant) and only 9 are real
+  content changes, mostly TMDB corrections (Ethan Coen restored to the Coen films). The cache has fully
+  converged — zero Letterboxd-style `(II)` disambiguation suffixes remain — so the transitional
+  two-affinity-keys hazard noted under the cache-columns bullet is closed. Note the derived
+  `ratings_with_letterboxd.parquet` / `watchlist_with_letterboxd.parquet` lag the cache until the next
+  `movies_management` run: until then they carry pre-swap crew and no `composers` column at all, so a
+  backtest run against them measures the *old* inputs. See `core/taste.py`'s `_DIM_COLUMNS` for why
+  `composers` was evaluated and rejected.
 - **`core/agenda.py` is the calendar page's Streamlit-free half** — day grouping, friendly day labels
   ("Tonight"/"Tomorrow"/`%A %d %B`), time-of-day and runtime bucketing, and the one filter chain
   (`AgendaFilters` / `apply_filters` / `apply_day`, see "export mirrors its on-screen filters" below).

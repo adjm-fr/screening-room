@@ -585,6 +585,22 @@ typecheck (mypy blocking + ty advisory), security, test.
   `letterboxd_refresh_limit` (1000/run), so a large cache converges over 2–3 runs; `--reset_database` is
   the escape hatch. Until it converges the cache holds a *mix* of Letterboxd- and TMDB-spelled crew, so a
   director carrying a Letterboxd disambiguation suffix (`Kirk Jones (II)`) briefly scores as two affinity keys.
+- **The three TMDB fetchers parse through Pydantic models (`movies_management/modules/tmdb.py`), and a
+  `logger.warning` from one of them means upstream schema drift, not a missing film.** `MovieDetail` /
+  `CreditsResponse` (`cast`/`crew`, each `CreditMember`) / `VideosResponse` (`results`, each `Video`) model
+  only the fields these fetchers read, all with `model_config = ConfigDict(extra="ignore")` — TMDB sends far
+  more fields than any of these read, so strict validation would reject every real payload. The point isn't
+  generic validation, it's separating two cases a bare `.get()` chain collapses into one identical `None`:
+  TMDB legitimately having no answer for a field (normal — most films have no French retitle) versus TMDB's
+  response *shape* changing underneath us (catastrophic — it hits every film in the batch at once). Each
+  fetcher (`_fetch_french_title`/`_fetch_credits`/`_fetch_trailer`) therefore catches `pydantic.ValidationError`
+  in its own clause, placed *before* the generic `except Exception`, and logs it at `logger.warning` — every
+  other failure path (falsy `tmdb_id`/`api_key`, non-200 response, exhausted retries) still logs at `debug` and
+  returns the same safe fallback (`None`, or an all-`None` `Credits()`) as before. Because `ValidationError`
+  subclasses `ValueError` subclasses `Exception`, a naive Pydantic parse with only the pre-existing generic
+  handler would have changed nothing — the dedicated clause, ordered first, is what makes the distinction
+  observable. This matters most for `directors`: a 250-film sample found a `Director` credit on 100% of films,
+  so any null `directors` from a malformed payload is far likelier a bug than a fact.
 - **Showtimes datetimes are naive Paris wall-clock.** The Allocine scraper emits no timezone;
   `data_loader.future_showtimes` anchors "now" to `Europe/Paris` accordingly. Other contract quirks:
   `runtime` is a raw string (`"1h 52min"`), `director` may be `" | "`-joined, `release_year` is nullable

@@ -18,6 +18,7 @@ import tomllib
 from functools import cache
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -62,3 +63,19 @@ class AppSettings(BaseSettings):
             model_config = make_settings_config()
             output_path: Path
     """
+
+
+def reveal(secret: SecretStr | None) -> str | None:
+    """Unwrap an optional :class:`~pydantic.SecretStr` for the wire.
+
+    API keys are declared as ``SecretStr`` so ``str``/``repr``/f-string all render
+    ``"**********"`` and the credential cannot be printed by accident. Every value
+    eventually has to be revealed to authenticate, though, so call this at that one
+    point rather than spreading ``.get_secret_value()`` across the codebase.
+
+    Revealing does **not** make the value safe to log: it lands inside request URLs,
+    which is why :func:`common.logging.configure_logging` also scrubs it on the way
+    out (see :class:`common.logging.RedactingFormatter`). The two cover different
+    surfaces — the credential object, and third-party text that embeds it.
+    """
+    return secret.get_secret_value() if secret is not None else None

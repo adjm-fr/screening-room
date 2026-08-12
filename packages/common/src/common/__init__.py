@@ -10,6 +10,6 @@ here, keeping the config import path pandas-free.
 """
 
 from common.logging import configure_logging
-from common.settings import AppSettings, make_settings_config
+from common.settings import AppSettings, make_settings_config, reveal
 
-__all__ = ["AppSettings", "make_settings_config", "configure_logging"]
+__all__ = ["AppSettings", "make_settings_config", "reveal", "configure_logging"]

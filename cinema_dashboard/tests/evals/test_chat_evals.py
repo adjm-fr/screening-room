@@ -37,6 +37,7 @@ from typing import cast
 
 import pandas as pd
 import pytest
+from common import reveal
 from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric, ToolCorrectnessMetric
 from deepeval.models import GeminiModel
 from deepeval.test_case import LLMTestCase, ToolCall
@@ -95,7 +96,7 @@ def _ctx_from_golden(g: Golden) -> ChatContext:
 
 def _ask_once(ctx: ChatContext, prompt: str) -> str:
     """Non-streaming, no-tool Gemini call. Mirrors `_ask_gemini` minus Streamlit + tools."""
-    client = genai.Client(api_key=settings.gemini_api_key)
+    client = genai.Client(api_key=reveal(settings.gemini_api_key))
     resp = client.models.generate_content(
         model=settings.gemini_model,
         contents=prompt,
@@ -137,7 +138,7 @@ def _ask_once_with_tools(ctx: ChatContext, prompt: str) -> tuple[str, list[ToolC
     call is recorded as a ``deepeval`` :class:`ToolCall` so ``ToolCorrectnessMetric``
     can assert on it.
     """
-    client = genai.Client(api_key=settings.gemini_api_key)
+    client = genai.Client(api_key=reveal(settings.gemini_api_key))
     cfg = types.GenerateContentConfig(
         system_instruction=build_system_message(ctx)["content"],
         tools=[TASTE_TOOL, SHOWTIMES_TOOL, STREAMING_TOOL],
@@ -193,7 +194,7 @@ def _judge_model() -> GeminiModel:
     the same Gemini key/model the chat itself uses keeps the eval suite's key surface at one entry
     (GEMINI_API_KEY) instead of two.
     """
-    return GeminiModel(model=settings.gemini_model, api_key=settings.gemini_api_key)
+    return GeminiModel(model=settings.gemini_model, api_key=reveal(settings.gemini_api_key))
 
 
 @pytest.mark.parametrize("golden", GOLDENS, ids=lambda g: g.id)

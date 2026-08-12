@@ -121,6 +121,36 @@ typecheck (mypy blocking + ty advisory), security, test.
   - `logging.py`: `configure_logging(level, *, quiet=...)` — wraps `basicConfig`, also sets the root level
     explicitly (so it takes effect under pytest's log capture), and quiets noisy network loggers. Used by
     `movies_management/main.py`, `cinema_dashboard/app.py`, and `orchestrate.py`.
+    **Secrets are scrubbed at the output boundary, not per call site.** `configure_logging` takes
+    `secrets=[...]` and installs a `RedactingFormatter` on every root handler, so no logging call
+    anywhere has to remember anything. It exists because TMDB takes its credential as a query
+    parameter and httpx embeds the full request URL in `HTTPStatusError`'s string form, so a bare
+    `logger.warning("%s", exc)` wrote the live `TMDB_API_KEY` to the log — it did, at DEBUG in
+    `movies_management/modules/get_letterboxd_data.py` and at WARNING (the default level) in
+    `cinema_dashboard/sources/streaming.py`. Each entry point passes its own keys
+    (`main.py`, `app.py`, `orchestrate.py`); `None`/empty entries are ignored.
+    Two alternatives were measured and rejected: calling `redact()` at each log site (a rule to
+    remember forever, and it covers none of the loggers we don't own), and a custom exception with a
+    masked `__str__`/`__repr__` (**leaks through the `__cause__` chain** — `raise Wrapper from exc`
+    plus `logger.exception` renders the original traceback with the key in it, unless you use
+    `from None` and throw away the debugging context). Formatting the rendered string covers the
+    message, the traceback, and third-party loggers (`httpx`, `tenacity`) alike. `redact(value,
+    *secrets)` remains the underlying primitive; you rarely need it directly. Residual gap: this
+    covers logging only, not an exception escaping to `sys.excepthook` — nothing propagates that far
+    here, and the source-level fix would be a header credential, which TMDB only supports via a
+    different (v4) token.
+  - **API keys are `SecretStr` fields, and that is a *different* protection from the formatter —
+    keep both.** `TMDB_API_KEY`/`GEMINI_API_KEY` are `SecretStr` on both members' `Settings`, so
+    `str`/`repr`/f-string render `"**********"` and the credential can't be printed by accident.
+    It would *not* have caught the leak above: authenticating requires `.get_secret_value()`, and
+    from that moment the plain key sits inside the request URL that httpx embeds in its errors. The
+    two cover different surfaces — the credential object, and third-party text that embeds it.
+    `common.reveal(secret)` unwraps the optional ones at the wire boundary (`app.py`,
+    `orchestrate.py`, `chat/ui.py`, `pipeline/resources.py`); movies' non-optional field uses
+    `.get_secret_value()` directly in `main.py`. **Never `str()` a `SecretStr` to pass it on** —
+    that yields the literal mask and buys a silent 401 instead of a crash; `pipeline/resources.py`
+    does it correctly beside four neighbours that *are* plain `str()` calls. `bool()` still tracks
+    emptiness, so the `if not settings.tmdb_api_key` guards kept working across the switch.
   - `parquet_io.py`: `read_parquet_validated` / `write_parquet_validated` + `SchemaValidationError`.
 - **`contracts`** (`packages/contracts`) — frozen `ParquetContract`s declaring the columns each consumer
   depends on, enforced at every producer/consumer seam via `read_parquet_validated` /

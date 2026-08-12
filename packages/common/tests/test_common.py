@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
-from common import AppSettings, configure_logging, make_settings_config
+from common import AppSettings, configure_logging, make_settings_config, reveal
+from common.logging import RedactingFormatter, redact
 from common.parquet_io import (
     SchemaValidationError,
     read_parquet_validated,
     write_parquet_validated,
 )
 from common.settings import find_workspace_root
+from pydantic import SecretStr
 
 
 def test_make_settings_config_points_at_env(tmp_path: Path) -> None:
@@ -78,3 +81,76 @@ def test_write_validated_raises_before_writing(tmp_path: Path) -> None:
     with pytest.raises(SchemaValidationError):
         write_parquet_validated(pd.DataFrame({"a": [1]}), path, required_columns=["a", "b"])
     assert not path.exists()
+
+
+def test_redact_replaces_every_secret() -> None:
+    text = redact("key=abc123 and again abc123", "abc123")
+    assert "abc123" not in text
+    assert text == "key=*** and again ***"
+
+
+def test_redact_ignores_empty_and_none_secrets() -> None:
+    # An unset key must not turn every character into a separator of ``***``.
+    assert redact("nothing to hide", None, "") == "nothing to hide"
+
+
+def _record(msg: str, *, exc_info: object = None) -> logging.LogRecord:
+    return logging.LogRecord("t", logging.WARNING, __file__, 1, msg, None, exc_info)  # type: ignore[arg-type]
+
+
+def test_redacting_formatter_scrubs_the_message() -> None:
+    fmt = RedactingFormatter("%(message)s", secrets=["SECRETKEY"])
+    assert fmt.format(_record("url?api_key=SECRETKEY")) == "url?api_key=***"
+
+
+def test_redacting_formatter_scrubs_the_traceback() -> None:
+    """The case a custom exception with a masked ``__str__`` cannot cover.
+
+    ``raise ... from cause`` renders the *cause's* traceback too, so anything that
+    only masks the wrapper's own message still leaks the original text.
+    """
+    try:
+        try:
+            raise ValueError("url?api_key=SECRETKEY")
+        except ValueError as cause:
+            raise RuntimeError("wrapped") from cause
+    except RuntimeError:
+        record = _record("boom", exc_info=sys.exc_info())
+
+    rendered = RedactingFormatter("%(message)s", secrets=["SECRETKEY"]).format(record)
+    assert "Traceback" in rendered, "expected the traceback to be rendered at all"
+    assert "SECRETKEY" not in rendered
+
+
+def test_redacting_formatter_without_secrets_is_a_passthrough() -> None:
+    fmt = RedactingFormatter("%(message)s", secrets=[None, ""])
+    assert fmt.format(_record("nothing to hide")) == "nothing to hide"
+
+
+def test_configure_logging_installs_the_redacting_formatter() -> None:
+    """The guarantee: no call site has to remember anything."""
+    configure_logging("INFO", secrets=["SECRETKEY"])
+    handlers = logging.getLogger().handlers
+    assert handlers, "expected at least one root handler"
+    for handler in handlers:
+        assert isinstance(handler.formatter, RedactingFormatter)
+        assert "SECRETKEY" not in handler.formatter.format(_record("api_key=SECRETKEY"))
+
+
+def test_reveal_unwraps_a_secret() -> None:
+    assert reveal(SecretStr("abc123")) == "abc123"
+
+
+def test_reveal_passes_none_through() -> None:
+    """An unset optional key stays None rather than becoming the string "None"."""
+    assert reveal(None) is None
+
+
+def test_empty_secret_is_falsy() -> None:
+    """``if not settings.tmdb_api_key`` guards depend on this (see orchestrate.py).
+
+    Pydantic keeps ``SecretStr`` truthiness tied to the wrapped value, so swapping a
+    plain ``str`` field for a secret one does not silently invert those checks.
+    """
+    assert not SecretStr("")
+    assert SecretStr("x")

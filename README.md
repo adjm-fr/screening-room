@@ -130,7 +130,11 @@ One root `.github/workflows/ci.yml` runs lint / typecheck / security / test for 
 ## Shared packages
 
 - **`common`** — `AppSettings` + `make_settings_config` (each member's `Settings` subclasses these),
-  `configure_logging` (used by every entry point), and `read_parquet_validated` / `write_parquet_validated`.
+  `configure_logging` (used by every entry point — pass `secrets=[...]` and it installs a formatter that
+  scrubs those API keys out of every log line, traceback included), `reveal` (unwraps a `SecretStr` API key
+  at the wire boundary), and `read_parquet_validated` / `write_parquet_validated`.
+  API keys are `SecretStr` fields so they can't be printed by accident; the formatter is what stops them
+  leaking through URLs embedded in third-party error messages. The two protect different surfaces.
   The package `__init__` is intentionally pandas-free so `cinema_dashboard/config.py` stays cheap to import; import the
   parquet helpers from `common.parquet_io` directly.
 - **`contracts`** — `SHOWTIMES` declares the columns consumed from `showtimes.parquet`. The dashboard's

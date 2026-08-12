@@ -59,8 +59,8 @@ DATA_LETTERBOXD = ParquetContract(
         "letterboxdpy but never populated. `composers` is sourced from TMDB job "
         '"Original Music Composer" only, and is legitimately null on ~26% of films '
         "(no original score) — that null is data, not incompleteness, so it must NOT "
-        "become a backfill signal (never add it to `find_missing_cast_slugs`). Its "
-        'column presence is guaranteed regardless: `_fetch_movie` seeds `"composers": '
+        "become a refresh trigger (main.py refreshes on age alone, never on a null "
+        'column). Its column presence is guaranteed regardless: `_fetch_movie` seeds `"composers": '
         "None` on every row, TMDB credits or not."
     ),
 )

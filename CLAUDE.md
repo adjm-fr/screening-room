@@ -571,8 +571,7 @@ typecheck (mypy blocking + ty advisory), security, test.
   `Music` job would take coverage from 74% to 86% (pre-1950: 67% → 84%) but also credits *source* music on
   films with no original score (*Ariel* returns six names ending in Tchaikovsky), so precision won — the same
   call as `_PRODUCER_JOBS`. `Composer` is not a job string TMDB uses. **`composers` is legitimately null ~26% of
-  the time, so it is NOT a valid backfill signal** the way `cast` is — don't add it to `find_missing_cast_slugs`
-  or a quarter of the cache would re-refresh every run forever, burning the 1000-slug budget. Two calibration notes, measured on a 250-film sample of the real cache:
+  the time — a null here is data, not incompleteness.** Two calibration notes, measured on a 250-film sample of the real cache:
   writers use `job in {Writer, Screenplay}` because the wider `department == "Writing"` sweeps in Novel/Story
   credits Letterboxd keeps separate (46% vs 80% agreement with the cached strings); `producers` is deliberately
   just `Producer`, so it is *narrower* than the old Letterboxd list (50.8% exact agreement — it drops
@@ -581,10 +580,6 @@ typecheck (mypy blocking + ty advisory), security, test.
   the swap safe for the watchlist↔showtimes join.
   **Corollary: without `TMDB_API_KEY`, `directors` is now null**, which silently guts the taste ranker's
   highest-weighted dimension *and* the join's director confirmation — `main.py` warns about this at startup.
-  Backfill is incremental: `main.py` adds missing-`cast` slugs to the refresh queue bounded by
-  `letterboxd_refresh_limit` (1000/run), so a large cache converges over 2–3 runs; `--reset_database` is
-  the escape hatch. Until it converges the cache holds a *mix* of Letterboxd- and TMDB-spelled crew, so a
-  director carrying a Letterboxd disambiguation suffix (`Kirk Jones (II)`) briefly scores as two affinity keys.
 - **The three TMDB fetchers parse through Pydantic models (`movies_management/modules/tmdb.py`), and a
   `logger.warning` from one of them means upstream schema drift, not a missing film.** `MovieDetail` /
   `CreditsResponse` (`cast`/`crew`, each `CreditMember`) / `VideosResponse` (`results`, each `Video`) model
@@ -601,6 +596,14 @@ typecheck (mypy blocking + ty advisory), security, test.
   handler would have changed nothing — the dedicated clause, ordered first, is what makes the distinction
   observable. This matters most for `directors`: a 250-film sample found a `Director` credit on 100% of films,
   so any null `directors` from a malformed payload is far likelier a bug than a fact.
+- **Age is `main.py`'s only refresh trigger — a null column never re-queues a row.** `find_stale_slugs`
+  (`integration_date` older than `letterboxd_days_to_update`, bounded by `letterboxd_refresh_limit`,
+  1000/run) is the whole selection. The `find_missing_cast_slugs` null-`cast` backfill that once ran beside
+  it was removed once the cache converged: nulls here are ambiguous (`composers` ~26%, `trailer_url` ~45%,
+  `tagline` ~30% are legitimately empty), so a null-column trigger re-queues a large slice of the cache
+  every run forever and burns the refresh budget. **Backfilling a newly added column onto rows cached
+  before it existed is an ad-hoc script's job** — feed the affected slugs straight to
+  `refresh_letterboxd_data` — or `--reset_database`; don't wire a new null signal back into `main.py`.
 - **Showtimes datetimes are naive Paris wall-clock.** The Allocine scraper emits no timezone;
   `data_loader.future_showtimes` anchors "now" to `Europe/Paris` accordingly. Other contract quirks:
   `runtime` is a raw string (`"1h 52min"`), `director` may be `" | "`-joined, `release_year` is nullable

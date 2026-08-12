@@ -127,6 +127,11 @@ The application generates three parquet files in your `OUTPUT_PATH`:
 ### 1. `data_letterboxd.parquet`
 **Internal cache** of all movie metadata. Used for incremental updates.
 
+> 📋 The sections below describe what each column *means*. For where each one comes
+> from — Letterboxd DOM element, TMDB endpoint, or computed locally — plus measured
+> coverage and the checklist for adding a column, see
+> **[`CACHE_COLUMNS.md`](CACHE_COLUMNS.md)**.
+
 Every write is validated against the workspace's `contracts.DATA_LETTERBOXD` contract
 (`common.write_parquet_validated`) — writing a frame missing one of the stable-core columns below raises
 `SchemaValidationError` instead of silently shipping a malformed cache. `studio`/`country`/`language` are

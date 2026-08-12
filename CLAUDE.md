@@ -226,7 +226,9 @@ typecheck (mypy blocking + ty advisory), security, test.
   imports the primitives it needs from `ui.theme` and `render_empty_state` from `ui.chips`), `ui/chips.py`
   (`match_chips_html`, `render_chip_filter`, `render_kpi_strip`, `render_empty_state`,
   `render_freshness_banner`), `ui/availability.py` (`render_free_time_filter` / `FreeTimeSelection`),
-  `ui/agenda.py` (`render_agenda`, `render_day_strip`, the calendar agenda's row/day HTML), and
+  `ui/agenda.py` (`render_agenda`, `render_day_strip`, the calendar agenda's row/day HTML), `ui/cart.py`
+  (the Paris page's plan mode + cart popover — imports its siblings as submodules, never through the
+  package, since `__init__` re-exports it and that would cycle), and
   `ui/ics.py` (`screening_end`, `to_ics`, both export builders, the ad-block sizing). `ui/__init__.py`
   re-exports the full public surface with an explicit `__all__`, so existing `from utils.ui import (...)`
   call sites became `from ui import (...)` — a one-token change; the handful of call sites that need a
@@ -350,7 +352,7 @@ typecheck (mypy blocking + ty advisory), security, test.
   poster, theater, `letterboxd_slug` — the movie-detail route key — and the streaming list-columns —
   `sources.streaming.STREAMING_COLUMNS`, i.e. `flatrate` plus `free`). `sources/` is the layer's name
   instead of the more obvious `data/` because `cinema_dashboard/data/` is a *runtime* directory
-  (`data/chat_state.json`, `data/streaming_providers.parquet`) listed in both this project's and the
+  (`data/chat_state.json`, `data/paris_cart.json`, `data/streaming_providers.parquet`) listed in both this project's and the
   workspace root's `.gitignore` — a Python package placed there would be silently untracked and never
   committed.
 - **Unmatched Allocine films are surfaced, not just counted.** `movies_management`'s Allocine cache
@@ -393,9 +395,10 @@ typecheck (mypy blocking + ty advisory), security, test.
   theaters/runtime buckets/min Letterboxd rating, a Time/Match sort shown only with a taste profile,
   time-of-day chips, and the shared `ui.render_free_time_filter` whose selection is *folded into*
   `AgendaFilters` rather than applied on the spot — don't also call `FreeTimeSelection.apply`). What it
-  deliberately does **not** carry is the calendar's ICS/CSV export, its pydeck theater map and its
-  Agenda/Map view switcher: this is a discovery surface, not a planning one. **Every widget key is
-  namespaced `paris_*`** (`paris_search`, `paris_theaters`, …, `paris_lens`, `paris_day`,
+  deliberately does **not** carry is the calendar's pydeck theater map or its Agenda/Map view switcher. It
+  *does* carry an export, but a deliberately inverted one — see the showtimes-cart bullet below.
+  **Every widget key is
+  namespaced `paris_*`** (`paris_search`, `paris_theaters`, …, `paris_lens`, `paris_day`, `paris_cart`,
   `key_prefix="paris"`) — both
   pages can live in one Streamlit session, so a shared `cal_*` key would make one page's filters follow the
   user onto the other; `_filters_badge()` reads those same `paris_*` session keys. `narrowed =
@@ -435,6 +438,51 @@ typecheck (mypy blocking + ty advisory), security, test.
   the frame every lens and the KPI strip read, not just hidden behind one. "Already seen" on the KPI strip
   therefore only ever counts seen films that survived the drop (i.e. still worth a second chance or a
   rewatch), not every seen film screening this week.
+- **The Paris showtimes cart inverts the calendar's export rule, on purpose.** On the calendar page "the
+  export mirrors its on-screen filters" is structural — one frame feeds the agenda *and* the download, so
+  picking a day scopes the `.ics`. The cart (`core/cart.py` pure, `ui/cart.py` Streamlit) is the opposite: an
+  explicit hand-picked set, **independent of every filter, lens and day**, because a plan has to survive
+  changing the view that produced it. `render_cart_panel` shows the whole cart and `cart_frame` exports all
+  of it; **never narrow either to `filtered`** — that reads like a consistency fix and deletes the feature.
+  **Every showtime on this page is a button** — `ui.render_plan_agenda` is the only agenda it renders, and
+  it is a *second* renderer beside `ui.render_agenda` (still the calendar's) rather than a flag on it,
+  because a widget cannot live inside a markdown blob and that blob is the only reason `.agenda-day-head`
+  sticks; it knowingly trades the sticky header (`.agenda-day--plan` sets `position: static` explicitly, so
+  the trade reads as a decision) and reuses `_agenda_row_html(..., show_times=False)` +
+  `_agenda_day_head_html` instead of forking them. It shipped behind a `paris_plan` toggle that swapped the
+  two renderers; **the toggle was removed in review because the modes showed identical facts** — once
+  `ui.cart.pick_labels` put the venue on every pill there was nothing the static agenda showed that the
+  picker didn't, so it was a mode with no information behind it. Measured on the real programme, the picker
+  costs +213ms/rerun over the static agenda for 417 rows in the widest view (lens=All, day=All); per day it
+  is 3–62 rows. Don't reintroduce the toggle without a reason that isn't "the picker is heavier". Six things
+  not to undo:
+  **`pick_labels` names the theater on *every* pill**, exactly as `_time_pill_html` does in the static
+  agenda. Appending it only when a film spans two venues looks like a de-duplication win and is a data loss:
+  81% of real entries are single-venue, and `show_times=False` means the row itself never names the theater,
+  so that rule hid the venue on four rows out of five. `:gray[…]` (a Streamlit markdown directive, which
+  `st.pills` renders) supplies the `.time-pill-venue` de-emphasis that CSS cannot reach inside a widget.
+  **`core.cart.showtime_id` is a blake2s hex digest of `(film_key, when floored to the minute, theater_id)`**
+  — not the DataFrame index label (`attach_match` merges and resets it, so a label names a different
+  screening after every reload) and not `hash()` (salted per process, so yesterday's cart resolves to
+  nothing); hex-only because it lands in `to_ics`'s **unescaped** `UID:` line and in a `st.container(key=…)`
+  → `.st-key-…` CSS class, either of which a comma or space in a title-fallback `film_key` would break.
+  **`cart_frame` sets the frame's index to those ids**, because `build_ics_events` derives its UID from the
+  index label — under a fresh `RangeIndex` a second export reuses `0..n` for different films and calendar
+  apps overwrite the first import's events; that is also why `ui/ics.py` needed no change.
+  **`pick_group_key` hashes the pills' option *universe*, not `(film, day)`** — Streamlit honours `default=`
+  only when the key is absent and prunes a stored selection when `options` shrink, so a fixed key means
+  "pick 19:00, hide it with a filter, unhide it" reports the pruned value and reconciliation silently
+  deletes a pick nobody touched. Rehashing remounts the widget so it reseeds from the cart: **the cart is the
+  source of truth, the widget is a view of it.**
+  **"Clear plan" and per-item remove sweep `st.session_state` by `PICK_KEY_PREFIX`** — the generalisation of
+  chat's `pop("pin_picker")` rule, by prefix because a universe-hashed key cannot be reconstructed.
+  `CART_SESSION_KEY = "paris_cart"` is deliberately not under that prefix.
+  **The pinned-recs "always re-resolve a persisted snapshot" rule does *not* transfer here.** A pin is a
+  *film* kept indefinitely whose frozen shape drifts as cache columns are added; a cart item is a *screening*
+  pruned the moment it starts (`prune_past` runs every render off `sources.loader._now_paris`), so its
+  snapshot is at most a week old, and its shape is pinned by `CART_SNAPSHOT_FIELDS` plus a contract test that
+  round-trips it through `build_ics_events`. Re-resolving would be *worse*: the only frame available at
+  render time is day/lens-scoped, so an item would gain and lose its poster as the view moved.
 - **`dict(some_groupby_object)` breaks on this project's pandas (3.x).** `DataFrameGroupBy` now exposes a
   public `.keys` attribute — the grouping column name(s), a plain string here — which shadows the mapping
   protocol `dict()` checks for (`hasattr(obj, "keys")` then calls it), raising `TypeError: 'str' object is

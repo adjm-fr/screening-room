@@ -343,10 +343,22 @@ def day_chips(df: pd.DataFrame) -> list[DayChip]:
 
 @dataclasses.dataclass(frozen=True)
 class AgendaShowtime:
-    """One screening inside an agenda row: when, and where."""
+    """One screening inside an agenda row: when, and where.
+
+    ``theater`` is the *display* venue — ``ui.agenda._time_pill_html`` renders it
+    and ``ui.cart.pick_labels`` disambiguates pills with it. ``theater_id`` is the
+    Allocine *identity*, which is what ``core.cart.showtime_id`` keys on. Same
+    split as ``_film_key`` (identity) vs ``ui.cards._title_of`` (display) above:
+    they look interchangeable and are not.
+
+    Defaulted so the field is additive for every construction site, and still a
+    plain scalar, so the ``eq=True`` this class relies on (unlike
+    :class:`AgendaEntry`, which holds a ``pd.Series``) keeps working.
+    """
 
     when: pd.Timestamp
     theater: str
+    theater_id: str = ""
 
 
 # ``eq=False`` on the two dataclasses holding a ``pd.Series``: a generated
@@ -412,7 +424,12 @@ def build_agenda(
             ordered = film_group.sort_values("_dt")
             rep = ordered.iloc[0]
             showtimes = tuple(
-                AgendaShowtime(when=row["_dt"], theater=str(row.get("theater_name") or "")) for _, row in ordered.iterrows()
+                AgendaShowtime(
+                    when=row["_dt"],
+                    theater=str(row.get("theater_name") or ""),
+                    theater_id=str(row.get("theater_id") or ""),
+                )
+                for _, row in ordered.iterrows()
             )
             entries.append(
                 AgendaEntry(

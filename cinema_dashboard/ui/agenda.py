@@ -15,6 +15,13 @@ containing block exactly its own height and ``position: sticky`` on
 share one blob for the sticky heading to work at all. Do not "clean this up"
 into per-row calls.
 
+That constraint is exactly what ``ui.cart.render_plan_agenda`` gives up: putting
+a real ``st.pills`` beside each row means the header can no longer share a blob
+with them, so plan mode trades the sticky heading for selectable showtimes. It is
+a *second* renderer for that reason, not a flag on this one, and it reuses
+:func:`_agenda_row_html` (with ``show_times=False``) and
+:func:`_agenda_day_head_html` rather than forking either.
+
 Rows link exactly like every other movie surface, with one simplification: the
 title is the only anchor in the row (time pills, the rating chip and the lens
 badge are ``<span>``s, and there is deliberately no trailer chip), so it reuses
@@ -91,7 +98,7 @@ def _time_pill_html(showtime: AgendaShowtime) -> str:
     return f'<span class="time-pill">{when} <span class="time-pill-venue">{venue}</span></span>'
 
 
-def _agenda_row_html(entry: AgendaEntry, profile: TasteProfile | None = None) -> str:
+def _agenda_row_html(entry: AgendaEntry, profile: TasteProfile | None = None, *, show_times: bool = True) -> str:
     """One agenda row: thumbnail, title/meta, lens badge, time pills, match chips.
 
     Sections are omitted rather than rendered empty — a film with no runtime
@@ -100,6 +107,12 @@ def _agenda_row_html(entry: AgendaEntry, profile: TasteProfile | None = None) ->
     columns. The lens badge appears only when the row carries a non-null
     ``_category`` (the Paris page); the calendar frame has no such column and
     renders untouched.
+
+    ``show_times=False`` drops the ``.agenda-times`` block for
+    ``ui.cart.render_plan_agenda``, which replaces the static pills with a real
+    ``st.pills`` widget beside the row. That renderer reuses this function rather
+    than forking it, so the poster, title anchor, lens badge and match chips stay
+    byte-identical between browse and plan mode.
     """
     row = entry.row
     title = _title_of(row)
@@ -137,7 +150,7 @@ def _agenda_row_html(entry: AgendaEntry, profile: TasteProfile | None = None) ->
 
     sub_html = f'<div class="agenda-sub">{facts}{rating_chip}{cat_chip}</div>' if facts or rating_chip or cat_chip else ""
 
-    pills = "".join(_time_pill_html(s) for s in entry.showtimes)
+    pills = "".join(_time_pill_html(s) for s in entry.showtimes) if show_times else ""
     times_html = f'<div class="agenda-times">{pills}</div>' if pills else ""
 
     match_html = match_chips_html(row, profile) if profile is not None else ""
@@ -155,8 +168,14 @@ def _agenda_row_html(entry: AgendaEntry, profile: TasteProfile | None = None) ->
     )
 
 
-def agenda_day_html(day: AgendaDay, profile: TasteProfile | None = None) -> str:
-    """One whole day section — sticky header plus every row — as a single blob.
+def _agenda_day_head_html(day: AgendaDay) -> str:
+    """The day heading on its own.
+
+    Factored out so ``ui.cart.render_plan_agenda`` reuses it instead of forking
+    it. Plan mode is the one caller that emits it *without* its rows — a widget
+    cannot live inside a markdown blob, so plan mode knowingly gives up the sticky
+    behaviour this header has in :func:`agenda_day_html` (``.agenda-day--plan``
+    unsticks it explicitly rather than leaving a declaration that does nothing).
 
     The relative labels are qualified with the full date ("Tonight · Tuesday 04
     August") so the heading is never ambiguous once the page has been left open
@@ -166,14 +185,20 @@ def agenda_day_html(day: AgendaDay, profile: TasteProfile | None = None) -> str:
     heading = day.label if day.label == full_date else f"{day.label} · {full_date}"
     count = day.film_count
     count_label = f"{count} film" if count == 1 else f"{count} films"
-    rows_html = "".join(_agenda_row_html(entry, profile) for entry in day.entries)
-
     return (
-        f'<section class="agenda-day{" agenda-day--today" if day.is_today else ""}">'
         f'<header class="agenda-day-head">'
         f'<span class="agenda-day-label">{html.escape(heading)}</span>'
         f'<span class="agenda-day-count">{html.escape(count_label)}</span>'
         f"</header>"
+    )
+
+
+def agenda_day_html(day: AgendaDay, profile: TasteProfile | None = None) -> str:
+    """One whole day section — sticky header plus every row — as a single blob."""
+    rows_html = "".join(_agenda_row_html(entry, profile) for entry in day.entries)
+    return (
+        f'<section class="agenda-day{" agenda-day--today" if day.is_today else ""}">'
+        f"{_agenda_day_head_html(day)}"
         f"{rows_html}"
         f"</section>"
     )

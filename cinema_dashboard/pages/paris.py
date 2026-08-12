@@ -22,9 +22,28 @@ categorised row, so the lenses stay visible even while browsing "All".
 Filtering is the calendar page's machinery verbatim —
 :class:`core.agenda.AgendaFilters` + :func:`core.agenda.apply_filters` +
 :func:`core.agenda.apply_day` — so there is exactly one filter chain and one
-frame here too. What this page does *not* carry is the calendar's ICS/CSV
-export, its theater map and its Agenda/Map view switcher: this is a discovery
-surface, not a planning one.
+frame here too. What this page does *not* carry is the calendar's theater map or
+its Agenda/Map view switcher.
+
+It *does* carry an export, and it is deliberately the opposite of the calendar's.
+There, "the export mirrors its on-screen filters" is structural: one frame feeds
+both the agenda and the download, so picking a day scopes the ``.ics``. Here,
+discovery ends in a decision, so **every showtime is a button**
+(``ui.cart.render_plan_agenda``) and the picked screenings accumulate in a cart
+that is *independent* of every filter, lens and day — a plan has to survive
+changing the view that produced it. Do not "fix" that by narrowing the cart to
+``filtered``; see ``core.cart``'s module docstring for the full reasoning, and
+``ui.cart`` for why the cart, not the widget, is the source of truth.
+
+**This page has no read-only agenda mode, on purpose.** It shipped with a "Plan"
+toggle swapping ``ui.render_agenda`` for the picker, and the toggle was removed
+because the two rendered the same facts: once the pills carried the theater name
+(``ui.cart.pick_labels``) there was nothing browse mode showed that plan mode did
+not, so the toggle was a mode with no information behind it. Measured on the real
+programme, the picker costs +213ms per rerun over the static agenda for 417 rows
+in the widest view — the price of the sticky day header
+(``.agenda-day--plan`` unsticks it) and worth it for the page's whole point. The
+calendar page still uses ``ui.render_agenda``; this one does not.
 
 Three orderings are load-bearing:
 
@@ -57,6 +76,7 @@ from typing import Literal
 
 import pandas as pd
 import streamlit as st
+from streamlit.delta_generator import DeltaGenerator
 
 from core.agenda import (
     RUNTIME_BUCKETS,
@@ -67,16 +87,19 @@ from core.agenda import (
     build_agenda,
     day_chips,
 )
+from core.cart import ScreeningCart, cart_index, save_cart
 from core.taste import TasteProfile, attach_match, build_affinity
 from sources.discover import build_screenings
 from sources.loader import future_showtimes, get_paths, load_letterboxd_cache, load_ratings, load_showtimes, load_watchlist
 from ui import (
-    render_agenda,
+    cart_state,
+    render_cart_panel,
     render_chip_filter,
     render_day_strip,
     render_empty_state,
     render_free_time_filter,
     render_kpi_strip,
+    render_plan_agenda,
 )
 
 SORT_TIME = "⏱ Time"
@@ -253,15 +276,21 @@ def _filters_badge() -> str:
     return f"Filters · {count}" if count else "Filters"
 
 
-def _render_toolbar(screenings: pd.DataFrame, *, has_profile: bool) -> tuple[AgendaFilters, Literal["time", "match"]]:
-    """Render every control and return the selection plus the agenda's sort mode.
+def _render_toolbar(
+    screenings: pd.DataFrame, *, has_profile: bool
+) -> tuple[AgendaFilters, Literal["time", "match"], DeltaGenerator]:
+    """Render every control; return the filters, the sort mode and the cart slot.
 
-    Modelled on the calendar page's toolbar minus the export slot and the
-    Agenda/Map view switcher — this page has neither. The free-time selection is
-    folded *into* :class:`~core.agenda.AgendaFilters` rather than applied on the
-    spot, so it stays inside the one filter chain.
+    Modelled on the calendar page's toolbar minus the Agenda/Map view switcher.
+    The free-time selection is folded *into* :class:`~core.agenda.AgendaFilters`
+    rather than applied on the spot, so it stays inside the one filter chain.
+
+    The cart slot is an empty container returned to be filled *after* the agenda,
+    the same deferred-container trick ``kpi_slot`` uses below and the calendar's
+    export slot uses: the agenda reconciles the cart as it renders, so a popover
+    filled here would show the previous interaction's count for one frame.
     """
-    col_search, col_filters, col_sort = st.columns([6, 2, 3], vertical_alignment="bottom")
+    col_search, col_filters, col_sort, col_cart = st.columns([5, 2, 3, 2], vertical_alignment="bottom")
 
     with col_search:
         search = st.text_input(
@@ -294,6 +323,8 @@ def _render_toolbar(screenings: pd.DataFrame, *, has_profile: bool) -> tuple[Age
             )
         sort_mode = "match" if choice == SORT_MATCH else "time"
 
+    cart_slot = col_cart.container()
+
     sel_tod = render_chip_filter("Time of day", list(TIME_BUCKET_LABELS), key="paris_tod", label_visibility="collapsed")
     # Date options come from the unfiltered frame, so narrowing another filter
     # can't drop a date out from under the pickers.
@@ -310,7 +341,7 @@ def _render_toolbar(screenings: pd.DataFrame, *, has_profile: bool) -> tuple[Age
         days_off=free_time.days_off,
         unavailable=free_time.unavailable,
     )
-    return filters, sort_mode
+    return filters, sort_mode, cart_slot
 
 
 def main() -> None:
@@ -371,8 +402,40 @@ def main() -> None:
     # Filled after filtering, so the counts describe the frame the page shows.
     kpi_slot = st.container()
 
-    filters, sort_mode = _render_toolbar(screenings, has_profile=has_profile)
+    filters, sort_mode, cart_slot = _render_toolbar(screenings, has_profile=has_profile)
 
+    # The cart is loaded (and pruned of screenings that have already started)
+    # before the programme renders, because plan mode reconciles into it as it
+    # goes. The panel is filled *after*, on every exit path — a plan must not
+    # lose its export button just because the current filters match nothing.
+    cart = cart_state()
+    _render_programme(
+        screenings,
+        filters=filters,
+        sort_mode=sort_mode,
+        profile=profile if has_profile else None,
+        kpi_slot=kpi_slot,
+        cart=cart,
+    )
+    with cart_slot:
+        render_cart_panel(cart)
+
+
+def _render_programme(
+    screenings: pd.DataFrame,
+    *,
+    filters: AgendaFilters,
+    sort_mode: Literal["time", "match"],
+    profile: TasteProfile | None,
+    kpi_slot: DeltaGenerator,
+    cart: ScreeningCart,
+) -> None:
+    """Filter, categorise and render the week's programme (KPIs, lens, day, agenda).
+
+    Split out of :func:`main` so its three "nothing matches" early returns cannot
+    skip the cart panel — that panel shows the whole cart, which is exactly what a
+    user needs when a filter has just emptied the screen.
+    """
     # ── One filter chain, one frame ──────────────────────────────────────────
     # Same machinery as the Watchlist Screenings page: every control except the
     # lens and the day strip lands in AgendaFilters, and apply_filters is the
@@ -435,7 +498,13 @@ def main() -> None:
     if filtered.empty:
         render_empty_state("🔍", "Nothing here", "Pick another day or lens, or go back to All.")
         return
-    render_agenda(build_agenda(filtered, sort=sort_mode), profile=profile if has_profile else None)
+
+    # The index is built from `filtered` — the frame actually on screen — so a
+    # picked showtime carries the snapshot the ICS export needs without the cart
+    # ever having to re-find its row.
+    days = build_agenda(filtered, sort=sort_mode)
+    if render_plan_agenda(days, profile=profile, cart=cart, index=cart_index(filtered)):
+        save_cart(cart)
 
 
 main()

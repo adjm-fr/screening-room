@@ -15,7 +15,7 @@ contracts = { workspace = true }
 # Shared dev toolchain — defined once here instead of triplicated across members.
 [dependency-groups]
 dev = [
-    "ruff==0.16.1",
+    "ruff==0.16.2",
     "mypy>=2.3.0",
     # Advisory second type checker, non-blocking in CI while it is pre-1.0 — see
     # the `ty` note under [tool.mypy] below. Pinned exactly (like ruff and bandit)

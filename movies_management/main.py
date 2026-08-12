@@ -41,7 +41,6 @@ from modules.utils import (
     assign_cache_source,
     build_movies_df,
     fetch_user_data,
-    find_missing_cast_slugs,
     find_stale_slugs,
     merge_letterboxd_metadata,
     save_parquet,
@@ -156,18 +155,15 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
 
         logger.info("Cache size: %s", data_letterboxd_df.shape)
 
-        # === REFRESH STALE / INCOMPLETE ENTRIES ===
-        # Identify movies older than days_to_update threshold, or missing the cast/
-        # trailer_url columns added after earlier rows were cached, for metadata refresh.
+        # === REFRESH STALE ENTRIES ===
+        # Age is the only refresh trigger: movies whose integration_date is older than the
+        # days_to_update threshold. Backfilling a newly added column onto rows cached before
+        # it existed is an ad-hoc script's job (or --reset_database), not this run's.
         slugs_to_refresh: set[str] = set()
 
-        if data_letterboxd_df.shape[0] > 0:
-            if "integration_date" in data_letterboxd_df.columns:
-                now = pd.to_datetime(datetime.now())
-                slugs_to_refresh.update(find_stale_slugs(data_letterboxd_df, days_to_update, now))
-            # Gradual backfill: converges over several runs, bounded by refresh_limit below,
-            # same as stale entries. --reset_database remains the immediate escape hatch.
-            slugs_to_refresh.update(find_missing_cast_slugs(data_letterboxd_df))
+        if data_letterboxd_df.shape[0] > 0 and "integration_date" in data_letterboxd_df.columns:
+            now = pd.to_datetime(datetime.now())
+            slugs_to_refresh.update(find_stale_slugs(data_letterboxd_df, days_to_update, now))
 
         if slugs_to_refresh:
             total_candidates = len(slugs_to_refresh)
@@ -175,7 +171,7 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
             if refresh_limit is not None:
                 capped = capped[:refresh_limit]
             logger.info(
-                "%d/%d stale/incomplete movies will be refreshed (limit: %s, threshold: >%d days).",
+                "%d/%d stale movies will be refreshed (limit: %s, threshold: >%d days).",
                 len(capped),
                 total_candidates,
                 refresh_limit or "none",

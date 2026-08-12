@@ -151,16 +151,15 @@ null, rather than vanishing from the frame and failing contract validation.
 ## Refresh & backfill — which source re-runs
 
 A refresh re-runs **both** producers for the slug: `refresh_letterboxd_data` calls the same `_fetch_all`, so
-every column above is refetched, not just the stale ones. Two triggers, one shared per-run cap
-(`LETTERBOXD_REFRESH_LIMIT`, default 1000):
+every column above is refetched, not just the stale one. **Age is the only trigger**, capped per run:
 
-1. **Age** — `find_stale_slugs`: `integration_date` older than `LETTERBOXD_DAYS_TO_UPDATE` (default 365).
-2. **Missing TMDB enrichment** — `find_missing_cast_slugs`: a null `cast`. `cast` is the backfill signal for
-   the whole TMDB group because it and `trailer_url` were added after earlier rows were cached.
+1. **Age** — `find_stale_slugs`: `integration_date` older than `LETTERBOXD_DAYS_TO_UPDATE` (default 365),
+   bounded by `LETTERBOXD_REFRESH_LIMIT` (default 1000).
 
-> ⚠️ **`composers` is not a valid backfill signal.** It is legitimately null on ~21% of films (no original
-> score). Adding it to `find_missing_cast_slugs` would re-refresh a fifth of the cache every run, forever,
-> burning the 1000-slug budget. Same for `trailer_url` (45% null) and `tagline` (30% null).
+> ⚠️ **A null column is not a refresh trigger, by design.** Nulls here are ambiguous: `composers` is
+> legitimately null on ~21% of films (no original score), `trailer_url` on 45%, `tagline` on 30%. Wiring any
+> of them — or `cast` — into the run would re-queue a large slice of the cache every run, forever, burning
+> the 1000-slug budget. Backfilling a new column onto old rows is an ad-hoc script's job (see below).
 
 ## Quirks that bite
 
@@ -205,9 +204,10 @@ Five places, and skipping any one of them fails quietly rather than loudly:
    before it existed. `test_get_letterboxd_data.py::test_refresh_adds_columns_missing_from_target_cache` is
    the pattern to copy.
 
-Backfilling the column onto existing rows is then either a null-signal refresh (extend
-`find_missing_cast_slugs`, but only if the column is *never* legitimately null — see the warning above) or
-`--reset_database`.
+Backfilling the column onto existing rows is then either a one-off ad-hoc script (feed the affected slugs
+straight to `refresh_letterboxd_data` — do **not** add a null-column trigger to `main.py`, see the warning
+above) or `--reset_database`. Rows also gain it on their own as they age past
+`LETTERBOXD_DAYS_TO_UPDATE`.
 
 ---
 

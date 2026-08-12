@@ -70,7 +70,7 @@ LETTERBOXD_DAYS_TO_UPDATE=365
 |----------|----------|---------|-------------|
 | `OUTPUT_PATH` | Yes | — | Directory path where parquet files will be saved |
 | `LETTERBOXD_DAYS_TO_UPDATE` | No | `365` | Number of days before cached movie metadata is refreshed |
-| `LETTERBOXD_REFRESH_LIMIT` | No | `1000` | Max stale/incomplete movies to refresh per run (raise to lift the cap) |
+| `LETTERBOXD_REFRESH_LIMIT` | No | `1000` | Max stale movies to refresh per run (raise to lift the cap) |
 | `TMDB_API_KEY` | No | — | TMDB API key for French title, cast, crew, and trailer enrichment (`french_title`, `cast`, `directors`, `producers`, `writers`, `composers`, `trailer_url` columns). Pipeline runs without it, but those columns stay `null` — and a null `directors` degrades the dashboard's taste ranking and showtimes matching |
 
 ## Usage
@@ -87,12 +87,12 @@ This will:
 1. Fetch your Letterboxd films and watchlist
 2. Identify all unique movies
 3. Build/update the movie metadata cache
-4. Refresh any cached entries older than `LETTERBOXD_DAYS_TO_UPDATE` days, plus entries missing the TMDB `cast`/`trailer_url` enrichment (see below)
+4. Refresh any cached entries older than `LETTERBOXD_DAYS_TO_UPDATE` days (see below)
 5. Export enriched datasets
 
-Cache rows written before the `cast`/`trailer_url` columns existed are backfilled gradually: each run adds missing-cast rows to the refresh batch, still bounded by `LETTERBOXD_REFRESH_LIMIT`, so a large cache converges over a few runs. `--reset_database` remains the immediate full-rebuild escape hatch.
+**Age is the only refresh trigger.** A run re-fetches a cached row solely because its `integration_date` has aged past `LETTERBOXD_DAYS_TO_UPDATE`, capped at `LETTERBOXD_REFRESH_LIMIT` slugs per run. Rows are never re-queued because a column is null.
 
-`composers` deliberately does **not** join that backfill signal: it is legitimately `null` for ~26% of films (no original score), so treating a null as "incomplete" would re-queue a quarter of the cache on every run and consume the refresh budget forever. Existing rows gain `composers` when they next go stale, or immediately via `--reset_database`.
+Backfilling a newly added column onto rows cached before it existed is therefore a **separate, ad-hoc job** — a one-off script targeting the affected slugs, or `--reset_database` for a full rebuild. Keeping it out of the normal run is deliberate: a null-column signal cannot distinguish "not fetched yet" from "legitimately empty" (`composers` is null for ~26% of films with no original score, `trailer_url` for ~45%), so it would re-queue a large slice of the cache on every run and consume the refresh budget forever.
 
 ### Force Cache Refresh
 

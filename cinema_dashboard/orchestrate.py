@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 
 import click
-from common import configure_logging, reveal
+from common import configure_logging, reveal, secret_values
 
 from config import settings
 from integrations.scrapers import (
@@ -38,7 +38,7 @@ from sources.streaming import refresh_streaming_providers
 
 # configure_logging quiets httpx (one INFO line per request) so the streaming
 # refresh doesn't spam one line per TMDB call (can be thousands for a watchlist).
-configure_logging(settings.log_level, secrets=[reveal(settings.tmdb_api_key), reveal(settings.gemini_api_key)])
+configure_logging(settings.log_level, secrets=secret_values(settings))
 logger = logging.getLogger(__name__)
 
 # Staleness rules and scraper argv lists live in modules/scrapers.py — the

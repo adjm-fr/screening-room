@@ -31,7 +31,7 @@ from pathlib import Path
 import click
 import modules.get_letterboxd_data as ldm
 import pandas as pd
-from common import configure_logging
+from common import configure_logging, secret_values
 from common.parquet_io import write_parquet_validated
 from contracts import DATA_LETTERBOXD
 from letterboxdpy.user import User
@@ -52,7 +52,7 @@ settings = Settings()  # type: ignore[call-arg]
 # Structured logging with timestamps and level indicators (shared helper). The TMDB
 # key is passed so it can never reach the log: it travels as a query parameter, so
 # httpx errors carry it inside the request URL they embed in their message.
-configure_logging("INFO", secrets=[settings.tmdb_api_key.get_secret_value()])
+configure_logging("INFO", secrets=secret_values(settings))
 logger = logging.getLogger(__name__)
 
 

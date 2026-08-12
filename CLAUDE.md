@@ -145,9 +145,13 @@ typecheck (mypy blocking + ty advisory), security, test.
     It would *not* have caught the leak above: authenticating requires `.get_secret_value()`, and
     from that moment the plain key sits inside the request URL that httpx embeds in its errors. The
     two cover different surfaces — the credential object, and third-party text that embeds it.
+    That typing is also what makes the scrubbing self-maintaining: entry points pass
+    `secrets=secret_values(settings)`, which walks the model and collects every non-empty
+    `SecretStr`, so **declaring a field as `SecretStr` is the only thing to remember.** A
+    hand-written list per entry point was the weak link — add a fourth credential and nothing
+    fails or warns, its value just starts appearing in the logs.
     `common.reveal(secret)` unwraps the optional ones at the wire boundary (`app.py`,
-    `orchestrate.py`, `chat/ui.py`, `pipeline/resources.py`); movies' non-optional field uses
-    `.get_secret_value()` directly in `main.py`. **Never `str()` a `SecretStr` to pass it on** —
+    `orchestrate.py`, `chat/ui.py`, `pipeline/resources.py`). **Never `str()` a `SecretStr` to pass it on** —
     that yields the literal mask and buys a silent 401 instead of a crash; `pipeline/resources.py`
     does it correctly beside four neighbours that *are* plain `str()` calls. `bool()` still tracks
     emptiness, so the `if not settings.tmdb_api_key` guards kept working across the switch.

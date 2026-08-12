@@ -17,7 +17,7 @@ with every section has no page of its own to be routed to.
 
 import plotly.io as pio
 import streamlit as st
-from common import configure_logging, reveal
+from common import configure_logging, secret_values
 
 from config import settings
 from pages.movie import main as render_movie_detail
@@ -27,7 +27,7 @@ from ui.cmdk import mount_cmdk
 configure_logging(
     settings.log_level,
     quiet=("httpx", "httpcore", "google_genai", "urllib3"),
-    secrets=[reveal(settings.tmdb_api_key), reveal(settings.gemini_api_key)],
+    secrets=secret_values(settings),
 )
 
 st.set_page_config(

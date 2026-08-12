@@ -18,7 +18,7 @@ import tomllib
 from functools import cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import BaseModel, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -79,3 +79,27 @@ def reveal(secret: SecretStr | None) -> str | None:
     surfaces — the credential object, and third-party text that embeds it.
     """
     return secret.get_secret_value() if secret is not None else None
+
+
+def secret_values(settings: BaseModel) -> list[str]:
+    """Every non-empty :class:`~pydantic.SecretStr` on a settings model, revealed.
+
+    Feed this to :func:`common.logging.configure_logging`'s ``secrets=`` so that
+    **declaring a field as ``SecretStr`` is the only thing anyone has to remember**.
+    A hand-written list at each entry point is the weak link in scrubbing: the day a
+    fourth credential is added to ``Settings``, nothing fails and nothing warns — its
+    value just starts appearing in the logs. Deriving the list from the model closes
+    that by construction, and makes ``SecretStr`` load-bearing rather than decorative.
+
+    Empty secrets are skipped (an unset optional key is not a secret), and non-secret
+    fields are ignored, so a ``log_level`` of ``"INFO"`` can never be scrubbed out of
+    the very messages it configures.
+    """
+    values: list[str] = []
+    # ``type(settings).model_fields`` rather than the instance attribute: pydantic
+    # deprecated access via the instance.
+    for name in type(settings).model_fields:
+        value = getattr(settings, name, None)
+        if isinstance(value, SecretStr) and (revealed := value.get_secret_value()):
+            values.append(revealed)
+    return values

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from common import AppSettings, configure_logging, make_settings_config, reveal
+from common import AppSettings, configure_logging, make_settings_config, reveal, secret_values
 from common.logging import RedactingFormatter, redact
 from common.parquet_io import (
     SchemaValidationError,
@@ -154,3 +154,42 @@ def test_empty_secret_is_falsy() -> None:
     """
     assert not SecretStr("")
     assert SecretStr("x")
+
+
+class _KeyedSettings(AppSettings):
+    """Stands in for a member's Settings: two credentials plus ordinary config."""
+
+    tmdb_api_key: SecretStr | None = None
+    gemini_api_key: SecretStr | None = None
+    log_level: str = "INFO"
+
+
+def test_secret_values_collects_every_secret_field() -> None:
+    s = _KeyedSettings(tmdb_api_key=SecretStr("AAA"), gemini_api_key=SecretStr("BBB"))
+    assert sorted(secret_values(s)) == ["AAA", "BBB"]
+
+
+def test_secret_values_ignores_non_secret_fields() -> None:
+    """A log_level of "INFO" must never be scrubbed out of the messages it configures."""
+    s = _KeyedSettings(tmdb_api_key=SecretStr("AAA"))
+    assert secret_values(s) == ["AAA"]
+
+
+def test_secret_values_skips_unset_and_empty_secrets() -> None:
+    assert secret_values(_KeyedSettings()) == []
+    assert secret_values(_KeyedSettings(tmdb_api_key=SecretStr(""))) == []
+
+
+def test_secret_values_picks_up_a_newly_declared_key_on_its_own() -> None:
+    """The reason this exists: a hand-written list at each entry point goes stale.
+
+    Adding a credential to Settings must protect it without anyone remembering to
+    register it somewhere — nothing would fail or warn if they forgot, the value
+    would just start appearing in the logs.
+    """
+
+    class _WithNewKey(_KeyedSettings):
+        brand_new_api_key: SecretStr | None = None
+
+    s = _WithNewKey(tmdb_api_key=SecretStr("AAA"), brand_new_api_key=SecretStr("CCC"))
+    assert "CCC" in secret_values(s)

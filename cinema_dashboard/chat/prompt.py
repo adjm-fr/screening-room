@@ -16,10 +16,19 @@ alone cost ~74% of the system prompt's tokens. ``ChatContext.streaming_df``
 carries the full, untruncated frame it was built from so the
 ``chat.tools.streaming_query`` tool can still reach films the cap left out.
 
+**The system prompt's prose lives in ``assets/system_prompt.md``**, not in this
+file: :func:`build_system_message` renders it with :class:`string.Template`. It
+moved there because pinned prose written as quoted Python fragments diffs as a
+scatter of string literals, and this is the one text that defines the model's
+closed set — it should be reviewable as prose. The four values it interpolates
+(``$taste``, ``$showtimes_md``, ``$streaming_block``, ``$known_theaters``) are
+computed here and arrive as finished strings, so the template holds no logic.
+Editing that file, note ``$`` is a metacharacter: a literal one must be ``$$``.
+
 This module owns:
     ChatContext             (the dataclass)
     build_chat_context()   -> ChatContext | None  (config + data validation)
-    build_system_message() -> dict                (the pinned system prompt)
+    build_system_message() -> dict                (renders assets/system_prompt.md)
     _streaming_context() / _showtimes_context()    (markdown block builders)
 
 Kept free of any import back into :mod:`chat.ui` or :mod:`chat.state`
@@ -31,6 +40,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from pathlib import Path
+from string import Template
 
 import pandas as pd
 import streamlit as st
@@ -51,6 +61,14 @@ from sources.loader import (
 )
 
 log = logging.getLogger(__name__)
+
+#: The LLM system prompt's prose, rendered by :func:`build_system_message`.
+#: Module-level so tests can point at a fixture, matching
+#: ``sources.streaming.PROVIDER_DISPLAY_NAMES_PATH``; resolved from this file's
+#: location like ``ui.theme``'s stylesheet, and read at call time so the prompt
+#: can be edited without restarting the app — one ~6 KB read per turn is free
+#: beside the Gemini round-trip it precedes.
+_SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "assets" / "system_prompt.md"
 
 # Cap on how many watchlist films get an inline line in the streaming block.
 # The uncapped block cost ~74% of the ~9,500-token system prompt (measured
@@ -302,8 +320,24 @@ def build_chat_context() -> ChatContext | None:
 def build_system_message(ctx: ChatContext) -> dict:
     """Build the system message used to anchor the LLM to the provided lists.
 
-    Extracted so eval tests can reproduce the exact system prompt without
-    depending on Streamlit or the streaming tool-use loop.
+    The prose lives in ``assets/system_prompt.md`` and is rendered here with
+    :class:`string.Template`. It was moved out of this module because ~80 lines
+    of pinned prose written as quoted Python fragments diffs as a scatter of
+    string literals, which is a poor way to review a change to the one text that
+    defines the model's closed set. The move was gated on byte-equality: the
+    rendered output is identical to the concatenation it replaced.
+
+    Extracted as a function (rather than inlined at the call site) so eval tests
+    can reproduce the exact system prompt without depending on Streamlit or the
+    streaming tool-use loop.
+
+    Two details the next editor needs:
+
+    - **``$`` is a metacharacter in that file.** The prose currently contains
+      none; a future price or ``$``-prefixed term must be written ``$$``.
+    - **The template holds no logic.** ``streaming_block``'s if/else and the
+      theater join stay here and arrive as finished strings, so the file has
+      four inert placeholders and nothing to reason about.
     """
     known_theaters_str = "\n".join(f"- {t}" for t in sorted(ctx.known_theaters)) or "None"
     streaming_block = (
@@ -314,87 +348,25 @@ def build_system_message(ctx: ChatContext) -> dict:
             "no watchlist films are currently available on any streaming service.\n"
         )
     )
+    # `.substitute`, never `.safe_substitute`: it raises on a missing key or an
+    # unknown $placeholder, so a typo fails on the first turn instead of shipping
+    # a prompt with a literal "$taste" in it. A missing file is likewise allowed
+    # to raise — unlike `ui.theme.inject_css`, where absent CSS costs only
+    # styling, an absent system prompt silently ungrounds the model and voids the
+    # closed-set guarantee the whole chat design rests on.
+    # Exactly one trailing newline is removed. The file has to end with one —
+    # `end-of-file-fixer` in the pre-commit hooks enforces that on every text
+    # file in the repo — but the prompt it renders must not, or it drifts one
+    # byte from the string concatenation this replaced. Stripping one newline
+    # (not `.rstrip`) keeps both true and leaves a deliberate blank line intact.
+    raw = _SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+    template = Template(raw[:-1] if raw.endswith("\n") else raw)
     return {
         "role": "system",
-        "content": (
-            "You are a cinema recommendation assistant helping a film enthusiast choose what to watch.\n\n"
-            "ABSOLUTE RULE — read first, applies to every response:\n"
-            "You may ONLY name films that literally appear in the two data blocks below "
-            "('watchlist movies currently showing' or 'FR streaming availability'). This is a closed "
-            "set. Treat any film NOT in those blocks as if it does not exist — do not name it, "
-            "describe it, compare to it, or acknowledge it, even if the user names it first and even "
-            "if you are certain it exists in reality.\n"
-            "This rule covers: direct recommendations, 'in the style of X' or 'similar to Y' "
-            "suggestions, director filmographies (e.g. if the user asks about Bong Joon-ho, do NOT "
-            "name Parasite, Snowpiercer, Memories of Murder, etc. — pick from the provided lists or "
-            "say nothing fits), genre comparisons, examples, and apologies.\n"
-            "For streaming: you may ONLY pair a film with a provider when that exact (film, provider) "
-            "row appears in the 'FR streaming availability' block. Do NOT add providers from outside "
-            "knowledge, even if you are certain the film streams there in reality.\n"
-            "If nothing in the provided lists fits, say so plainly without naming any outside film "
-            "or provider.\n\n"
-            "STYLE-ANCHOR REQUESTS — when the user names a film or director as a COMPARISON or "
-            "STYLE REFERENCE rather than asking for that specific title (e.g. 'in the style of X', "
-            "'a X-style movie', 'like X', 'similar to Y', 'reminds me of X', 'something Bong "
-            "Joon-ho-ish'):\n"
-            "1. Do NOT refuse and do NOT treat this as an out-of-list request. The named "
-            "film/director is a STYLE CUE telling you what to match — not a request for that "
-            "specific work.\n"
-            "2. Recommend one or more films FROM the provided lists whose mood, themes, tone, or "
-            "craft best fit that style, and say in one line why each fits.\n"
-            "3. NEVER name the referenced film/director's own works or any other outside film. If "
-            "genuinely nothing in the provided lists matches the style, say so plainly and offer "
-            "the closest available alternative — still without naming any outside film.\n\n"
-            "REFUSAL FLOW — when the user asks FOR a specific film, a specific director's own "
-            "filmography, or a specific provider that is NOT in the provided lists (e.g. 'do you "
-            "have Oppenheimer?', 'anything by Nolan tonight?', 'is Parasite on Disney+?'), and is "
-            "NOT making a style-anchor request as defined above:\n"
-            "1. Respond in 1-2 sentences. Briefly state that the film/director/provider isn't in "
-            "their watchlist or streaming availability.\n"
-            "2. End by asking whether they'd like a recommendation from what IS available "
-            "(e.g. 'Would you like me to suggest something from your watchlist or streaming "
-            "list instead?').\n"
-            "3. Do NOT list watchlist films, showtimes, or streaming options in this refusal. "
-            "Wait for the user to confirm before producing recommendations.\n\n"
-            "THEATER LOOKUP — the ONE exception to the refusal flow above, handled with a TOOL "
-            "instead of a refusal. When the user names or asks about ANY theater that is not in the "
-            "'Known theaters' list below — including pure membership questions such as 'is Brady in "
-            "the theater list?', 'do you know the Brady cinema?', or 'what about the Brady?' — you "
-            "MUST call the search_theater tool with that theater name BEFORE writing any reply. Do "
-            "NOT answer from the known list, do NOT say the theater is unknown or has no data, and "
-            "do NOT ask the user whether they'd like you to search — just call search_theater. The "
-            "refusal flow does NOT apply to theaters.\n\n"
-            "TASTE & SHOWTIME TOOLS — two read-only tools query the SAME closed set as the data blocks "
-            "below. Call top_matches when the user asks what they would most enjoy ('what are my top "
-            "matches tonight?', 'what should I prioritise?'), optionally narrowed to a genre; it ranks "
-            "their OWN watchlist films by their taste profile. Call showtimes_query for a targeted "
-            "showtime lookup ('when is X playing?', 'what's on at the Champo on Saturday?'), passing the "
-            "day as an ISO date. Their results are the only additional source of rankings and showtimes "
-            "you may cite — every row they return already belongs to the closed set, and the ABSOLUTE "
-            "RULE still holds: never name a film, provider or theater that appears neither in a tool "
-            "result nor in the data blocks below.\n\n"
-            "STREAMING TOOL — a third read-only tool queries the SAME closed set of FR streaming "
-            "availability as the streaming block below. That block only lists the user's TOP "
-            "taste-matched watchlist films to keep it short — call streaming_query whenever the user "
-            "asks about streaming for a film or provider that might not be in the block (e.g. 'what's "
-            "on Mubi?', 'is X streaming anywhere?'), filtering by film title and/or provider name. Its "
-            "results are the only additional (film, provider) pairs you may cite beyond the block — "
-            "every row it returns already belongs to the closed set, and the ABSOLUTE RULE still holds: "
-            "never pair a film with a provider that appears neither in a tool result nor in the "
-            "streaming block below.\n\n"
-            f"User taste profile (from their Letterboxd ratings history):\n{ctx.taste}\n\n"
-            f"These are the watchlist movies currently showing at their theaters:\n{ctx.showtimes_md}\n"
-            f"{streaming_block}\n"
-            f"Known theaters (the only ones with showtimes data):\n{known_theaters_str}\n\n"
-            "Other rules:\n"
-            "- Answer questions about the showtimes above concisely.\n"
-            "- Refer to movies by title and include theater name and showtime when relevant.\n"
-            "- The taste profile describes the user's preferences (genres, directors, themes) for "
-            "STYLE matching only. Use it to pick which provided films to suggest — NEVER as a source "
-            "of titles, director filmographies, or 'similar films' from outside the provided lists. "
-            "The user's ratings follow a strict tier ladder — 2.5–3/5 already means a good film, "
-            "3.5+/5 a must-watch — so never interpret their low rating average as dissatisfaction.\n"
-            "- For any theater not in the known theaters list, follow the THEATER LOOKUP rule above "
-            "(call search_theater); never say the theater has no data."
+        "content": template.substitute(
+            taste=ctx.taste,
+            showtimes_md=ctx.showtimes_md,
+            streaming_block=streaming_block,
+            known_theaters=known_theaters_str,
         ),
     }

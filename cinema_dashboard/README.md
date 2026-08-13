@@ -178,7 +178,8 @@ cinema_dashboard/
 │   └── config.toml               # Cinema theme: dark + light, system-driven
 ├── assets/
 │   ├── styles.css                # Design tokens, movie cards, poster rails, agenda rows + sticky day headers + time pills, chips, KPI cards, detail page + contribution bars, anchor styling, motion, focus rings, mobile media queries
-│   └── provider_display_names.json  # Slug → pretty-name catalogue (auto-grown by refresh_streaming_providers)
+│   ├── provider_display_names.json  # Slug → pretty-name catalogue (auto-grown by refresh_streaming_providers)
+│   └── system_prompt.md          # The LLM system prompt's prose, rendered by chat.prompt.build_system_message ($ is a metacharacter — escape as $$)
 ├── pipeline/                     # Dagster pipeline (alternative to orchestrate.py)
 │   ├── assets.py                 # @asset definitions for showtimes + watchlist (consume integrations/scrapers.py)
 │   ├── resources.py              # ScraperConfig resource (ScraperConfig.from_settings)

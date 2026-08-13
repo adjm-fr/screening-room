@@ -549,6 +549,44 @@ async def test_fetch_bundle_skips_blank_territory_names():
     assert result.original_language is None
 
 
+@respx.mock
+async def test_fetch_bundle_survives_null_territory_lists():
+    """A JSON `null` in an optional list must not take the required credits down with it.
+
+    `default_factory` covers only an *absent* key, so without `NullableList` a payload
+    carrying `"production_companies": null` raised ValidationError for the whole bundle —
+    `_fetch_bundle` returned an empty `TmdbColumns()` and nulled `directors`/`cast` on a
+    film whose credits parsed perfectly, logged as schema drift it isn't.
+    """
+    payload = _bundle_json(cast=[{"name": "Actor A", "order": 0}], crew=[_crew("Jane Doe", "Director")]) | {
+        "production_companies": None,
+        "production_countries": None,
+        "origin_country": None,
+        "spoken_languages": None,
+    }
+    _mock_bundle(payload)
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.credits.directors == "Jane Doe"
+    assert result.credits.cast == "Actor A"
+    # null, absent and [] all mean "TMDB has nothing on record" — one outcome, not three.
+    assert result.studio is None
+    assert result.country is None
+    assert result.origin_country is None
+    assert result.language is None
+
+
+@respx.mock
+async def test_fetch_bundle_still_flags_a_null_appended_block(caplog):
+    """The null tolerance is scoped to the optional fields — a null `credits` is still drift."""
+    _mock_bundle(_bundle_json() | {"credits": None})
+    with caplog.at_level(logging.WARNING, logger="modules.get_letterboxd_data"):
+        async with httpx.AsyncClient() as client:
+            result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result == TmdbColumns()
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
 async def test_fetch_bundle_returns_empty_when_tmdb_id_falsy():
     async with httpx.AsyncClient() as client:
         assert await _fetch_bundle(client, None, "fake-key") == TmdbColumns()

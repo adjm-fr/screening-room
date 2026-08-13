@@ -24,7 +24,23 @@ Two request shapes are modelled, and the split between them is load-bearing rath
 incidental — see ``MovieBundle`` and ``MovieDetail``.
 """
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, TypeVar
+
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+
+_T = TypeVar("_T")
+
+# A list field that treats an explicit JSON `null` as an empty list.
+#
+# `default_factory` alone covers only an *absent* key, so a payload carrying
+# `"production_companies": null` would raise ValidationError — and because the fetchers
+# catch that for the whole payload, an *optional* field would take the *required* ones
+# down with it: `_fetch_bundle` would return an empty `TmdbColumns()`, nulling `directors`
+# and `cast` on a film whose credits parsed perfectly. It would also be logged as schema
+# drift, which it is not. Absent, null and `[]` all mean the same thing here — "TMDB has
+# nothing on record" — so they are normalised to one. Deliberately NOT applied to
+# `MovieBundle.credits`/`videos`: a null there really is drift and must stay loud.
+NullableList = Annotated[list[_T], BeforeValidator(lambda v: [] if v is None else v)]
 
 
 class MovieDetail(BaseModel):
@@ -148,7 +164,9 @@ class MovieBundle(BaseModel):
     plain fields of the base movie payload this request already returns, so reading them
     costs nothing at all. They are optional, unlike ``credits``/``videos``: the request
     does not ask for them by name, and TMDB legitimately has no company or country on
-    record for obscure films. Their locale-invariance is measured, not assumed (60 films:
+    record for obscure films — which is why the four lists are :data:`NullableList`, so a
+    field nobody asked for can never fail the payload that carries the credits. Their
+    locale-invariance is measured, not assumed (60 films:
     ``production_countries``, ``spoken_languages`` and ``production_companies`` identical
     with and without ``language=fr-FR``), which is what allows them to ride this call
     rather than :class:`MovieDetail`'s.
@@ -158,9 +176,9 @@ class MovieBundle(BaseModel):
 
     credits: CreditsResponse
     videos: VideosResponse
-    production_companies: list[ProductionCompany] = Field(default_factory=list)
-    production_countries: list[ProductionCountry] = Field(default_factory=list)
+    production_companies: NullableList[ProductionCompany] = Field(default_factory=list)
+    production_countries: NullableList[ProductionCountry] = Field(default_factory=list)
     # Bare ISO 3166-1 codes, not objects — TMDB ships no display names for this one.
-    origin_country: list[str] = Field(default_factory=list)
-    spoken_languages: list[SpokenLanguage] = Field(default_factory=list)
+    origin_country: NullableList[str] = Field(default_factory=list)
+    spoken_languages: NullableList[SpokenLanguage] = Field(default_factory=list)
     original_language: str | None = None

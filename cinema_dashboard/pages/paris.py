@@ -15,10 +15,12 @@ The page is **one programme with three lenses** — no curated rails. The same
 vertical agenda the Watchlist Screenings page renders is the whole page, and
 the three questions the old rails answered ("what's new to me?", "what did I
 dislike that my taste now says I'd like?", "what would I happily see again?")
-are single-select lens chips that scope it: :func:`categorize` assigns each
-row at most one ``_category`` (``"new"`` / ``"second_chance"`` /
+are single-select lens chips that scope it: :func:`core.lenses.categorize`
+assigns each row at most one ``_category`` (``"new"`` / ``"second_chance"`` /
 ``"rewatch"``), and ``ui.agenda`` renders a matching badge on every
-categorised row, so the lenses stay visible even while browsing "All".
+categorised row, so the lenses stay visible even while browsing "All". The lens
+vocabulary itself — the categories, their thresholds and the counts behind the
+chips — lives in :mod:`core.lenses`, Streamlit-free; this module renders it.
 Filtering is the calendar page's machinery verbatim —
 :class:`core.agenda.AgendaFilters` + :func:`core.agenda.apply_filters` +
 :func:`core.agenda.apply_day` — so there is exactly one filter chain and one
@@ -53,7 +55,10 @@ Three orderings are load-bearing:
   calendar's ``wl_shows`` never carries them), so folding them into the shared
   dataclass would push page-specific vocabulary into ``core.agenda``. The lens
   follows :func:`~core.agenda.apply_day`'s precedent instead — applied after
-  ``apply_filters``, immediately before the day strip.
+  ``apply_filters``, immediately before the day strip. Note this is an argument
+  against ``core.agenda`` specifically, not against ``core``: the vocabulary
+  itself lives in :mod:`core.lenses`, which shares no machinery with the filter
+  chain.
 - **the lens and the day strip scope only the agenda.** The KPI strip is
   computed on the post-``apply_filters``, pre-lens frame: it describes the
   whole week's programme, every lens included.
@@ -63,7 +68,7 @@ Three orderings are load-bearing:
 
 A seen film that lands in neither "worth" lens — the ranker didn't flag it for
 a second chance and it didn't clear the rewatch bar either — is dropped from
-``narrowed`` outright, right after :func:`categorize` runs and before the KPI
+``narrowed`` outright, right after :func:`core.lenses.categorize` runs and before the KPI
 strip. It is not merely hidden behind a lens: this page's whole premise is
 "what in this week's programme is worth your time", and an already-seen film
 neither disliked-but-now-a-match nor loved enough to revisit answers "no" to
@@ -88,6 +93,7 @@ from core.agenda import (
     day_chips,
 )
 from core.cart import ScreeningCart, cart_index, save_cart
+from core.lenses import LENS_ALL, LENS_LABELS, categorize, drop_uninteresting_seen, lens_counts
 from core.taste import TasteProfile, attach_match, build_affinity
 from sources.discover import build_screenings
 from sources.loader import future_showtimes, get_paths, load_letterboxd_cache, load_ratings, load_showtimes, load_watchlist
@@ -104,108 +110,6 @@ from ui import (
 
 SORT_TIME = "⏱ Time"
 SORT_MATCH = "◎ Match"
-
-#: "Worth a rewatch" — films you rated at least this. On the ratings ladder
-#: (see CLAUDE.md) 3.5–4 is "must watch" and 4.5–5 "masterpiece", so 4.0 is
-#: the floor of "I'd happily sit through it again".
-REWATCH_MIN_RATING = 4.0
-
-#: "Worth a second chance" — films you rated *below* this. 2.5 is the ladder's
-#: bottom of "good", so under it is the genuinely-didn't-land band.
-RETRY_MAX_RATING = 2.5
-
-#: …but only where the ranker disagrees with that verdict this strongly. The
-#: match is a 0–100 logistic (``core.taste.match_from_raw``) and 70 sits near
-#: the top of the observed distribution, so the lens stays short and pointed
-#: instead of re-listing everything you were lukewarm on.
-RETRY_MIN_MATCH = 70.0
-
-#: Sentinel option value for the "All" lens chip, mirroring
-#: :data:`ui.agenda.DAY_ALL` — a ``None`` option would be indistinguishable
-#: from "nothing selected" in the widget's return value.
-LENS_ALL = "all"
-
-#: Lens value → chip label, in display order. Keys are the exact strings
-#: :func:`categorize` emits; ``ui.agenda`` keys its row badges on the same
-#: values.
-LENS_LABELS: dict[str, str] = {
-    "new": "✨ New to you",
-    "second_chance": "🔄 Worth a second chance",
-    "rewatch": "⭐ Worth a rewatch",
-}
-
-
-def categorize(df: pd.DataFrame) -> pd.Series:
-    """Assign each screening row at most one lens category, aligned to ``df.index``.
-
-    Returns an object-dtype Series of ``"new"`` (``watch_status ==
-    "untracked"``), ``"second_chance"`` (``user_rating < RETRY_MAX_RATING``
-    **and** ``match >= RETRY_MIN_MATCH`` — the disagreement lens), ``"rewatch"``
-    (``user_rating >= REWATCH_MIN_RATING``), else ``None``. Object dtype with
-    ``None`` rather than a nullable string dtype on purpose: comparing an
-    NA-backed dtype yields ``NA``s that pandas rejects as a boolean mask,
-    whereas ``None == lens`` is plain ``False``.
-
-    The categories are mutually exclusive by construction: an untracked film
-    has no rating to cut on (``user_rating`` is mapped from the ratings
-    parquet, and untracked means the slug isn't there), and the two rating
-    cuts are disjoint bands.
-
-    Total, never raises. A missing column simply means that category never
-    fires; ``user_rating``/``match`` are coerced through
-    ``pd.to_numeric(errors="coerce")`` and every mask is ``.fillna(False)``-ed,
-    because both arrive nullable and ``series >= x`` on a nullable dtype
-    yields ``NA``, which pandas refuses as a boolean mask.
-    """
-    # A list, not a scalar broadcast: pd.Series(None, ...) silently promotes
-    # None to NaN even under dtype=object, and this function promises None.
-    out = pd.Series([None] * len(df), index=df.index, dtype=object)
-    if "watch_status" in df.columns:
-        out[(df["watch_status"] == "untracked").fillna(False)] = "new"
-    rating = pd.to_numeric(df["user_rating"], errors="coerce") if "user_rating" in df.columns else None
-    match = pd.to_numeric(df["match"], errors="coerce") if "match" in df.columns else None
-    if rating is not None and match is not None:
-        out[((rating < RETRY_MAX_RATING) & (match >= RETRY_MIN_MATCH)).fillna(False)] = "second_chance"
-    if rating is not None:
-        out[(rating >= REWATCH_MIN_RATING).fillna(False)] = "rewatch"
-    return out
-
-
-def drop_uninteresting_seen(df: pd.DataFrame) -> pd.DataFrame:
-    """Drop already-seen films that landed in neither "worth" lens.
-
-    A ``"seen"`` film with no ``_category`` cleared neither bar: the ranker
-    didn't flag it for a second chance (too well liked already, or too low a
-    match) and it didn't clear the rewatch bar either. That is exactly the
-    noise this page exists to cut — not just for one lens, but from the whole
-    programme, so the KPI strip, the lens counts and the agenda all agree on
-    what is left.
-
-    Total: a frame missing either column is returned unchanged rather than
-    raising, matching :func:`categorize`'s convention that an absent column
-    means the category (here, the drop) never fires.
-    """
-    if "watch_status" not in df.columns or "_category" not in df.columns:
-        return df
-    drop = (df["watch_status"] == "seen") & df["_category"].isna()
-    return df[~drop]
-
-
-def lens_counts(df: pd.DataFrame) -> dict[str, int]:
-    """Distinct-film count per lens, in :data:`LENS_LABELS` order, zeroes omitted.
-
-    Films, not screenings — ``nunique`` on ``_film_key``, the slug-first
-    identity :func:`core.agenda.with_agenda_columns` derives and the agenda
-    groups on, so the chip counts, the KPI strip and the agenda all agree on
-    what "one film" means. Omitting a zero-count lens is the old
-    omit-empty-rail rule: "second chance" needs ``match``, so without a taste
-    profile it simply never appears. Total: an empty frame, or one missing
-    either column, returns ``{}``.
-    """
-    if df.empty or "_category" not in df.columns or "_film_key" not in df.columns:
-        return {}
-    counts = df.groupby("_category")["_film_key"].nunique()
-    return {lens: int(counts[lens]) for lens in LENS_LABELS if lens in counts.index and int(counts[lens]) > 0}
 
 
 def _render_lens_strip(narrowed: pd.DataFrame) -> str:

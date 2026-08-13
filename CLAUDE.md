@@ -402,8 +402,14 @@ typecheck (mypy blocking + ty advisory), security, test.
   `key_prefix="paris"`) — both
   pages can live in one Streamlit session, so a shared `cal_*` key would make one page's filters follow the
   user onto the other; `_filters_badge()` reads those same `paris_*` session keys. `narrowed =
-  apply_filters(screenings, filters)` is what everything below reads, and `pages.paris.categorize` (pure,
-  total — a missing column just means that category never fires) then assigns each row at most one lens
+  apply_filters(screenings, filters)` is what everything below reads. **The lens vocabulary itself lives in
+  `core/lenses.py`, not the page** — `categorize` / `drop_uninteresting_seen` / `lens_counts` plus the three
+  thresholds are Streamlit-free pure pandas, so they sit in `core` for the same reason `pages/calendar.py`
+  is only 329 lines: a page renders, a `core` module decides. It is deliberately **not** `core/agenda.py` —
+  the documented objection there is to folding lens vocabulary into the *shared* `AgendaFilters` chain
+  (`watch_status`/`user_rating` don't exist on `wl_shows`), which a separate module doesn't do; the lens
+  stays a scoping step applied after `apply_filters`. `core.lenses.categorize` (pure,
+  total — a missing column just means that category never fires) assigns each row at most one lens
   category as `_category`: `"new"` (`watch_status == "untracked"`), `"second_chance"` (`user_rating <
   RETRY_MAX_RATING` 2.5 **and** `match >= RETRY_MIN_MATCH` 70 — the disagreement lens), `"rewatch"`
   (`user_rating >= REWATCH_MIN_RATING` 4.0), else `None` — mutually exclusive by construction (untracked
@@ -431,7 +437,7 @@ typecheck (mypy blocking + ty advisory), security, test.
   real parquets (Aug 2026): 61 films clear the rewatch bar in a week, and of the 24 rated-below-2.5 films
   screening, match≥60 keeps 9, ≥65 keeps 6, ≥70 keeps 3 — 70 is chosen so the lens shows only strong
   disagreement. **A seen film that clears neither "worth" lens is dropped from `narrowed` outright**, right
-  after `categorize` runs and before the KPI strip — `pages.paris.drop_uninteresting_seen` (pure, total,
+  after `categorize` runs and before the KPI strip — `core.lenses.drop_uninteresting_seen` (pure, total,
   same missing-column convention as `categorize`). This page's whole premise is "what in this week's
   programme is worth your time", and an already-seen film the ranker didn't flag for a second chance and
   that didn't clear the rewatch bar answers "no" regardless of which lens is selected — so it is cut from

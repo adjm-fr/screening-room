@@ -197,6 +197,8 @@ cinema_dashboard/
 │   ├── movie.py                  # Movie detail data assembly (load_movie, movie_screenings, similar_films)
 │   ├── availability.py           # Free-time mask (weekend/holiday/day-off/after-cutoff, minus unavailable days)
 │   ├── agenda.py                 # Calendar day grouping, friendly day labels, time/runtime buckets, the one filter chain
+│   ├── lenses.py                 # Screening in Paris lens vocabulary — categorize, drop_uninteresting_seen, lens_counts
+│   ├── cart.py                   # Showtimes cart — stable showtime ids, snapshots, reconciliation, ICS frame, persistence
 │   └── backtest.py               # Held-out evaluation of the taste-ranker constants (used by backtest.py)
 ├── sources/                      # Cached parquet readers + joins. Named `sources`, not `data` — the
 │   │                              # runtime `data/` dir is gitignored, so a package there would never commit.

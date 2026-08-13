@@ -287,6 +287,19 @@ typecheck (mypy blocking + ty advisory), security, test.
   context, never from outside it). The `- {title} — flatrate=…` streaming-context line format is pinned by
   the eval goldens: append new segments (e.g. `; free=…`), never reword the existing prefix. The system
   prompt's existing rules are likewise pinned: **insert** new paragraphs, never reword or reflow old ones.
+- **The system prompt's prose lives in `cinema_dashboard/assets/system_prompt.md`**, rendered by
+  `chat.prompt.build_system_message` with stdlib `string.Template` (no Jinja — four inert substitutions and
+  one conditional that never leaves Python don't pay for a dependency or for whitespace-control settings).
+  Four things to keep: **`$` is a metacharacter in that file** — a literal one must be `$$`, guarded by
+  `tests/chat/test_system_prompt.py::test_template_has_no_stray_dollar_signs`; the `streaming_block` if/else
+  and the theater join stay in Python and arrive as finished strings, so **the template holds no logic**;
+  `.substitute` not `.safe_substitute`, so a typo raises on the first turn instead of shipping a literal
+  `$taste`; and **a missing file must raise, not degrade** — the opposite of `ui.theme.inject_css`, because
+  absent CSS costs styling while an absent prompt silently ungrounds the model and voids the closed-set
+  guarantee. The extraction was gated on byte-equality against the previous string concatenation (both the
+  populated and the empty-streaming branch), so it changed nothing; the tests left behind assert
+  substitution, section order and the `$` rule rather than snapshotting 6 KB of prose that grows by
+  insertion.
 - **The pin picker's candidate set must be the model's whole closed set, or a recommendation can't be
   kept.** `chat.ui._pin_candidates` returns `(wl_shows, _streamable(streaming_df))` — the frame behind the
   showtimes block/`top_matches`/`showtimes_query` *and* the provider-carrying rows behind the streaming

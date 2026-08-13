@@ -272,7 +272,7 @@ Split by source → Output files (ratings + watchlist)
 
 1. **Caching** - Movie metadata is cached locally to minimize API calls. New movies are fetched, existing entries are reused.
 
-2. **Intelligent Refresh** - Movies older than `days_to_update` — plus rows missing the TMDB `cast`/`trailer_url` enrichment — are refreshed, reducing API load while keeping data relatively fresh; both share the per-run `LETTERBOXD_REFRESH_LIMIT` cap.
+2. **Intelligent Refresh** - Age is the only trigger: `find_stale_slugs` selects cached rows whose `integration_date` is older than `LETTERBOXD_DAYS_TO_UPDATE`, bounded by the per-run `LETTERBOXD_REFRESH_LIMIT` cap — reducing API load while keeping data relatively fresh. A null column deliberately never re-queues a row, because a null here is ambiguous ("not fetched yet" vs. legitimately empty — a film with no original score has no `composers`) and would re-queue a large slice of the cache every run, forever. Backfilling a newly added column onto older rows is an ad-hoc script's job, or `--reset_database`; see [`CACHE_COLUMNS.md`](CACHE_COLUMNS.md#refresh--backfill--which-source-re-runs).
 
 3. **Parallel Fetching** - `asyncio` with a semaphore bounding 20 slugs in flight. The blocking Letterboxd scrape runs per slug via `asyncio.to_thread`; the three TMDB lookups for a movie (`french_title`, `/credits`, `trailer_url`) run concurrently in a nested `TaskGroup` over one shared `httpx.AsyncClient`, so connections are pooled across the whole batch. The `/credits` lookup fills five columns at once (`cast` plus the four crew columns), so moving the crew off Letterboxd added no extra request.
 

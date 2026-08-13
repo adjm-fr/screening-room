@@ -1,7 +1,7 @@
 """
 Pure data-query handlers behind the Gemini chat's taste/showtime/streaming tools.
 
-Three tools live here, beside ``chat.ui``'s ``search_theater``:
+Three tools live here, beside ``chat.transport``'s ``search_theater``:
 
 - ``top_matches``     — the user's own watchlist films ranked by taste match
 - ``showtimes_query`` — targeted showtime lookup (title / theater / day)
@@ -20,10 +20,12 @@ the frame — no parquet reads, no network, no model knowledge. Any tool added
 here must preserve that by construction, so the LLM's closed set stays exactly
 the injected context (see ``CLAUDE.md``).
 
-The handlers deliberately take the **DataFrame**, not ``ChatContext``: that
-type lives in ``chat.ui``, which imports this module, so taking the frame
-keeps this module import-cycle-free, Streamlit-free and directly unit-testable.
-``chat.ui``'s dispatch passes ``ctx.wl_scored`` / ``ctx.streaming_df``.
+The handlers deliberately take the **DataFrame**, not ``ChatContext``: that type
+lives in ``chat.prompt``, and ``chat.transport`` — which dispatches these — imports
+this module, so taking the frame keeps this module import-cycle-free,
+Streamlit-free and directly unit-testable. ``chat.transport``'s dispatch passes
+``ctx.wl_scored`` / ``ctx.streaming_df``. ``chat.pins`` keeps its ``ChatContext``
+under ``TYPE_CHECKING`` for the same reason.
 
 All three handlers are total: an empty frame, missing columns, NaN cells or
 junk arguments yield ``[]`` rather than an exception — a tool that raises

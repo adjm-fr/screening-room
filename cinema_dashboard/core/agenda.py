@@ -20,7 +20,7 @@ Two structural rules this module exists to enforce:
   Mackendrick's *and* Cosmatos'), so a title-keyed group merges two films into
   one row carrying both films' showtimes. ``_film_key`` prefers
   ``letterboxd_slug`` and only falls back to a title when there is none — the
-  same reasoning as ``chat.ui.resolve_pin``'s title→list mapping.
+  same reasoning as ``chat.pins.resolve_pin``'s title→list mapping.
 
 ``_film_key`` resolves *identity*; ``ui.cards._title_of`` resolves *display*
 (canonical Letterboxd title first). They look similar and are not

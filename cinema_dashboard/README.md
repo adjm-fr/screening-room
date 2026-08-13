@@ -209,7 +209,9 @@ cinema_dashboard/
 │   ├── theaters.py                # Reads/appends to the theaters CSV
 │   └── scrapers.py                # Shared scraper command builders + staleness rules (single source of truth)
 ├── chat/                         # The Gemini recommendations assistant
-│   ├── ui.py                      # Gemini transport + chat UI (render_chat)
+│   ├── ui.py                      # The chat surface (render_chat) — rendering only
+│   ├── transport.py               # Gemini round-trip: search_theater, tool dispatch, _ask_gemini's bounded loop
+│   ├── pins.py                    # Pure pin logic: resolve_pin, _find_pinnable_titles, _pin_candidates
 │   ├── prompt.py                  # ChatContext assembly + the pinned system prompt (build_chat_context, build_system_message)
 │   ├── state.py                   # ChatState dataclass + transcript/pins persistence to data/chat_state.json
 │   └── tools.py                   # Pure handlers + declarations for the top_matches / showtimes_query / streaming_query tools

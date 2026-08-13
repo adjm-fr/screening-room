@@ -17,7 +17,7 @@ There are two eval paths:
   closed set.
 - ``test_chat_tool_layer`` — the tool-enabled path, over ``TOOL_GOLDENS``.
   Passes the taste/showtime/streaming tool declarations and runs the same
-  bounded round-trip loop ``chat.ui._ask_gemini`` does (minus Streamlit and
+  bounded round-trip loop ``chat.transport._ask_gemini`` does (minus Streamlit and
   minus ``search_theater``, which hits the live Allocine site and writes to
   ``theaters.csv`` — out of scope for a read-only eval), recording every
   call as a ``tools_called`` entry. This is the regression path for #49's
@@ -46,7 +46,7 @@ from google.genai import types
 
 from chat.prompt import ChatContext, build_system_message
 from chat.tools import SHOWTIMES_TOOL, STREAMING_TOOL, TASTE_TOOL, showtimes_query, streaming_query, top_matches
-from chat.ui import MAX_TOOL_ROUNDS
+from chat.transport import MAX_TOOL_ROUNDS
 from config import settings
 from tests.evals.goldens import GOLDENS, TOOL_GOLDENS, Golden
 from tests.evals.metrics import FilmSetMembershipMetric, StreamingClaimMetric
@@ -113,7 +113,7 @@ def _ask_once(ctx: ChatContext, prompt: str) -> str:
 def _dispatch_tool(ctx: ChatContext, name: str, args: dict) -> list[dict]:
     """Run one tool call against the golden's context, headless (no Streamlit UI).
 
-    Mirrors ``chat.ui._run_tool``'s dispatch for the three pure, Streamlit-free
+    Mirrors ``chat.transport._run_tool``'s dispatch for the three pure, Streamlit-free
     tools (``chat.tools``); deliberately excludes ``search_theater`` — that one
     hits the live Allocine site and writes to ``theaters.csv``, which a
     read-only eval must not do. An unknown/unrouted name returns ``[]``, same
@@ -131,10 +131,10 @@ def _dispatch_tool(ctx: ChatContext, name: str, args: dict) -> list[dict]:
 def _ask_once_with_tools(ctx: ChatContext, prompt: str) -> tuple[str, list[ToolCall]]:
     """Non-streaming Gemini call with the taste/showtime/streaming tools enabled.
 
-    Runs the same bounded round-trip loop ``chat.ui._ask_gemini`` does (up to
+    Runs the same bounded round-trip loop ``chat.transport._ask_gemini`` does (up to
     ``MAX_TOOL_ROUNDS`` rounds, one function response per function call in a
     round), but non-streaming and dispatched through :func:`_dispatch_tool`
-    instead of ``chat.ui._run_tool`` so no Streamlit runtime is required. Every
+    instead of ``chat.transport._run_tool`` so no Streamlit runtime is required. Every
     call is recorded as a ``deepeval`` :class:`ToolCall` so ``ToolCorrectnessMetric``
     can assert on it.
     """
@@ -152,7 +152,7 @@ def _ask_once_with_tools(ctx: ChatContext, prompt: str) -> tuple[str, list[ToolC
 
     # One extra iteration over the round budget: the last pass streams the
     # model's answer to the final tool result without granting a new call —
-    # same shape as chat.ui._ask_gemini's loop.
+    # same shape as chat.transport._ask_gemini's loop.
     for round_index in range(MAX_TOOL_ROUNDS + 1):
         resp = client.models.generate_content(model=settings.gemini_model, contents=cast(list, convo), config=cfg)
         candidate = resp.candidates[0] if resp.candidates else None

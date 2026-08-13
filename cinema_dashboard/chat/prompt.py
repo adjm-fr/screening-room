@@ -97,7 +97,7 @@ class ChatContext:
     #: Watchlist title -> the ``(slug, directors)`` candidates carrying it, keyed
     #: on both the original and the French title. Covers the *whole* watchlist,
     #: not just the films currently screening, which is what lets
-    #: ``chat.ui.resolve_pin`` keep a pinned film linked to its detail page after
+    #: ``chat.pins.resolve_pin`` keep a pinned film linked to its detail page after
     #: its screenings have passed. A list because titles collide across remakes —
     #: see :func:`_slug_by_title`.
     slug_by_title: dict[str, list[tuple[str, str]]]
@@ -185,7 +185,7 @@ def _slug_by_title(watchlist_df: pd.DataFrame) -> dict[str, list[tuple[str, str]
     (*King Lear* is both Peter Brook's and Godard's, *Mandy* both Mackendrick's
     and Cosmatos'). A plain ``dict[str, str]`` would be last-write-wins and
     would silently link a pin to the wrong film — worse than not linking it.
-    The director rides along so :func:`chat.ui.resolve_pin` can confirm the
+    The director rides along so :func:`chat.pins.resolve_pin` can confirm the
     match the same way the showtimes join does.
     """
     if "slug" not in watchlist_df.columns:

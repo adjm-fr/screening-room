@@ -69,17 +69,42 @@ def test_empty_genres_returns_none(mocker, make_movie):
     assert result["mini_themes"] is None
 
 
-def test_details_grouped_by_type(mocker, make_movie):
+def test_tmdb_owned_detail_types_are_dropped_not_expanded(mocker, make_movie):
+    """Letterboxd still serves studio/country/language; _fetch_movie must ignore all three.
+
+    The sharp regression: ``**details_by_type`` is expanded *last* in the returned dict
+    literal, so a surviving Letterboxd value would overwrite the TMDB one seeded above it
+    and the column move would be a silent no-op — right values fetched, wrong values
+    written, nothing raised. Asserting None (not "A24") is what pins that.
+    """
     details = [
         {"type": "studio", "name": "A24"},
         {"type": "country", "name": "USA"},
         {"type": "country", "name": "UK"},
+        {"type": "language", "name": "English"},
     ]
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=details))
     result = _fetch_movie("some-slug")
     assert result is not None
-    assert result["studio"] == "A24"
-    assert result["country"] == "USA, UK"
+    assert result["studio"] is None
+    assert result["country"] is None
+    assert result["language"] is None
+    # Seeded on every row so the contract can require them, TMDB key or not.
+    assert result["origin_country"] is None
+    assert result["original_language"] is None
+
+
+def test_unknown_detail_types_still_expand(mocker, make_movie):
+    """Only the three TMDB-owned types are dropped — a new Letterboxd type still gets a column."""
+    details = [
+        {"type": "studio", "name": "A24"},
+        {"type": "format", "name": "IMAX"},
+        {"type": "format", "name": "70mm"},
+    ]
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=details))
+    result = _fetch_movie("some-slug")
+    assert result is not None
+    assert result["format"] == "IMAX, 70mm"
 
 
 def test_crew_columns_left_for_tmdb_and_letterboxd_crew_ignored(mocker, make_movie):
@@ -242,6 +267,8 @@ def test_refresh_adds_columns_missing_from_target_cache(mocker):
         return_value=TmdbColumns(
             credits=Credits(cast="Actor A, Actor B", directors="Jane Doe"),
             trailer_url="https://www.youtube.com/watch?v=abc123",
+            origin_country="US",
+            original_language="en",
         ),
     )
 
@@ -253,6 +280,11 @@ def test_refresh_adds_columns_missing_from_target_cache(mocker):
     row = result.loc[result["slug"] == "slug-a"].iloc[0]
     assert row["cast"] == "Actor A, Actor B"
     assert row["trailer_url"] == "https://www.youtube.com/watch?v=abc123"
+    # origin_country/original_language exist on no cached row anywhere, so this loop is the
+    # only thing that lets the real 6,764-row cache satisfy the tightened contract without
+    # a --reset_database. Losing it would leave both null forever, silently.
+    assert row["origin_country"] == "US"
+    assert row["original_language"] == "en"
     assert row["directors"] == "Jane Doe"
 
 
@@ -436,6 +468,85 @@ async def test_fetch_bundle_returns_none_fields_for_absent_roles():
     assert result.credits.producers is None
     assert result.credits.writers is None
     assert result.credits.composers is None
+
+
+@respx.mock
+async def test_fetch_bundle_reads_the_five_territory_columns():
+    """The territory fields ride the same payload as the credits — one request, eleven columns."""
+    payload = _bundle_json(crew=[_crew("Jane Doe", "Director")]) | {
+        "production_companies": [{"name": "A24"}, {"name": "Film4"}],
+        "production_countries": [
+            {"iso_3166_1": "US", "name": "United States of America"},
+            {"iso_3166_1": "GB", "name": "United Kingdom"},
+        ],
+        "origin_country": ["US"],
+        "spoken_languages": [
+            {"iso_639_1": "en", "english_name": "English", "name": "English"},
+            {"iso_639_1": "fr", "english_name": "French", "name": "Français"},
+        ],
+        "original_language": "en",
+    }
+    _mock_bundle(payload)
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.studio == "A24, Film4"
+    assert result.country == "United States of America, United Kingdom"
+    # Codes, not names: TMDB ships no display names for origin_country anywhere.
+    assert result.origin_country == "US"
+    # english_name, not the `name` endonym — "French", never "Français".
+    assert result.language == "English, French"
+    assert result.original_language == "en"
+    # Same payload still fills the credits.
+    assert result.credits.directors == "Jane Doe"
+
+
+@respx.mock
+async def test_fetch_bundle_country_and_origin_country_can_disagree():
+    """They are different fields, not two spellings — a co-production proves it.
+
+    Measured on 400 real films: identical 73.7% of the time, never disjoint, and where
+    they differ `origin` is the subset in 96 of 105 cases. `country` keeps the full
+    co-production list because that is what the cache has always carried and what the
+    taste backtest preferred.
+    """
+    payload = _bundle_json() | {
+        "production_countries": [{"name": "China"}, {"name": "Hong Kong"}],
+        "origin_country": ["HK"],
+    }
+    _mock_bundle(payload)
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.country == "China, Hong Kong"
+    assert result.origin_country == "HK"
+
+
+@respx.mock
+async def test_fetch_bundle_territory_columns_none_when_tmdb_has_none():
+    """Absent lists are a film TMDB has no data for — normal, so None, not a raised error."""
+    _mock_bundle(_bundle_json())
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.studio is None
+    assert result.country is None
+    assert result.origin_country is None
+    assert result.language is None
+    assert result.original_language is None
+
+
+@respx.mock
+async def test_fetch_bundle_skips_blank_territory_names():
+    """A nameless entry must drop out of the join, not leave a dangling comma."""
+    payload = _bundle_json() | {
+        "production_companies": [{"name": "A24"}, {"name": None}, {"id": 7}],
+        "spoken_languages": [{"iso_639_1": "en", "english_name": ""}, {"english_name": "Danish"}],
+        "original_language": "",
+    }
+    _mock_bundle(payload)
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.studio == "A24"
+    assert result.language == "Danish"
+    assert result.original_language is None
 
 
 async def test_fetch_bundle_returns_empty_when_tmdb_id_falsy():
@@ -639,6 +750,11 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
                     ],
                 },
                 "videos": {"results": [_video("fr-key", "fr")]},
+                "production_companies": [{"name": "A24"}],
+                "production_countries": [{"iso_3166_1": "US", "name": "United States of America"}],
+                "origin_country": ["US"],
+                "spoken_languages": [{"iso_639_1": "en", "english_name": "English"}],
+                "original_language": "en",
             },
         )
     )
@@ -653,7 +769,14 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
     assert results[0]["producers"] == "John Smith"
     assert results[0]["writers"] == "Wanda"
     assert results[0]["composers"] == "Nino R."
-    # Two requests per film, not three — the whole point of the bundle.
+    # …and so do the five territory columns, off the base payload the bundle already returns.
+    assert results[0]["studio"] == "A24"
+    assert results[0]["country"] == "United States of America"
+    assert results[0]["origin_country"] == "US"
+    assert results[0]["language"] == "English"
+    assert results[0]["original_language"] == "en"
+    # Two requests per film, not three — the whole point of the bundle. Eleven TMDB columns
+    # now ride the second one, so adding a territory field must never add a request.
     assert (title_route.call_count, bundle_route.call_count) == (1, 1)
 
 

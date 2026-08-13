@@ -19,17 +19,21 @@ below holds regardless of which pipeline ingested a row.
 
 | # | Producer | What it fills | Fails to |
 |---|----------|---------------|----------|
-| 1 | **Letterboxd** — HTML scrape via `letterboxdpy`'s `Movie(slug)` | 20 columns: identifiers, core info, media, genres/themes, and the dynamic detail columns | The whole row (`_fetch_movie` returns `None`, the film is skipped) |
-| 2 | **TMDB** — 2 REST calls on one shared `httpx.AsyncClient` | 7 columns: `french_title`, `cast`, the 4 crew columns, `trailer_url` | `None` per column — never raises into the batch |
+| 1 | **Letterboxd** — HTML scrape via `letterboxdpy`'s `Movie(slug)` | 17 columns: identifiers, core info, media, genres/themes | The whole row (`_fetch_movie` returns `None`, the film is skipped) |
+| 2 | **TMDB** — 2 REST calls on one shared `httpx.AsyncClient` | 12 columns: `french_title`, `cast`, the 4 crew columns, `trailer_url`, and the 5 territory columns | `None` per column — never raises into the batch |
 | 3 | **This pipeline** — computed locally, no network | 3 columns: `slug`, `integration_date`, `source` | n/a |
 
 A TMDB failure degrades columns; a Letterboxd failure drops the film. That asymmetry is deliberate: without
-Letterboxd there is no slug, no title and no cache row to attach anything to.
+Letterboxd there is no slug, no title and no cache row to attach anything to. The flip side is that TMDB now
+owns 12 of the 33 columns — including three of the taste ranker's dimensions — so running without
+`TMDB_API_KEY` degrades far more than it used to. `main.py` warns at startup.
 
 ## Column map
 
-31 columns in the real cache (6,759 rows, measured 2026-08-11): 28 required by the contract, plus the 3
-dynamic detail columns. Coverage is the share of non-null rows on that same snapshot.
+33 columns, all required by the contract. There are no longer any dynamic columns: `studio`/`country`/
+`language` moved off Letterboxd's detail tab onto TMDB (joined by the new `origin_country` and
+`original_language`), so every column is seeded on every row and the contract enforces all 33. Coverage is
+the share of non-null rows measured against the real cache.
 
 ### Identifiers
 
@@ -102,22 +106,50 @@ All five are comma-joined, deduped (TMDB lists a person once *per job*), and `No
 
 > ⚠️ `directors` is the taste ranker's highest-weighted dimension **and** what confirms `cinema_dashboard`'s
 > watchlist↔showtimes join. It moved off Letterboxd onto TMDB, so running without `TMDB_API_KEY` now leaves
-> it null and degrades both. `main.py` warns about this at startup.
+> it null and degrades both — as do `country` and `language` below, making three ranker dimensions in total.
+> `main.py` warns about this at startup.
 
-### Dynamic detail columns
+### Territories & provenance — all TMDB, same request as the credits
 
-Not fixed keys — `_fetch_movie` expands `**details_by_type` from whatever detail types the film's page
-carries, grouped from `div#tab-panel-details` links by URL path segment. In practice Letterboxd emits
-exactly three types, confirmed against all 6,759 cached rows and by live fetch:
+These five are plain fields of the base movie payload `GET /movie/{tmdb_id}?append_to_response=credits,videos`
+already returns, so `_parse_territories` reads them at **zero extra cost** — no second call, no extra append.
 
-| Column | Source | Coverage |
-|---|---|---|
-| `studio` | Letterboxd, `type == "studio"` | 98.9% |
-| `country` | Letterboxd, `type == "country"` | 99.7% |
-| `language` | Letterboxd, `type == "language"` | 100% |
+| Column | From the payload | Shape | Coverage |
+|---|---|---|---|
+| `studio` | `production_companies[].name` | names, comma-joined | ~99% |
+| `country` | `production_countries[].name` | display names, ~1.47/film | ~100% |
+| `origin_country` | `origin_country` | **bare ISO 3166-1 codes**, ~1.14/film | 100% |
+| `language` | `spoken_languages[].english_name` | English names, comma-joined | ~100% |
+| `original_language` | `original_language` | one ISO 639-1 code | 100% |
 
-Because they are dynamic, they are deliberately **excluded from `contracts.DATA_LETTERBOXD`** — present on
-almost every row, guaranteed on none. Consumers must treat them as optional.
+> ⚠️ **`country` and `origin_country` are different fields, not two spellings of one.**
+> `production_countries` is the full co-production territory list; `origin_country` is the nationality of the
+> production. Measured on 400 films they are identical 73.7% of the time and **never disjoint**; where they
+> differ, `origin ⊂ production` in 96 of 105 cases. `country` keeps the production list for two independent
+> reasons: in all 9 reverse cases the historical Letterboxd value tracked *production*
+> (`tmdb_id=763` → `origin=[NZ,US]`, `production=[NZ]`, cached `New Zealand`), and the taste backtest ranked
+> `origin_country` as the only losing variant (spearman 0.6668 vs 0.6682). `origin_country` is carried but is
+> **not yet a taste dimension** — adding it to `_DIM_COLUMNS` is a separate, backtest-gated change.
+
+Two vocabulary traps. TMDB ships **no display names for `origin_country`** anywhere in the payload, so it is
+stored as codes — don't "fix" that with a lookup table without first deciding what the ranker keys on. And
+`spoken_languages` is read via `english_name`, not `name`: `name` is the endonym (`Français`, `日本語`), while
+the cache has always carried the English form and the affinity keys depend on it.
+
+These columns were Letterboxd's until this move, scraped from the details tab via `**details_by_type`. Three
+consequences of the swap, all measured live on 120 real films:
+
+- **Names changed and the change is deliberate.** Raw exact agreement with the old cached values is 46.7% for
+  `country` and 91.7% for `language` — almost entirely `USA` → `United States of America`, `UK` → `United
+  Kingdom`, `Chinese` → `Mandarin`. Normalized for those aliases the sources agree 99.5%/99.7%. TMDB names are
+  used verbatim (no alias table), which is exactly why a **one-pass backfill of every row is mandatory** —
+  a half-migrated cache splits `USA` and `United States of America` into two affinity buckets.
+- **The language-duplication quirk is gone.** Letterboxd listed Primary Language *and* Spoken Languages under
+  the same URL path, so both collapsed into one un-deduped column: 40 of 120 sampled rows repeated a value
+  (*Frankenstein* → `"English, Danish, English, French"`). TMDB's `spoken_languages` is a proper list —
+  0 of 120 duplicated.
+- **`original_language` is a real column now.** It was previously only recoverable as "first entry of
+  `language`", 98.5% reliably.
 
 ### Provenance / bookkeeping
 
@@ -134,19 +166,29 @@ Current split: 4,123 `ratings` / 2,283 `watchlist` / 353 `allocine_showtimes`.
 slug (from user lists, or resolved from an Allocine tuple)
   │
   ├─ asyncio.to_thread → _fetch_movie(slug)          [Letterboxd, blocking scrape]
-  │     └─ 20 columns + the 7 TMDB columns seeded as None
+  │     └─ 17 columns + the 12 TMDB columns seeded as None
+  │        (studio/country/language detail types dropped — see _TMDB_OWNED_DETAIL_TYPES)
   │
   └─ nested TaskGroup on one shared httpx.AsyncClient  [TMDB, 2 concurrent calls]
         ├─ _fetch_french_title  → french_title            [?language=fr-FR]
         └─ _fetch_bundle        → cast, directors, producers, writers, composers,
-                                  trailer_url             [?append_to_response=credits,videos]
+                                  trailer_url,            [?append_to_response=credits,videos]
+                                  studio, country, origin_country,
+                                  language, original_language
   │
   └─ integration_date stamped → concat into cache → source assigned → single validated write
 ```
 
-`_fetch_movie` seeds all seven TMDB columns as `None` in its return dict before `_fetch_all` overwrites
+`_fetch_movie` seeds all twelve TMDB columns as `None` in its return dict before `_fetch_all` overwrites
 them. That is what guarantees **column presence** even with no TMDB key at all — the columns exist and are
-null, rather than vanishing from the frame and failing contract validation.
+null, rather than vanishing from the frame and failing contract validation. It is also what let the five
+territory columns join `required_columns`: presence is unconditional, values are not.
+
+> ⚠️ **The seeding only holds because the three TMDB-owned detail types are filtered out of
+> `**details_by_type`.** That expansion is the *last* entry in `_fetch_movie`'s dict literal, so a surviving
+> Letterboxd `country` would overwrite the TMDB value seeded above it — right value fetched, wrong value
+> written, nothing raised anywhere. `_TMDB_OWNED_DETAIL_TYPES` exists solely to prevent that, and
+> `test_tmdb_owned_detail_types_are_dropped_not_expanded` pins it.
 
 ## Refresh & backfill — which source re-runs
 
@@ -181,11 +223,16 @@ every column above is refetched, not just the stale one. **Age is the only trigg
   `Les bons gars`, `Un homme sérieux`, `Room: le monde de Jack`. Since `french_title` exists to match
   Allocine's display titles, the release title is the correct semantics — don't "save a request" by
   switching to `translations`.
-- **`language` repeats the primary language.** Letterboxd's details tab lists Primary Language *and* Spoken
-  Languages, both linking under `/films/language/`, so both collapse into one column and `_fetch_movie`'s
-  `", ".join(names)` does not dedupe. 32.2% of non-null rows repeat a value — e.g. *Frankenstein* →
-  `"English, Danish, English, French"`. The first entry is the primary language. `studio`, `country`,
-  `genres` and `themes` do not have this problem.
+- **A cache row written before this column move carries the *old* Letterboxd spellings.** Until the one-pass
+  backfill runs, `country` reads `USA` on old rows and `United States of America` on freshly written ones, and
+  the taste ranker treats those as two unrelated affinity keys. This is the one migration here that is not
+  self-healing with age: `find_stale_slugs` would take a full `LETTERBOXD_DAYS_TO_UPDATE` cycle to converge.
+  Backfill, don't wait.
+- **`origin_country` and `original_language` exist on no row cached before the move**, so the tightened
+  contract fails against such a file until *something* writes them. `refresh_letterboxd_data`'s pre-seed loop
+  adds them (as null) on the first run that refreshes anything — that is the mechanism, and
+  `test_refresh_adds_columns_missing_from_target_cache` guards it. Deliberately no defensive guard in the
+  read path: `--reset_database` and the backfill both exist.
 - **`slug` is the requested slug, not the canonical one.** `_fetch_movie` stores its own argument, while
   `letterboxd_url` is the page's post-redirect URL. So an alias slug produces a row whose `slug` and
   `letterboxd_url` disagree.
@@ -195,9 +242,11 @@ every column above is refetched, not just the stale one. **Age is the only trigg
   (`war-and-peace-1965` / `-1967` / `-1968`, all `movie_id` 33006 / `tmdb_id` 29266, three distinct pages).
   This is why `cinema_dashboard` routes on `slug`.
 - **A new Letterboxd detail type would silently overwrite a fixed column.** `**details_by_type` is expanded
-  *last* in `_fetch_movie`'s dict literal, so a detail type named after an existing key would win. Harmless
-  today (the three types collide with nothing), but it is why a new detail type should be checked, not
-  assumed.
+  *last* in `_fetch_movie`'s dict literal, so a detail type named after an existing key wins. This is no
+  longer hypothetical — it is precisely why `studio`/`country`/`language` had to be *dropped* from the
+  expansion (`_TMDB_OWNED_DETAIL_TYPES`) rather than merely overwritten by the TMDB values. Letterboxd still
+  serves all three types; anything that puts them back reverts the column move without failing a test that
+  isn't looking for it.
 - **Physical column order is not declaration order.** `cast`, `trailer_url` and `composers` sit at the end
   of the parquet because they were appended to pre-existing rows by `refresh_letterboxd_data`'s pre-seed
   loop, not written in the dict-literal position they occupy in `_fetch_movie`.
@@ -213,8 +262,11 @@ Five places, and skipping any one of them fails quietly rather than loudly:
    `external_ids` and friends cost nothing extra. Only a field that needs `language=fr-FR` belongs on the
    other call.
 2. **`packages/contracts/src/contracts/data_letterboxd.py`** — add it to `required_columns` if it is
-   guaranteed on every row (dynamic detail columns are not; anything seeded `None` in `_fetch_movie` is).
-   The two cache writes validate against this; a missing required column raises `SchemaValidationError`.
+   guaranteed on every row (anything seeded `None` in `_fetch_movie` is; a column left to
+   `**details_by_type` would not be). The two cache writes validate against this; a missing required column
+   raises `SchemaValidationError`. Note the ordering that implies: promoting a column to required makes the
+   *existing* on-disk cache fail validation until a run writes it, so land the seeding and the backfill
+   before relying on the read path.
 3. **`refresh_letterboxd_data`** — nothing to do *if* you leave the pre-seed loop alone.
    `DataFrame.update()` silently ignores columns absent from the target, so the
    `refresh_df.columns.difference(data_df.columns)` loop is what lets refreshed rows gain a column added
@@ -232,5 +284,6 @@ above) or `--reset_database`. Rows also gain it on their own as they age past
 
 ---
 
-*Coverage figures measured 2026-08-11 against the real cache (6,759 rows). They will drift; the sources
-above will not.*
+*Letterboxd-sourced coverage figures measured 2026-08-11 against the real cache (6,759 rows). The territory
+columns' figures were measured 2026-08-14 on a 120-film live TMDB sample, since no cached row carried them
+yet. They will drift; the sources above will not.*

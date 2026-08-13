@@ -163,11 +163,15 @@ typecheck (mypy blocking + ty advisory), security, test.
     scraper). Read validated on **both** sides that consume it: `cinema_dashboard/sources/loader.py`'s
     `load_showtimes` and `movies_management/modules/allocine_enrichment.py`'s
     `enrich_cache_from_showtimes`.
-  - `DATA_LETTERBOXD` — the stable-core columns of `data_letterboxd.parquet` (produced by
+  - `DATA_LETTERBOXD` — **every** column of `data_letterboxd.parquet` (produced by
     `movies_management`, consumed by `cinema_dashboard/sources/loader.py`, `core/movie.py`,
-    `sources/discover.py`). `studio`/`country`/`language` are deliberately excluded — `_fetch_movie`
-    expands them dynamically via `**details_by_type` from whatever Letterboxd detail types a film
-    happens to carry, so they aren't guaranteed on every row. Write-validated at both cache writers:
+    `sources/discover.py`). `studio`/`country`/`language` used to be excluded because `_fetch_movie`
+    expanded them dynamically via `**details_by_type`; they moved to TMDB (see the territory-columns
+    bullet under Non-obvious behaviors) and are now seeded on every row like the other TMDB columns, so
+    they are required, along with the new `origin_country`/`original_language`. The contract is
+    **presence-only** — a plain frozen dataclass, deliberately dependency-free so the standalone Allocine
+    repo can mirror it without pandas — so nullability is unaffected and pydantic plays no part here (that
+    lives in `movies_management/modules/tmdb.py`, validating the TMDB *wire* payload). Write-validated at both cache writers:
     `movies_management/main.py` (the user-data pipeline) and `allocine_enrichment.py`'s
     `enrich_cache_from_showtimes`. **Two cache reads are deliberately left unvalidated** — the
     "no existing cache, start fresh" branches in `get_letterboxd_data.get_letterboxd_data` and
@@ -658,9 +662,40 @@ typecheck (mypy blocking + ty advisory), security, test.
   the swap safe for the watchlist↔showtimes join.
   **Corollary: without `TMDB_API_KEY`, `directors` is now null**, which silently guts the taste ranker's
   highest-weighted dimension *and* the join's director confirmation — `main.py` warns about this at startup.
+- **`studio`/`country`/`language` are TMDB's too, and `country` ≠ `origin_country`.** The same
+  `_fetch_bundle` round-trip also fills five territory columns, read by `_parse_territories` off the *base*
+  movie payload the request already returns — no second call, no extra `append_to_response` block, so adding
+  a territory field must never add a request. `studio` ← `production_companies[].name`, `country` ←
+  `production_countries[].name`, `origin_country` ← `origin_country`, `language` ←
+  `spoken_languages[].english_name` (**not** `name`, which is the endonym `Français`/`日本語`),
+  `original_language` ← `original_language`. They ride the locale-free call because they are locale-invariant
+  (measured identical across 60 films with and without `fr-FR`), unlike person names.
+  **`country` and `origin_country` are different fields, not two spellings of one** — the trap this whole
+  move started from. `production_countries` is the full co-production territory list as display names
+  (~1.47/film); `origin_country` is the production's nationality as **bare ISO 3166-1 codes** (~1.14/film,
+  TMDB ships no display names for it anywhere). On 400 films they are identical 73.7% of the time and never
+  disjoint, with `origin ⊂ production` in 96 of 105 differing cases. `country` keeps the production list for
+  two independent reasons: in all 9 reverse cases the historical Letterboxd value tracked *production*
+  (`tmdb_id=763` → `origin=[NZ,US]`, `production=[NZ]`, cached `New Zealand`), and swapping `country` to
+  `origin_country` was the only backtest variant that measurably lost (spearman 0.6668 vs 0.6682).
+  **`origin_country` is carried but is deliberately not a `_DIM_COLUMNS` taste dimension** — it was measured
+  as a *replacement*, never as an *addition*, so wiring it in needs its own backtest against the
+  0.667 / 1.98 reference.
+  Two further consequences. The swap uses **TMDB names verbatim, no alias table**, so `USA` →
+  `United States of America`, `UK` → `United Kingdom`, `Chinese` → `Mandarin` (semantic: Letterboxd collapses
+  Mandarin into "Chinese" while keeping Cantonese separate) — raw agreement with the old values is only 46.7%
+  on `country`, 99.5% once normalised, which is exactly why a **one-pass backfill of all rows is mandatory**:
+  a half-migrated cache splits one affinity key into two. And the old duplicated-`language` quirk is gone —
+  Letterboxd listed Primary *and* Spoken Languages under one URL path (40 of 120 sampled rows repeated a
+  value); TMDB's `spoken_languages` is a proper list (0 of 120).
+  **The landmine:** `**details_by_type` is expanded *last* in `_fetch_movie`'s dict literal and Letterboxd
+  still serves all three detail types, so the three are filtered out via `_TMDB_OWNED_DETAIL_TYPES` rather
+  than left to be overwritten. Put them back and the TMDB values are silently overwritten by Letterboxd's —
+  right values fetched, wrong values written, nothing raised.
 - **The two TMDB fetchers parse through Pydantic models (`movies_management/modules/tmdb.py`), and a
   `logger.warning` from one of them means upstream schema drift, not a missing film.** `MovieDetail` /
-  `MovieBundle` (`credits`/`videos`, wrapping `CreditsResponse` and `VideosResponse`) model
+  `MovieBundle` (`credits`/`videos`, wrapping `CreditsResponse` and `VideosResponse`, plus the five
+  territory fields wrapping `ProductionCompany`/`ProductionCountry`/`SpokenLanguage`) model
   only the fields these fetchers read, all with `model_config = ConfigDict(extra="ignore")` — TMDB sends far
   more fields than any of these read, so strict validation would reject every real payload. The point isn't
   generic validation, it's separating two cases a bare `.get()` chain collapses into one identical `None`:
@@ -674,8 +709,10 @@ typecheck (mypy blocking + ty advisory), security, test.
   handler would have changed nothing — the dedicated clause, ordered first, is what makes the distinction
   observable. This matters most for `directors`: a 250-film sample found a `Director` credit on 100% of films,
   so any null `directors` from a malformed payload is far likelier a bug than a fact. `MovieBundle`'s two
-  blocks are the one **required** pair on these models — they are exactly what the request asks for, so a
-  missing block is drift, not a film without data.
+  appended blocks are the one **required** pair on these models — they are exactly what the request asks for,
+  so a missing block is drift, not a film without data. Its five territory fields are deliberately *not*
+  required: the request doesn't name them, and TMDB genuinely has no company or country on record for some
+  obscure films.
 - **`language=fr-FR` localises TMDB person names, so the credits can never ride the French call.** This is
   what fixes the fetch at two requests rather than one: `_get_tmdb_movie` carries the locale and reads only
   `title`; `_get_tmdb_bundle` carries `append_to_response=credits,videos` and no `language` at all. Measured

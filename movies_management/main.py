@@ -103,9 +103,11 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
     if not tmdb_api_key:
         logger.warning(
             "TMDB_API_KEY is not set — french_title, cast, the crew columns "
-            "(directors/producers/writers) and trailer_url will all be null. `directors` is "
-            "the taste ranker's highest-weighted dimension and confirms the "
-            "watchlist<->showtimes join, so the dashboard degrades badly without it."
+            "(directors/producers/writers/composers), trailer_url and the territory columns "
+            "(studio/country/origin_country/language/original_language) will all be null. That is "
+            "three of the taste ranker's dimensions (directors, country, language), and `directors` "
+            "additionally confirms the watchlist<->showtimes join, so the dashboard degrades badly "
+            "without it."
         )
 
     letterboxd_data_output_path = output_path / "data_letterboxd.parquet"

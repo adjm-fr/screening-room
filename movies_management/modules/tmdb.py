@@ -18,16 +18,29 @@ which the fetchers catch in their own clause and log at ``logger.warning`` inste
 
 Every model sets ``extra="ignore"``: TMDB's real payloads carry many more fields than any
 of these models read (cast/crew alone run to a couple dozen keys per person), and strict
-validation would reject every real response. Deliberately scoped to only the three
-endpoints in current use — a future consolidation onto `/movie/{id}?append_to_response=...`
-is out of scope here.
+validation would reject every real response.
+
+Two request shapes are modelled, and the split between them is load-bearing rather than
+incidental — see ``MovieBundle`` and ``MovieDetail``.
 """
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class MovieDetail(BaseModel):
-    """``GET /movie/{id}`` — only the field ``_fetch_french_title`` reads."""
+    """``GET /movie/{id}?language=fr-FR`` — only the field ``_fetch_french_title`` reads.
+
+    This is the one request that must carry a locale, and therefore the one that cannot
+    also carry the credits: ``language=fr-FR`` rewrites **person names** into the local
+    script and name order (measured on 120 films: 5 director sets and 15 top-8 cast lists
+    change, e.g. ``Ho Meng-Hua`` -> ``何夢華``, ``Marcell Jankovics`` ->
+    ``Jankovics Marcell``). Those names feed the taste ranker's highest-weighted dimension
+    and ``cinema_dashboard``'s token-containment director confirmation against Allocine,
+    which is Latin-script — so localised names would silently drop films from the
+    watchlist↔showtimes join. Everything else is locale-invariant (job strings, video
+    results, countries, languages and company names were all identical across 60 films),
+    which is why only ``title`` is read here and the rest comes from ``MovieBundle``.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -71,8 +84,32 @@ class Video(BaseModel):
 
 
 class VideosResponse(BaseModel):
-    """``GET /movie/{id}/videos``."""
+    """``GET /movie/{id}/videos``, or the ``videos`` block of :class:`MovieBundle`."""
 
     model_config = ConfigDict(extra="ignore")
 
     results: list[Video] = Field(default_factory=list)
+
+
+class MovieBundle(BaseModel):
+    """``GET /movie/{id}?append_to_response=credits,videos`` — no locale, see :class:`MovieDetail`.
+
+    One request in place of the ``/credits`` and ``/videos`` calls it replaces, taking the
+    per-film TMDB round-trips from three to two (``MovieDetail`` is the remaining one).
+    TMDB counts an ``append_to_response`` bundle as a single request against the rate
+    limit, and the appended blocks are byte-identical to the standalone endpoints: across
+    150 films the new two-call shape reproduced the old three-call one exactly on
+    french_title, directors, top-8 cast and trailer videos (0 mismatches each).
+
+    ``credits`` and ``videos`` are **required**, unlike every other field on these models:
+    they are exactly the blocks this request asks for, so TMDB omitting one is the schema
+    drift these models exist to surface, not a film that happens to have no data (an
+    empty film still comes back as empty lists inside a present block). The limit is 20
+    appends, so further fields (``keywords``, ``release_dates``, ``external_ids``, …)
+    can join this request at no extra cost.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    credits: CreditsResponse
+    videos: VideosResponse

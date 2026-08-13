@@ -610,10 +610,10 @@ typecheck (mypy blocking + ty advisory), security, test.
   (`data_df[col] = None`) before `update()`, or refreshed rows never gain it — no error, just missing
   data. Add a regression test when introducing cache columns.
 - **`cast`, the four crew columns, and `trailer_url` are TMDB-sourced cache columns** in
-  `data_letterboxd.parquet` (not from letterboxdpy): `_fetch_credits` fills `cast` (top-8 billed, `", "`-joined)
-  *and* `directors`/`producers`/`writers`/`composers` from **one** `/credits` round-trip, alongside `trailer_url`
-  (a YouTube link preferring FR over EN) — all fetched beside `_fetch_french_title` on the same client, `None`
-  without a `tmdb_id`. Each crew column is a job filter
+  `data_letterboxd.parquet` (not from letterboxdpy): `_fetch_bundle` fills `cast` (top-8 billed, `", "`-joined),
+  `directors`/`producers`/`writers`/`composers` **and** `trailer_url` (a YouTube link preferring FR over EN)
+  from **one** `/movie/{id}?append_to_response=credits,videos` round-trip — fetched beside
+  `_fetch_french_title` on the same client, `None` without a `tmdb_id`. Each crew column is a job filter
   (`_DIRECTOR_JOBS`/`_PRODUCER_JOBS`/`_WRITER_JOBS`/`_COMPOSER_JOBS`), deduped because
   TMDB lists a person once *per job*. `_COMPOSER_JOBS` is `{"Original Music Composer"}` only: TMDB's looser
   `Music` job would take coverage from 74% to 86% (pre-1950: 67% → 84%) but also credits *source* music on
@@ -628,22 +628,34 @@ typecheck (mypy blocking + ty advisory), security, test.
   the swap safe for the watchlist↔showtimes join.
   **Corollary: without `TMDB_API_KEY`, `directors` is now null**, which silently guts the taste ranker's
   highest-weighted dimension *and* the join's director confirmation — `main.py` warns about this at startup.
-- **The three TMDB fetchers parse through Pydantic models (`movies_management/modules/tmdb.py`), and a
+- **The two TMDB fetchers parse through Pydantic models (`movies_management/modules/tmdb.py`), and a
   `logger.warning` from one of them means upstream schema drift, not a missing film.** `MovieDetail` /
-  `CreditsResponse` (`cast`/`crew`, each `CreditMember`) / `VideosResponse` (`results`, each `Video`) model
+  `MovieBundle` (`credits`/`videos`, wrapping `CreditsResponse` and `VideosResponse`) model
   only the fields these fetchers read, all with `model_config = ConfigDict(extra="ignore")` — TMDB sends far
   more fields than any of these read, so strict validation would reject every real payload. The point isn't
   generic validation, it's separating two cases a bare `.get()` chain collapses into one identical `None`:
   TMDB legitimately having no answer for a field (normal — most films have no French retitle) versus TMDB's
   response *shape* changing underneath us (catastrophic — it hits every film in the batch at once). Each
-  fetcher (`_fetch_french_title`/`_fetch_credits`/`_fetch_trailer`) therefore catches `pydantic.ValidationError`
+  fetcher (`_fetch_french_title`/`_fetch_bundle`) therefore catches `pydantic.ValidationError`
   in its own clause, placed *before* the generic `except Exception`, and logs it at `logger.warning` — every
   other failure path (falsy `tmdb_id`/`api_key`, non-200 response, exhausted retries) still logs at `debug` and
-  returns the same safe fallback (`None`, or an all-`None` `Credits()`) as before. Because `ValidationError`
+  returns the same safe fallback (`None`, or an empty `TmdbColumns()`) as before. Because `ValidationError`
   subclasses `ValueError` subclasses `Exception`, a naive Pydantic parse with only the pre-existing generic
   handler would have changed nothing — the dedicated clause, ordered first, is what makes the distinction
   observable. This matters most for `directors`: a 250-film sample found a `Director` credit on 100% of films,
-  so any null `directors` from a malformed payload is far likelier a bug than a fact.
+  so any null `directors` from a malformed payload is far likelier a bug than a fact. `MovieBundle`'s two
+  blocks are the one **required** pair on these models — they are exactly what the request asks for, so a
+  missing block is drift, not a film without data.
+- **`language=fr-FR` localises TMDB person names, so the credits can never ride the French call.** This is
+  what fixes the fetch at two requests rather than one: `_get_tmdb_movie` carries the locale and reads only
+  `title`; `_get_tmdb_bundle` carries `append_to_response=credits,videos` and no `language` at all. Measured
+  on 120 films, adding the locale rewrites 5 director sets and 15 top-8 cast lists into local script and name
+  order (`Ho Meng-Hua` → `何夢華`, `Marcell Jankovics` → `Jankovics Marcell`), which would break
+  `_directors_overlap` against Latin-script Allocine names. Nor can `french_title` come from an appended
+  `translations` block: `?language=fr-FR` resolves the French *release* title (`The Nice Guys`, `A Serious
+  Man`), not the literal translation (`Les bons gars`, `Un homme sérieux`) — 93.25% agreement on 400 films,
+  and the release title is the one that matches Allocine. Everything else is locale-invariant, so new TMDB
+  fields belong on the bundle (20-append limit, no extra request). See `movies_management/CACHE_COLUMNS.md`.
 - **Age is `main.py`'s only refresh trigger — a null column never re-queues a row.** `find_stale_slugs`
   (`integration_date` older than `letterboxd_days_to_update`, bounded by `letterboxd_refresh_limit`,
   1000/run) is the whole selection. The `find_missing_cast_slugs` null-`cast` backfill that once ran beside

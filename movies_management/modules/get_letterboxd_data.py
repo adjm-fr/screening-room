@@ -17,7 +17,7 @@ from letterboxdpy.movie import Movie
 from pydantic import ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from modules.tmdb import CreditMember, CreditsResponse, MovieDetail, VideosResponse
+from modules.tmdb import CreditMember, CreditsResponse, MovieBundle, MovieDetail, VideosResponse
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,12 @@ _RETRY_WAIT = wait_exponential(multiplier=1, max=10)
     retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
 )
 async def _get_tmdb_movie(client: httpx.AsyncClient, tmdb_id: str, api_key: str) -> httpx.Response:
-    """GET a TMDB movie, retrying on transport errors and 429/5xx responses."""
+    """GET a TMDB movie in French, retrying on transport errors and 429/5xx responses.
+
+    Deliberately carries no ``append_to_response``: ``language=fr-FR`` localises person
+    names, so the credits must be fetched separately by ``_get_tmdb_bundle``. See
+    ``modules.tmdb.MovieDetail``.
+    """
     resp = await client.get(
         f"{TMDB_API_URL}/movie/{tmdb_id}",
         params={"language": "fr-FR", "api_key": api_key},
@@ -80,22 +85,32 @@ async def _fetch_french_title(client: httpx.AsyncClient, tmdb_id: str | None, ap
     reraise=True,
     retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
 )
-async def _get_tmdb_credits(client: httpx.AsyncClient, tmdb_id: str, api_key: str) -> httpx.Response:
-    """GET a TMDB movie's credits, retrying on transport errors and 429/5xx responses."""
+async def _get_tmdb_bundle(client: httpx.AsyncClient, tmdb_id: str, api_key: str) -> httpx.Response:
+    """GET a movie's credits and videos in one request, retrying on transport errors and 429/5xx.
+
+    ``append_to_response`` folds what used to be a ``/credits`` call and a ``/videos``
+    call into this one, which TMDB bills as a single request. No ``language`` parameter:
+    the credits must stay in their canonical (Latin) name forms — see
+    ``modules.tmdb.MovieBundle``.
+    """
     resp = await client.get(
-        f"{TMDB_API_URL}/movie/{tmdb_id}/credits",
-        params={"api_key": api_key},
+        f"{TMDB_API_URL}/movie/{tmdb_id}",
+        params={
+            "append_to_response": "credits,videos",
+            "include_video_language": "fr,en,null",
+            "api_key": api_key,
+        },
         timeout=10,
     )
     # Same contract as _get_tmdb_movie: 429/5xx are retried, other 4xx raise but aren't
-    # retried — caught by _fetch_cast and surfaced as None.
+    # retried — caught by _fetch_bundle and surfaced as an empty TmdbColumns.
     if resp.status_code == 429 or resp.status_code >= 500:
         resp.raise_for_status()
     return resp
 
 
 class Credits(NamedTuple):
-    """The five cache columns TMDB's ``/credits`` endpoint fills in one round-trip.
+    """The five cache columns TMDB's ``credits`` block fills.
 
     Field names match the cache column names exactly.
     """
@@ -105,6 +120,23 @@ class Credits(NamedTuple):
     producers: str | None = None
     writers: str | None = None
     composers: str | None = None
+
+
+class TmdbColumns(NamedTuple):
+    """Every cache column one ``_get_tmdb_bundle`` request yields: the credits plus the trailer.
+
+    Deliberately *not* in ``modules.tmdb`` beside ``MovieBundle``, which it is easy to
+    mistake it for. That module models TMDB's **wire shapes** — its classes exist to
+    validate incoming payloads and make schema drift raise instead of returning a bland
+    ``None``. This is the other side of that boundary: the **parsed cache columns**, named
+    after `data_letterboxd.parquet`'s own columns (via :class:`Credits`) and validating
+    nothing. ``_fetch_bundle``'s job is exactly the crossing, ``MovieBundle`` ->
+    ``TmdbColumns``, so keeping the two vocabularies in separate modules is what stops
+    ``tmdb.py`` from having to know the cache's schema.
+    """
+
+    credits: Credits = Credits()
+    trailer_url: str | None = None
 
 
 # TMDB returns `cast` pre-sorted by billing `order`, so the first entries are the leads —
@@ -148,62 +180,19 @@ def _join_crew(crew: list[CreditMember], jobs: frozenset[str]) -> str | None:
     return ", ".join(names) or None
 
 
-async def _fetch_credits(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> Credits:
-    """Fetch a film's billed cast and its director/producer/writer/composer crew from TMDB.
+def _parse_credits(payload: CreditsResponse) -> Credits:
+    """Split a validated ``credits`` block into the five cache columns it fills.
 
-    One ``/credits`` round-trip fills five cache columns; Letterboxd's own crew is
-    deliberately not read (see ``_fetch_movie``).
-
-    Returns an all-None ``Credits`` when ``tmdb_id`` or ``api_key`` is falsy, on any
-    non-200 response, when the payload fails validation (see ``modules.tmdb`` — this is
-    the case that matters most: a 250-film sample of the real cache found a ``Director``
-    credit on 100% of films, so a null ``directors`` from a malformed payload is far more
-    likely a bug than a fact), or when the request keeps failing after retries — never
-    raises into the batch. Note this makes ``directors`` null without a TMDB key, which
-    the taste ranker and the watchlist↔showtimes join both depend on.
+    Letterboxd's own crew is deliberately not read (see ``_fetch_movie``).
     """
-    if not tmdb_id or not api_key:
-        return Credits()
-    try:
-        resp = await _get_tmdb_credits(client, tmdb_id, api_key)
-        if resp.status_code == 200:
-            payload = CreditsResponse.model_validate(resp.json())
-            names = [member.name for member in payload.cast[:_CAST_BILLING_LIMIT] if member.name]
-            return Credits(
-                cast=", ".join(names) or None,
-                directors=_join_crew(payload.crew, _DIRECTOR_JOBS),
-                producers=_join_crew(payload.crew, _PRODUCER_JOBS),
-                writers=_join_crew(payload.crew, _WRITER_JOBS),
-                composers=_join_crew(payload.crew, _COMPOSER_JOBS),
-            )
-        logger.debug("TMDB credits returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
-    except ValidationError as e:
-        # See _fetch_french_title: a dedicated clause, before the generic handler below,
-        # so a shape change surfaces at warning level instead of vanishing at debug.
-        logger.warning("TMDB credits payload failed validation for tmdb_id=%s: %s", tmdb_id, e)
-    except Exception as e:
-        logger.debug("TMDB credits fetch failed for tmdb_id=%s: %s", tmdb_id, e)
-    return Credits()
-
-
-@retry(
-    stop=_RETRY_STOP,
-    wait=_RETRY_WAIT,
-    reraise=True,
-    retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
-)
-async def _get_tmdb_videos(client: httpx.AsyncClient, tmdb_id: str, api_key: str) -> httpx.Response:
-    """GET a TMDB movie's videos, retrying on transport errors and 429/5xx responses."""
-    resp = await client.get(
-        f"{TMDB_API_URL}/movie/{tmdb_id}/videos",
-        params={"include_video_language": "fr,en,null", "api_key": api_key},
-        timeout=10,
+    names = [member.name for member in payload.cast[:_CAST_BILLING_LIMIT] if member.name]
+    return Credits(
+        cast=", ".join(names) or None,
+        directors=_join_crew(payload.crew, _DIRECTOR_JOBS),
+        producers=_join_crew(payload.crew, _PRODUCER_JOBS),
+        writers=_join_crew(payload.crew, _WRITER_JOBS),
+        composers=_join_crew(payload.crew, _COMPOSER_JOBS),
     )
-    # Same contract as _get_tmdb_movie: 429/5xx are retried, other 4xx raise but aren't
-    # retried — caught by _fetch_trailer and surfaced as None.
-    if resp.status_code == 429 or resp.status_code >= 500:
-        resp.raise_for_status()
-    return resp
 
 
 # Lower is better: French trailers are preferred over English, which are preferred over
@@ -212,37 +201,49 @@ async def _get_tmdb_videos(client: httpx.AsyncClient, tmdb_id: str, api_key: str
 _TRAILER_LANGUAGE_PRIORITY: dict[str | None, int] = {"fr": 0, "en": 1}
 
 
-async def _fetch_trailer(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> str | None:
-    """Fetch a film's official YouTube trailer link from TMDB using an injected async client.
+def _pick_trailer(payload: VideosResponse) -> str | None:
+    """Pick the best official YouTube trailer out of a validated ``videos`` block.
 
-    Filters TMDB's videos to ``site == "YouTube"``, ``type == "Trailer"``, ``official is
-    True``, then picks the best-language match: French, else English, else any other
-    language (see ``_TRAILER_LANGUAGE_PRIORITY``).
+    Filters to ``site == "YouTube"``, ``type == "Trailer"``, ``official is True``, then
+    takes the best-language match: French, else English, else any other language (see
+    ``_TRAILER_LANGUAGE_PRIORITY``). None when nothing matches.
+    """
+    trailers = [v for v in payload.results if v.site == "YouTube" and v.type == "Trailer" and v.official is True]
+    if not trailers:
+        return None
+    best = min(trailers, key=lambda v: _TRAILER_LANGUAGE_PRIORITY.get(v.iso_639_1, 2))
+    return f"https://www.youtube.com/watch?v={best.key}" if best.key else None
 
-    Returns None when ``tmdb_id`` or ``api_key`` is falsy, when no video matches the
-    filters, on any non-200 response, when the payload fails validation (see
-    ``modules.tmdb``), or when the request keeps failing after retries — never raises
-    into the batch.
+
+async def _fetch_bundle(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> TmdbColumns:
+    """Fetch a film's cast, crew and trailer from TMDB in a single request.
+
+    One ``append_to_response=credits,videos`` round-trip fills six cache columns — the
+    five in :class:`Credits` plus ``trailer_url``.
+
+    Returns an empty ``TmdbColumns`` when ``tmdb_id`` or ``api_key`` is falsy, on any
+    non-200 response, when the payload fails validation (see ``modules.tmdb`` — this is
+    the case that matters most: a 250-film sample of the real cache found a ``Director``
+    credit on 100% of films, so a null ``directors`` from a malformed payload is far more
+    likely a bug than a fact), or when the request keeps failing after retries — never
+    raises into the batch. Note this makes ``directors`` null without a TMDB key, which
+    the taste ranker and the watchlist↔showtimes join both depend on.
     """
     if not tmdb_id or not api_key:
-        return None
+        return TmdbColumns()
     try:
-        resp = await _get_tmdb_videos(client, tmdb_id, api_key)
+        resp = await _get_tmdb_bundle(client, tmdb_id, api_key)
         if resp.status_code == 200:
-            videos = VideosResponse.model_validate(resp.json()).results
-            trailers = [v for v in videos if v.site == "YouTube" and v.type == "Trailer" and v.official is True]
-            if not trailers:
-                return None
-            best = min(trailers, key=lambda v: _TRAILER_LANGUAGE_PRIORITY.get(v.iso_639_1, 2))
-            return f"https://www.youtube.com/watch?v={best.key}" if best.key else None
-        logger.debug("TMDB videos returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
+            payload = MovieBundle.model_validate(resp.json())
+            return TmdbColumns(credits=_parse_credits(payload.credits), trailer_url=_pick_trailer(payload.videos))
+        logger.debug("TMDB bundle returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
     except ValidationError as e:
         # See _fetch_french_title: a dedicated clause, before the generic handler below,
         # so a shape change surfaces at warning level instead of vanishing at debug.
-        logger.warning("TMDB videos payload failed validation for tmdb_id=%s: %s", tmdb_id, e)
+        logger.warning("TMDB bundle payload failed validation for tmdb_id=%s: %s", tmdb_id, e)
     except Exception as e:
-        logger.debug("TMDB videos fetch failed for tmdb_id=%s: %s", tmdb_id, e)
-    return None
+        logger.debug("TMDB bundle fetch failed for tmdb_id=%s: %s", tmdb_id, e)
+    return TmdbColumns()
 
 
 @retry(stop=_RETRY_STOP, wait=_RETRY_WAIT, reraise=True)
@@ -270,7 +271,7 @@ def _fetch_movie(slug: str) -> dict | None:
           from this output; ``cast`` (top-8 billed), the crew columns
           (``directors``/``producers``/``writers``/``composers``) and ``trailer_url`` are
           sourced from TMDB instead, mirroring how ``french_title`` is added — see
-          ``_fetch_credits`` / ``_fetch_trailer``.
+          ``_fetch_bundle``.
         - genres is split into genres/themes/mini_themes based on the "type" field.
         - details are expanded into one key per type (e.g. "studio", "country", "language").
     """
@@ -309,7 +310,7 @@ def _fetch_movie(slug: str) -> dict | None:
             "french_title": None,  # filled in by _fetch_all via TMDB
             "cast": None,  # filled in by _fetch_all via TMDB (top-8 billed)
             "trailer_url": None,  # filled in by _fetch_all via TMDB
-            # Crew — filled in by _fetch_all via TMDB /credits, see _fetch_credits
+            # Crew — filled in by _fetch_all via TMDB credits, see _fetch_bundle
             "directors": None,
             "producers": None,
             "writers": None,
@@ -340,10 +341,11 @@ async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20)
 
     A single shared ``httpx.AsyncClient`` is opened for the whole batch so all TMDB
     lookups reuse pooled connections; the blocking Letterboxd scrape still runs in a
-    worker thread per slug. The three TMDB lookups (french_title, credits, trailer_url)
-    for a given movie run concurrently in a nested ``asyncio.TaskGroup`` — ``credits``
-    alone fills five columns (cast + the four crew columns), so no extra round-trip
-    was added when the crew moved off Letterboxd.
+    worker thread per slug. The two TMDB lookups for a given movie run concurrently in a
+    nested ``asyncio.TaskGroup``: ``_fetch_bundle`` fills six columns (cast, the four
+    crew columns and trailer_url) from one ``append_to_response`` request, and
+    ``_fetch_french_title`` is the separate French-locale call that cannot be merged
+    into it without localising the credits' person names (see ``modules.tmdb``).
     """
     sem = asyncio.Semaphore(concurrency)
     total = len(slugs)
@@ -358,13 +360,13 @@ async def _fetch_all(slugs: list[str], api_key: str = "", concurrency: int = 20)
                 tmdb_id = result.get("tmdb_id")
                 async with asyncio.TaskGroup() as movie_tg:
                     french_title = movie_tg.create_task(_fetch_french_title(client, tmdb_id, api_key))
-                    credits = movie_tg.create_task(_fetch_credits(client, tmdb_id, api_key))
-                    trailer_url = movie_tg.create_task(_fetch_trailer(client, tmdb_id, api_key))
+                    bundle = movie_tg.create_task(_fetch_bundle(client, tmdb_id, api_key))
+                film_bundle = bundle.result()
                 result["french_title"] = french_title.result()
-                result["trailer_url"] = trailer_url.result()
+                result["trailer_url"] = film_bundle.trailer_url
                 # Assigned column-by-column rather than via _asdict() so each cache column
                 # stays greppable from this module.
-                film_credits = credits.result()
+                film_credits = film_bundle.credits
                 result["cast"] = film_credits.cast
                 result["directors"] = film_credits.directors
                 result["producers"] = film_credits.producers

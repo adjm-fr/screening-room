@@ -170,7 +170,7 @@ fresh," and a validation error there would otherwise trigger a full, silent cach
 - `themes` - Comma-separated Letterboxd themes (e.g., "Time Travel, Alternate History")
 - `mini_themes` - Comma-separated Letterboxd mini-themes (more specific classifications)
 
-**Crew & cast** — all five come from TMDB's `/credits` endpoint in a single request (not from Letterboxd), and are `null` when `TMDB_API_KEY` is unset or the film has no `tmdb_id`:
+**Crew & cast** — all five come from TMDB's `credits` block in a single request that also carries the trailer (not from Letterboxd), and are `null` when `TMDB_API_KEY` is unset or the film has no `tmdb_id`:
 - `directors` - Comma-separated director names (TMDB job `Director`)
 - `producers` - Comma-separated producer names (TMDB job `Producer` only — narrower than Letterboxd's list, which also included line/associate/executive producers)
 - `writers` - Comma-separated writer names (TMDB jobs `Writer` and `Screenplay`; source-material credits like `Novel`/`Story` are excluded, matching Letterboxd's split)
@@ -179,7 +179,7 @@ fresh," and a validation error there would otherwise trigger a full, silent cach
 
 > ⚠️ `directors` is the taste ranker's highest-weighted dimension and is what confirms the watchlist↔showtimes join in `cinema_dashboard`. Running without `TMDB_API_KEY` leaves it null and degrades both.
 
-All three TMDB responses (`/movie/{id}`, `/movie/{id}/credits`, `/movie/{id}/videos`) are parsed through Pydantic
+Both TMDB responses (`/movie/{id}?language=fr-FR` and `/movie/{id}?append_to_response=credits,videos`) are parsed through Pydantic
 models in `modules/tmdb.py` before any field is read. A malformed payload — one whose *shape* no longer matches
 what these fetchers expect, e.g. TMDB changing a field's type — is logged at `logger.warning` (with the
 `tmdb_id` and the validation error) instead of the `logger.debug` every other failure path uses (missing
@@ -274,7 +274,7 @@ Split by source → Output files (ratings + watchlist)
 
 2. **Intelligent Refresh** - Age is the only trigger: `find_stale_slugs` selects cached rows whose `integration_date` is older than `LETTERBOXD_DAYS_TO_UPDATE`, bounded by the per-run `LETTERBOXD_REFRESH_LIMIT` cap — reducing API load while keeping data relatively fresh. A null column deliberately never re-queues a row, because a null here is ambiguous ("not fetched yet" vs. legitimately empty — a film with no original score has no `composers`) and would re-queue a large slice of the cache every run, forever. Backfilling a newly added column onto older rows is an ad-hoc script's job, or `--reset_database`; see [`CACHE_COLUMNS.md`](CACHE_COLUMNS.md#refresh--backfill--which-source-re-runs).
 
-3. **Parallel Fetching** - `asyncio` with a semaphore bounding 20 slugs in flight. The blocking Letterboxd scrape runs per slug via `asyncio.to_thread`; the three TMDB lookups for a movie (`french_title`, `/credits`, `trailer_url`) run concurrently in a nested `TaskGroup` over one shared `httpx.AsyncClient`, so connections are pooled across the whole batch. The `/credits` lookup fills five columns at once (`cast` plus the four crew columns), so moving the crew off Letterboxd added no extra request.
+3. **Parallel Fetching** - `asyncio` with a semaphore bounding 20 slugs in flight. The blocking Letterboxd scrape runs per slug via `asyncio.to_thread`; the two TMDB lookups for a movie run concurrently in a nested `TaskGroup` over one shared `httpx.AsyncClient`, so connections are pooled across the whole batch. One `append_to_response=credits,videos` request fills six columns at once (`cast`, the four crew columns and `trailer_url`); the other exists only because `language=fr-FR` is needed for `french_title` and would localise person names if applied to the credits (see [`CACHE_COLUMNS.md`](CACHE_COLUMNS.md#quirks-that-bite)).
 
 4. **Unified DataFrame** - Ratings and watchlist rows are stacked into one DataFrame before any API calls. A single enrichment join produces both outputs, avoiding redundant merges.
 

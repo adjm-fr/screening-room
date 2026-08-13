@@ -16,14 +16,13 @@ from common.logging import RedactingFormatter
 from modules.get_letterboxd_data import (
     TMDB_API_URL,
     Credits,
+    TmdbColumns,
     _fetch_all,
-    _fetch_credits,
+    _fetch_bundle,
     _fetch_french_title,
     _fetch_movie,
-    _fetch_trailer,
-    _get_tmdb_credits,
+    _get_tmdb_bundle,
     _get_tmdb_movie,
-    _get_tmdb_videos,
     get_letterboxd_data,
     refresh_letterboxd_data,
 )
@@ -88,7 +87,7 @@ def test_crew_columns_left_for_tmdb_and_letterboxd_crew_ignored(mocker, make_mov
 
     Regression guard: a MagicMock returns a truthy auto-attribute for ``movie.crew``, so
     if the old Letterboxd extraction came back it would silently repopulate these columns
-    instead of leaving them for ``_fetch_credits``.
+    instead of leaving them for ``_fetch_bundle``.
     """
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie())
     result = _fetch_movie("some-slug")
@@ -239,10 +238,12 @@ def test_refresh_adds_columns_missing_from_target_cache(mocker):
     )
     mocker.patch("modules.get_letterboxd_data._fetch_french_title", return_value=None)
     mocker.patch(
-        "modules.get_letterboxd_data._fetch_credits",
-        return_value=Credits(cast="Actor A, Actor B", directors="Jane Doe"),
+        "modules.get_letterboxd_data._fetch_bundle",
+        return_value=TmdbColumns(
+            credits=Credits(cast="Actor A, Actor B", directors="Jane Doe"),
+            trailer_url="https://www.youtube.com/watch?v=abc123",
+        ),
     )
-    mocker.patch("modules.get_letterboxd_data._fetch_trailer", return_value="https://www.youtube.com/watch?v=abc123")
 
     result = refresh_letterboxd_data(df, ["slug-a"], "fake-key")
 
@@ -337,33 +338,54 @@ async def test_fetch_french_title_logs_warning_on_shape_change(caplog):
     assert "tmdb_id=12345" in caplog.text
 
 
-# ── _fetch_credits (async, httpx + respx) ───────────────────────────────────────
+# ── _fetch_bundle: credits half (async, httpx + respx) ──────────────────────────
 
 
 def _crew(name: str, job: str) -> dict:
     return {"name": name, "job": job, "department": "Directing"}
 
 
+def _video(key: str, lang: str | None, *, official: bool = True, site: str = "YouTube", video_type: str = "Trailer") -> dict:
+    return {"key": key, "iso_639_1": lang, "official": official, "site": site, "type": video_type}
+
+
+def _bundle_json(*, cast=None, crew=None, videos=None, credits=None) -> dict:
+    """One ``append_to_response=credits,videos`` payload.
+
+    Both blocks are always present because ``MovieBundle`` requires them — TMDB omitting
+    one is the schema drift the model exists to catch, which is its own test below.
+    """
+    return {
+        "id": 12345,
+        "credits": {"cast": cast or [], "crew": crew or []} if credits is None else credits,
+        "videos": {"results": videos or []},
+    }
+
+
+def _mock_bundle(payload: dict | None = None, status: int = 200) -> None:
+    respx.get(f"{TMDB_API_URL}/movie/12345", params__contains={"append_to_response": "credits,videos"}).mock(
+        return_value=httpx.Response(status, json=payload)
+    )
+
+
 @respx.mock
-async def test_fetch_credits_truncates_cast_to_top_8_comma_joined():
-    cast = [{"name": f"Actor {i}", "order": i} for i in range(12)]
-    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"cast": cast}))
+async def test_fetch_bundle_truncates_cast_to_top_8_comma_joined():
+    _mock_bundle(_bundle_json(cast=[{"name": f"Actor {i}", "order": i} for i in range(12)]))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_credits(client, "12345", "fake-key")
-    assert result.cast == ", ".join(f"Actor {i}" for i in range(8))
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.credits.cast == ", ".join(f"Actor {i}" for i in range(8))
 
 
 @respx.mock
-async def test_fetch_credits_joins_all_cast_when_fewer_than_8():
-    cast = [{"name": "Actor A", "order": 0}, {"name": "Actor B", "order": 1}]
-    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"cast": cast}))
+async def test_fetch_bundle_joins_all_cast_when_fewer_than_8():
+    _mock_bundle(_bundle_json(cast=[{"name": "Actor A", "order": 0}, {"name": "Actor B", "order": 1}]))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_credits(client, "12345", "fake-key")
-    assert result.cast == "Actor A, Actor B"
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.credits.cast == "Actor A, Actor B"
 
 
 @respx.mock
-async def test_fetch_credits_splits_crew_by_job():
+async def test_fetch_bundle_splits_crew_by_job():
     crew = [
         _crew("Jane Doe", "Director"),
         _crew("John Smith", "Producer"),
@@ -375,220 +397,218 @@ async def test_fetch_credits_splits_crew_by_job():
         _crew("Mary", "Novel"),  # excluded — Letterboxd keeps source-material credits separate
         _crew("DJ Source", "Music"),  # excluded — TMDB's loose job, credits source music too
     ]
-    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"crew": crew}))
+    _mock_bundle(_bundle_json(crew=crew))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_credits(client, "12345", "fake-key")
-    assert result.directors == "Jane Doe"
-    assert result.producers == "John Smith, Alice"
-    assert result.writers == "Wanda"
-    assert result.composers == "Nino R."
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.credits.directors == "Jane Doe"
+    assert result.credits.producers == "John Smith, Alice"
+    assert result.credits.writers == "Wanda"
+    assert result.credits.composers == "Nino R."
 
 
 @respx.mock
-async def test_fetch_credits_joins_multiple_composers():
+async def test_fetch_bundle_joins_multiple_composers():
     """Co-composed scores are real (Reznor/Ross, Carpenter/Lang) — ~6% of films."""
     crew = [_crew("Trent Reznor", "Original Music Composer"), _crew("Atticus Ross", "Original Music Composer")]
-    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"crew": crew}))
+    _mock_bundle(_bundle_json(crew=crew))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_credits(client, "12345", "fake-key")
-    assert result.composers == "Trent Reznor, Atticus Ross"
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.credits.composers == "Trent Reznor, Atticus Ross"
 
 
 @respx.mock
-async def test_fetch_credits_dedupes_person_credited_under_two_jobs():
+async def test_fetch_bundle_dedupes_person_credited_under_two_jobs():
     """TMDB lists a person once per job, so a Writer+Screenplay credit must not double up."""
     crew = [_crew("Ann Writer", "Writer"), _crew("Ann Writer", "Screenplay"), _crew("Zed", "Writer")]
-    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"crew": crew}))
+    _mock_bundle(_bundle_json(crew=crew))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_credits(client, "12345", "fake-key")
-    assert result.writers == "Ann Writer, Zed"
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.credits.writers == "Ann Writer, Zed"
 
 
 @respx.mock
-async def test_fetch_credits_returns_none_fields_for_absent_roles():
-    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(
-        return_value=httpx.Response(200, json={"cast": [], "crew": [_crew("Jane Doe", "Director")]})
+async def test_fetch_bundle_returns_none_fields_for_absent_roles():
+    _mock_bundle(_bundle_json(crew=[_crew("Jane Doe", "Director")]))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.credits.directors == "Jane Doe"
+    assert result.credits.cast is None
+    assert result.credits.producers is None
+    assert result.credits.writers is None
+    assert result.credits.composers is None
+
+
+async def test_fetch_bundle_returns_empty_when_tmdb_id_falsy():
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_bundle(client, None, "fake-key") == TmdbColumns()
+        assert await _fetch_bundle(client, "", "fake-key") == TmdbColumns()
+
+
+async def test_fetch_bundle_returns_empty_when_api_key_empty():
+    async with httpx.AsyncClient() as client:
+        assert await _fetch_bundle(client, "12345", "") == TmdbColumns()
+
+
+@respx.mock
+async def test_fetch_bundle_returns_empty_on_http_error():
+    _mock_bundle(status=404)
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result == TmdbColumns()
+
+
+@respx.mock
+async def test_fetch_bundle_tolerates_unknown_fields():
+    """extra="ignore" — a real cast/crew entry carries ~20 fields we never read, and the
+    bundle itself carries the whole movie detail payload beside the two appended blocks.
+    """
+    payload = _bundle_json(
+        cast=[{"name": "Actor A", "order": 0, "gender": 2, "popularity": 12.3, "profile_path": "/x.jpg"}],
+        crew=[{"name": "Jane Doe", "job": "Director", "department": "Directing", "credit_id": "abc123"}],
     )
+    payload |= {"budget": 0, "adult": False, "spoken_languages": [{"iso_639_1": "en", "english_name": "English"}]}
+    _mock_bundle(payload)
     async with httpx.AsyncClient() as client:
-        result = await _fetch_credits(client, "12345", "fake-key")
-    assert result.directors == "Jane Doe"
-    assert result.cast is None
-    assert result.producers is None
-    assert result.writers is None
-    assert result.composers is None
-
-
-async def test_fetch_credits_returns_empty_when_tmdb_id_falsy():
-    async with httpx.AsyncClient() as client:
-        assert await _fetch_credits(client, None, "fake-key") == Credits()
-        assert await _fetch_credits(client, "", "fake-key") == Credits()
-
-
-async def test_fetch_credits_returns_empty_when_api_key_empty():
-    async with httpx.AsyncClient() as client:
-        assert await _fetch_credits(client, "12345", "") == Credits()
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.credits.cast == "Actor A"
+    assert result.credits.directors == "Jane Doe"
 
 
 @respx.mock
-async def test_fetch_credits_returns_empty_on_http_error():
-    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(404))
-    async with httpx.AsyncClient() as client:
-        result = await _fetch_credits(client, "12345", "fake-key")
-    assert result == Credits()
-
-
-@respx.mock
-async def test_fetch_credits_tolerates_unknown_fields():
-    """extra="ignore" — a real cast/crew entry carries ~20 fields we never read."""
-    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "id": 12345,
-                "cast": [
-                    {"name": "Actor A", "order": 0, "gender": 2, "popularity": 12.3, "profile_path": "/x.jpg"},
-                ],
-                "crew": [
-                    {"name": "Jane Doe", "job": "Director", "department": "Directing", "credit_id": "abc123"},
-                ],
-            },
-        )
-    )
-    async with httpx.AsyncClient() as client:
-        result = await _fetch_credits(client, "12345", "fake-key")
-    assert result.cast == "Actor A"
-    assert result.directors == "Jane Doe"
-
-
-@respx.mock
-async def test_fetch_credits_logs_warning_when_cast_member_missing_name(caplog):
+async def test_fetch_bundle_logs_warning_when_cast_member_missing_name(caplog):
     """A cast entry with no ``name`` at all is a shape change, not a normal cast gap
     (real TMDB entries always carry a name) — must log at WARNING and still return the
-    safe empty ``Credits()`` fallback.
+    safe empty ``TmdbColumns()`` fallback.
     """
-    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(return_value=httpx.Response(200, json={"cast": [{"order": 0}]}))
+    _mock_bundle(_bundle_json(cast=[{"order": 0}]))
     with caplog.at_level(logging.WARNING, logger="modules.get_letterboxd_data"):
         async with httpx.AsyncClient() as client:
-            result = await _fetch_credits(client, "12345", "fake-key")
-    assert result == Credits()
+            result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result == TmdbColumns()
     assert any(r.levelno == logging.WARNING for r in caplog.records)
     assert "tmdb_id=12345" in caplog.text
 
 
 @respx.mock
-async def test_fetch_credits_logs_warning_when_crew_is_wrong_type(caplog):
+async def test_fetch_bundle_logs_warning_when_crew_is_wrong_type(caplog):
     """``directors`` is the taste ranker's highest-weighted dimension and the join's
     director confirmation — a ``crew`` field that stops being a list (e.g. TMDB starts
     sending an error string in its place) must be loud, not silently null every film.
     """
-    respx.get(f"{TMDB_API_URL}/movie/12345/credits").mock(
-        return_value=httpx.Response(200, json={"cast": [], "crew": "unexpected string, not a list"})
-    )
+    _mock_bundle(_bundle_json(credits={"cast": [], "crew": "unexpected string, not a list"}))
     with caplog.at_level(logging.WARNING, logger="modules.get_letterboxd_data"):
         async with httpx.AsyncClient() as client:
-            result = await _fetch_credits(client, "12345", "fake-key")
-    assert result == Credits()
+            result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result == TmdbColumns()
     assert any(r.levelno == logging.WARNING for r in caplog.records)
     assert "tmdb_id=12345" in caplog.text
 
 
-# ── _fetch_trailer (async, httpx + respx) ───────────────────────────────────────
+@respx.mock
+async def test_fetch_bundle_logs_warning_when_an_appended_block_is_missing(caplog):
+    """``credits``/``videos`` are required on ``MovieBundle`` precisely so a dropped
+    append block is loud: it would otherwise null six columns on every film at once.
+    """
+    respx.get(f"{TMDB_API_URL}/movie/12345", params__contains={"append_to_response": "credits,videos"}).mock(
+        return_value=httpx.Response(200, json={"id": 12345, "credits": {"cast": [], "crew": []}})
+    )
+    with caplog.at_level(logging.WARNING, logger="modules.get_letterboxd_data"):
+        async with httpx.AsyncClient() as client:
+            result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result == TmdbColumns()
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert "tmdb_id=12345" in caplog.text
 
 
-def _video(key: str, lang: str | None, *, official: bool = True, site: str = "YouTube", video_type: str = "Trailer") -> dict:
-    return {"key": key, "iso_639_1": lang, "official": official, "site": site, "type": video_type}
+# ── _fetch_bundle: trailer half (async, httpx + respx) ──────────────────────────
 
 
 @respx.mock
-async def test_fetch_trailer_prefers_french_over_english():
-    videos = [_video("en-key", "en"), _video("fr-key", "fr")]
-    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": videos}))
+async def test_fetch_bundle_trailer_prefers_french_over_english():
+    _mock_bundle(_bundle_json(videos=[_video("en-key", "en"), _video("fr-key", "fr")]))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_trailer(client, "12345", "fake-key")
-    assert result == "https://www.youtube.com/watch?v=fr-key"
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.trailer_url == "https://www.youtube.com/watch?v=fr-key"
 
 
 @respx.mock
-async def test_fetch_trailer_falls_back_to_english_when_no_french():
-    videos = [_video("de-key", "de"), _video("en-key", "en")]
-    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": videos}))
+async def test_fetch_bundle_trailer_falls_back_to_english_when_no_french():
+    _mock_bundle(_bundle_json(videos=[_video("de-key", "de"), _video("en-key", "en")]))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_trailer(client, "12345", "fake-key")
-    assert result == "https://www.youtube.com/watch?v=en-key"
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.trailer_url == "https://www.youtube.com/watch?v=en-key"
 
 
 @respx.mock
-async def test_fetch_trailer_falls_back_to_other_language_when_no_fr_or_en():
-    videos = [_video("de-key", "de")]
-    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": videos}))
+async def test_fetch_bundle_trailer_falls_back_to_other_language_when_no_fr_or_en():
+    _mock_bundle(_bundle_json(videos=[_video("de-key", "de")]))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_trailer(client, "12345", "fake-key")
-    assert result == "https://www.youtube.com/watch?v=de-key"
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.trailer_url == "https://www.youtube.com/watch?v=de-key"
 
 
 @respx.mock
-async def test_fetch_trailer_excludes_unofficial_teaser_and_non_youtube():
+async def test_fetch_bundle_trailer_excludes_unofficial_teaser_and_non_youtube():
     videos = [
         _video("unofficial-key", "fr", official=False),
         _video("teaser-key", "fr", video_type="Teaser"),
         _video("vimeo-key", "fr", site="Vimeo"),
     ]
-    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": videos}))
+    _mock_bundle(_bundle_json(videos=videos))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_trailer(client, "12345", "fake-key")
-    assert result is None
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.trailer_url is None
 
 
 @respx.mock
-async def test_fetch_trailer_returns_none_on_empty_results():
-    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": []}))
+async def test_fetch_bundle_trailer_returns_none_on_empty_results():
+    _mock_bundle(_bundle_json())
     async with httpx.AsyncClient() as client:
-        result = await _fetch_trailer(client, "12345", "fake-key")
-    assert result is None
-
-
-async def test_fetch_trailer_returns_none_when_tmdb_id_falsy():
-    async with httpx.AsyncClient() as client:
-        assert await _fetch_trailer(client, None, "fake-key") is None
-
-
-async def test_fetch_trailer_returns_none_when_api_key_empty():
-    async with httpx.AsyncClient() as client:
-        assert await _fetch_trailer(client, "12345", "") is None
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.trailer_url is None
 
 
 @respx.mock
-async def test_fetch_trailer_returns_none_on_http_error():
-    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(404))
-    async with httpx.AsyncClient() as client:
-        result = await _fetch_trailer(client, "12345", "fake-key")
-    assert result is None
-
-
-@respx.mock
-async def test_fetch_trailer_tolerates_unknown_fields():
+async def test_fetch_bundle_trailer_tolerates_unknown_fields():
     """extra="ignore" — a real video entry carries fields (id, name, size, published_at, …) we never read."""
     videos = [
         {**_video("fr-key", "fr"), "id": "abc", "name": "Bande-annonce officielle", "size": 1080, "published_at": "2024-01-01"}
     ]
-    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": videos}))
+    _mock_bundle(_bundle_json(videos=videos))
     async with httpx.AsyncClient() as client:
-        result = await _fetch_trailer(client, "12345", "fake-key")
-    assert result == "https://www.youtube.com/watch?v=fr-key"
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.trailer_url == "https://www.youtube.com/watch?v=fr-key"
 
 
 @respx.mock
-async def test_fetch_trailer_logs_warning_on_shape_change(caplog):
+async def test_fetch_bundle_logs_warning_when_video_results_wrong_type(caplog):
     """``results`` no longer being a list (e.g. TMDB starts sending a dict/error blob in
-    its place) must log at WARNING and still return the safe None fallback.
+    its place) must log at WARNING and still return the safe empty fallback.
     """
-    respx.get(f"{TMDB_API_URL}/movie/12345/videos").mock(return_value=httpx.Response(200, json={"results": "oops"}))
+    _mock_bundle({"id": 12345, "credits": {"cast": [], "crew": []}, "videos": {"results": "oops"}})
     with caplog.at_level(logging.WARNING, logger="modules.get_letterboxd_data"):
         async with httpx.AsyncClient() as client:
-            result = await _fetch_trailer(client, "12345", "fake-key")
-    assert result is None
+            result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result == TmdbColumns()
     assert any(r.levelno == logging.WARNING for r in caplog.records)
     assert "tmdb_id=12345" in caplog.text
+
+
+@respx.mock
+async def test_fetch_bundle_requests_one_call_for_credits_and_videos():
+    """The point of the consolidation: six columns, one request, and no ``language``
+    parameter on it — ``language=fr-FR`` localises person names (see modules.tmdb).
+    """
+    route = respx.get(f"{TMDB_API_URL}/movie/12345").mock(
+        return_value=httpx.Response(200, json=_bundle_json(crew=[_crew("Jane Doe", "Director")]))
+    )
+    async with httpx.AsyncClient() as client:
+        await _fetch_bundle(client, "12345", "fake-key")
+    assert route.call_count == 1
+    params = route.calls[0].request.url.params
+    assert params["append_to_response"] == "credits,videos"
+    assert params["include_video_language"] == "fr,en,null"
+    assert "language" not in params
 
 
 # ── _fetch_all TMDB enrichment integration ──────────────────────────────────────
@@ -599,23 +619,28 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
     movie_mock = make_movie()
     movie_mock.tmdb_id = "42"
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=movie_mock)
-    respx.get(f"{TMDB_API_URL}/movie/42").mock(return_value=httpx.Response(200, json={"title": "Titre Français"}))
-    respx.get(f"{TMDB_API_URL}/movie/42/credits").mock(
+    # Two routes on the same path, told apart by the parameters each call carries: the
+    # French-locale title lookup, and the locale-free credits+videos bundle.
+    title_route = respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"language": "fr-FR"}).mock(
+        return_value=httpx.Response(200, json={"title": "Titre Français"})
+    )
+    bundle_route = respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"append_to_response": "credits,videos"}).mock(
         return_value=httpx.Response(
             200,
             json={
-                "cast": [{"name": "Actor A", "order": 0}],
-                "crew": [
-                    _crew("Jane Doe", "Director"),
-                    _crew("John Smith", "Producer"),
-                    _crew("Wanda", "Screenplay"),
-                    _crew("Nino R.", "Original Music Composer"),
-                ],
+                "id": 42,
+                "credits": {
+                    "cast": [{"name": "Actor A", "order": 0}],
+                    "crew": [
+                        _crew("Jane Doe", "Director"),
+                        _crew("John Smith", "Producer"),
+                        _crew("Wanda", "Screenplay"),
+                        _crew("Nino R.", "Original Music Composer"),
+                    ],
+                },
+                "videos": {"results": [_video("fr-key", "fr")]},
             },
         )
-    )
-    respx.get(f"{TMDB_API_URL}/movie/42/videos").mock(
-        return_value=httpx.Response(200, json={"results": [_video("fr-key", "fr")]})
     )
 
     results = await _fetch_all(["some-slug"], api_key="fake-key")
@@ -623,11 +648,13 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
     assert results[0]["french_title"] == "Titre Français"
     assert results[0]["cast"] == "Actor A"
     assert results[0]["trailer_url"] == "https://www.youtube.com/watch?v=fr-key"
-    # The crew columns now come from the same /credits round-trip as the cast.
+    # The crew columns come from the same bundle round-trip as the cast and the trailer.
     assert results[0]["directors"] == "Jane Doe"
     assert results[0]["producers"] == "John Smith"
     assert results[0]["writers"] == "Wanda"
     assert results[0]["composers"] == "Nino R."
+    # Two requests per film, not three — the whole point of the bundle.
+    assert (title_route.call_count, bundle_route.call_count) == (1, 1)
 
 
 @respx.mock
@@ -663,13 +690,12 @@ async def test_tmdb_failures_never_log_the_api_key(caplog):
     respx.get(url__startswith="https://api.themoviedb.org/3/movie/42").mock(return_value=httpx.Response(500))
     caplog.set_level(logging.DEBUG, logger="modules.get_letterboxd_data")
     # Retries are exponentially backed off; drop the wait so the test stays fast.
-    for fn in (_get_tmdb_movie, _get_tmdb_credits, _get_tmdb_videos):
+    for fn in (_get_tmdb_movie, _get_tmdb_bundle):
         fn.retry.wait = wait_none()
 
     async with httpx.AsyncClient() as client:
         assert await _fetch_french_title(client, "42", "SUPERSECRETKEY") is None
-        assert await _fetch_credits(client, "42", "SUPERSECRETKEY") == Credits()
-        assert await _fetch_trailer(client, "42", "SUPERSECRETKEY") is None
+        assert await _fetch_bundle(client, "42", "SUPERSECRETKEY") == TmdbColumns()
 
     assert caplog.records, "expected the failures to be logged at DEBUG"
     assert "api_key" in caplog.text, "expected the request URL in the log, else this test proves nothing"

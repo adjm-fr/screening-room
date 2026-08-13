@@ -20,7 +20,7 @@ below holds regardless of which pipeline ingested a row.
 | # | Producer | What it fills | Fails to |
 |---|----------|---------------|----------|
 | 1 | **Letterboxd** — HTML scrape via `letterboxdpy`'s `Movie(slug)` | 20 columns: identifiers, core info, media, genres/themes, and the dynamic detail columns | The whole row (`_fetch_movie` returns `None`, the film is skipped) |
-| 2 | **TMDB** — 3 REST calls on one shared `httpx.AsyncClient` | 7 columns: `french_title`, `cast`, the 4 crew columns, `trailer_url` | `None` per column — never raises into the batch |
+| 2 | **TMDB** — 2 REST calls on one shared `httpx.AsyncClient` | 7 columns: `french_title`, `cast`, the 4 crew columns, `trailer_url` | `None` per column — never raises into the batch |
 | 3 | **This pipeline** — computed locally, no network | 3 columns: `slug`, `integration_date`, `source` | n/a |
 
 A TMDB failure degrades columns; a Letterboxd failure drops the film. That asymmetry is deliberate: without
@@ -51,7 +51,7 @@ the 3 rows without one get all 7 TMDB columns as null regardless of `TMDB_API_KE
 | Column | Source | Upstream origin | Coverage |
 |---|---|---|---|
 | `title` | Letterboxd | `h1.primaryname span.name`, falling back to `h1.filmtitle` | 100% |
-| `french_title` | **TMDB** | `GET /movie/{tmdb_id}?language=fr-FR` → `title` | 100.0% |
+| `french_title` | **TMDB** | `GET /movie/{tmdb_id}?language=fr-FR` → `title` (the *only* locale-bearing call — see [Quirks](#quirks-that-bite)) | 100.0% |
 | `original_title` | Letterboxd | `h2.originalname` — absent when it equals `title` | 33.0% |
 | `release_year` | Letterboxd | `span.releasedate`, falling back to JSON-LD `releasedEvent[0].startDate` | 100% |
 | `runtime` | Letterboxd | `p.text-footer`, digits joined (minutes; stored as `float64`) | 100.0% |
@@ -67,7 +67,7 @@ the 3 rows without one get all 7 TMDB columns as null regardless of `TMDB_API_KE
 |---|---|---|---|
 | `poster_url` | Letterboxd | JSON-LD `image`, query string stripped | 100.0% |
 | `banner_url` | Letterboxd | `div#backdrop[data-backdrop2x]`, falling back to `[data-backdrop]`, query string stripped | 86.8% |
-| `trailer_url` | **TMDB** | `GET /movie/{tmdb_id}/videos?include_video_language=fr,en,null` → best official YouTube trailer | 54.5% |
+| `trailer_url` | **TMDB** | the bundle's `videos` block (`include_video_language=fr,en,null`) → best official YouTube trailer | 54.5% |
 
 Letterboxd carries its own trailer link (`p.trailer-link`); it is deliberately **not** used — TMDB's is
 language-rankable (fr → en → any, `_TRAILER_LANGUAGE_PRIORITY`).
@@ -84,12 +84,12 @@ All three are the same Letterboxd element, split on the link's URL path segment 
 
 ### Cast & crew — all TMDB, all one request
 
-`GET /movie/{tmdb_id}/credits` fills five columns in a single round-trip (`_fetch_credits` → the `Credits`
-NamedTuple, whose field names are the cache column names). Letterboxd's own cast/crew are deliberately not
-read — see [`README.md`](README.md#1-data_letterboxdparquet) for the agreement measurements behind each
-job filter.
+`GET /movie/{tmdb_id}?append_to_response=credits,videos` fills these five columns *and* `trailer_url` in a
+single round-trip (`_fetch_bundle` → `TmdbColumns`, carrying the `Credits` NamedTuple whose field names are
+the cache column names). Letterboxd's own cast/crew are deliberately not read — see
+[`README.md`](README.md#1-data_letterboxdparquet) for the agreement measurements behind each job filter.
 
-| Column | From `/credits` | Filter | Coverage |
+| Column | From the `credits` block | Filter | Coverage |
 |---|---|---|---|
 | `cast` | `cast[:8]` → `name` | Top 8 by TMDB billing order | 99.2% |
 | `directors` | `crew` → `name` | `job == "Director"` | 100.0% |
@@ -136,10 +136,10 @@ slug (from user lists, or resolved from an Allocine tuple)
   ├─ asyncio.to_thread → _fetch_movie(slug)          [Letterboxd, blocking scrape]
   │     └─ 20 columns + the 7 TMDB columns seeded as None
   │
-  └─ nested TaskGroup on one shared httpx.AsyncClient  [TMDB, 3 concurrent calls]
-        ├─ _fetch_french_title  → french_title
-        ├─ _fetch_credits       → cast, directors, producers, writers, composers
-        └─ _fetch_trailer       → trailer_url
+  └─ nested TaskGroup on one shared httpx.AsyncClient  [TMDB, 2 concurrent calls]
+        ├─ _fetch_french_title  → french_title            [?language=fr-FR]
+        └─ _fetch_bundle        → cast, directors, producers, writers, composers,
+                                  trailer_url             [?append_to_response=credits,videos]
   │
   └─ integration_date stamped → concat into cache → source assigned → single validated write
 ```
@@ -163,6 +163,24 @@ every column above is refetched, not just the stale one. **Age is the only trigg
 
 ## Quirks that bite
 
+- **`language=fr-FR` localises TMDB *person names*, which is why the credits are a separate call.** It is
+  the reason the two TMDB requests cannot be folded into one `append_to_response`. Measured on 120 films:
+  the parameter changes 5 director sets and 15 top-8 cast lists — `Ho Meng-Hua` → `何夢華`,
+  `Baku Kinoshita` → `木下麦`, `Marcell Jankovics` → `Jankovics Marcell` (locale name order). A control run
+  rules out response variance (two identical calls agree 120/120; the appended block matches the standalone
+  endpoint 120/120). Those names feed the taste ranker's highest-weighted dimension *and*
+  `cinema_dashboard`'s token-containment director confirmation against Allocine, which is Latin-script — so
+  hanging the credits off the French call would silently drop films from the watchlist↔showtimes join.
+  Everything else is locale-invariant: crew `job` strings, video results, `production_countries`,
+  `spoken_languages` and `production_companies` were all identical across 60 films, and only `title`
+  differed (44/60). **Never add `language` to `_get_tmdb_bundle`.**
+- **`?language=fr-FR` is not "the French translation" — it is the French *release* title.** Reconstructing
+  it from an `append_to_response=translations` block reproduces it on only 93.25% of 400 films, and the
+  misses are semantic rather than cosmetic: TMDB's fr-FR resolution returns `The Nice Guys`, `A Serious Man`
+  and `Room` (how those films were released in France) where the translations block gives the literal
+  `Les bons gars`, `Un homme sérieux`, `Room: le monde de Jack`. Since `french_title` exists to match
+  Allocine's display titles, the release title is the correct semantics — don't "save a request" by
+  switching to `translations`.
 - **`language` repeats the primary language.** Letterboxd's details tab lists Primary Language *and* Spoken
   Languages, both linking under `/films/language/`, so both collapse into one column and `_fetch_movie`'s
   `", ".join(names)` does not dedupe. 32.2% of non-null rows repeat a value — e.g. *Frankenstein* →
@@ -189,8 +207,11 @@ every column above is refetched, not just the stale one. **Age is the only trigg
 Five places, and skipping any one of them fails quietly rather than loudly:
 
 1. **`modules/get_letterboxd_data.py`** — add the key to `_fetch_movie`'s return dict (seeded `None` if a
-   TMDB column), and assign it in `_fetch_all` if it comes from TMDB. Reuse `_fetch_credits`' round-trip
-   rather than adding a fourth TMDB call where possible.
+   TMDB column), and assign it in `_fetch_all` if it comes from TMDB. Read it off `_fetch_bundle`'s
+   existing round-trip rather than adding a third TMDB call: the bundle already fetches the whole movie
+   detail payload, and `append_to_response` takes up to 20 blocks, so `keywords`, `release_dates`,
+   `external_ids` and friends cost nothing extra. Only a field that needs `language=fr-FR` belongs on the
+   other call.
 2. **`packages/contracts/src/contracts/data_letterboxd.py`** — add it to `required_columns` if it is
    guaranteed on every row (dynamic detail columns are not; anything seeded `None` in `_fetch_movie` is).
    The two cache writes validate against this; a missing required column raises `SchemaValidationError`.

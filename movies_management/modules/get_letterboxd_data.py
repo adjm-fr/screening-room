@@ -312,6 +312,24 @@ async def _fetch_bundle(client: httpx.AsyncClient, tmdb_id: str | None, api_key:
 _TMDB_OWNED_DETAIL_TYPES = frozenset({"studio", "country", "language"})
 
 
+# Contract columns introduced after rows had already been cached, seeded (null) onto a
+# loaded cache by `get_letterboxd_data`.
+#
+# This is a migration step, not a defensive guard, and the distinction is why it is here at
+# all. Every other route by which a cache gains a column requires a row to actually be
+# fetched: the concat below only fires when there is a *new* slug, and
+# `refresh_letterboxd_data`'s pre-seed loop only when there is a *stale* one. Age is the
+# only refresh trigger, so a cache that was fully rewritten by a recent backfill has neither
+# — and would reach `write_parquet_validated` with a frame that predates these columns and
+# fail the contract on every run, with `--reset_database` (refetch all ~6.7k films from
+# Letterboxd, losing any whose page has since gone) as the only way out. That is not an
+# escape hatch worth relying on.
+#
+# Values are NOT backfilled here: null means "not migrated yet" and the real values arrive
+# with the one-pass backfill. Drop an entry once no cache in use predates it.
+_SCHEMA_MIGRATION_COLUMNS = ("origin_country", "original_language")
+
+
 @retry(stop=_RETRY_STOP, wait=_RETRY_WAIT, reraise=True)
 def _build_movie(slug: str) -> Movie:
     """Construct a letterboxdpy ``Movie`` (the blocking scrape), retrying on transient errors."""
@@ -531,6 +549,13 @@ def get_letterboxd_data(
     except Exception:
         logger.info("No existing cache found — starting fresh")
         data_df = pd.DataFrame()
+
+    if not data_df.empty:
+        added = [c for c in _SCHEMA_MIGRATION_COLUMNS if c not in data_df.columns]
+        for col in added:
+            data_df[col] = None
+        if added:
+            logger.info("Cache predates %s — seeded as null (values arrive on refresh)", ", ".join(added))
 
     # Identify slugs that need fetching
     cached_slugs = set(data_df["slug"].unique()) if not data_df.empty else set()

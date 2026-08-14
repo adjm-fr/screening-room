@@ -254,15 +254,19 @@ every column above is refetched, not just the stale one. **Age is the only trigg
   columns degrades it silently rather than failing it. The enforcement point is `write_parquet_validated` at
   the end of a `main.py` run, which raises `SchemaValidationError: missing required columns
   ['origin_country', 'original_language']` against a pre-move cache.
-  Two things add the columns, and **neither is guaranteed to run**: `get_letterboxd_data` introduces them by
-  concat when there is at least one *new* slug to fetch, and `refresh_letterboxd_data`'s pre-seed loop
-  (guarded by `test_refresh_adds_columns_missing_from_target_cache`) when there is at least one *stale* one.
-  A run with no new films and nothing aged past `LETTERBOXD_DAYS_TO_UPDATE` reaches the write with the
-  frame untouched and hard-fails. Recover with `--reset_database`, a lower staleness threshold, or the
-  backfill — deliberately no defensive seeding in the pipeline, since all three exist.
-  Note this is **independent of `USE_TMDB_TERRITORIES`**: `_fetch_movie` seeds the two columns in both flag
-  positions, so any run that touches a row converges the schema without migrating a single value. The flag
-  decides what the columns *contain*, never whether they exist.
+  Both routes that add a column require a row to actually be *fetched*: `get_letterboxd_data` introduces
+  them by concat only when there is a **new** slug, and `refresh_letterboxd_data`'s pre-seed loop (guarded by
+  `test_refresh_adds_columns_missing_from_target_cache`) only when there is a **stale** one. Age is the only
+  refresh trigger, so a cache that a recent backfill rewrote in full has neither — every row is young and
+  every slug is known — and the run would reach the write with a pre-migration frame and fail **every time**,
+  not occasionally. `--reset_database` is not a real escape hatch here: it refetches ~6.7k films from
+  Letterboxd and drops any whose page has since gone.
+  `get_letterboxd_data` therefore seeds `_SCHEMA_MIGRATION_COLUMNS` (null) onto the loaded cache, which is
+  what makes the schema converge on *any* run rather than only a busy one — a migration step with an
+  expiry, not a permanent guard: drop an entry once no cache in use predates it. Values are untouched, so a
+  populated column is never clobbered.
+  All of this is **independent of `USE_TMDB_TERRITORIES`**: the flag decides what the columns *contain*,
+  never whether they exist.
 - **`slug` is the requested slug, not the canonical one.** `_fetch_movie` stores its own argument, while
   `letterboxd_url` is the page's post-redirect URL. So an alias slug produces a row whose `slug` and
   `letterboxd_url` disagree.
@@ -295,8 +299,9 @@ Five places, and skipping any one of them fails quietly rather than loudly:
    guaranteed on every row (anything seeded `None` in `_fetch_movie` is; a column left to
    `**details_by_type` would not be). The two cache writes validate against this; a missing required column
    raises `SchemaValidationError`. Note the ordering that implies: promoting a column to required makes the
-   *next write* fail against a cache that predates it, and a run with no new and no stale slugs never adds
-   the column — so land the backfill with the promotion, not after it.
+   *next write* fail against a cache that predates it, and neither the concat nor the refresh pre-seed adds
+   the column unless a row is actually fetched. Add it to `_SCHEMA_MIGRATION_COLUMNS` in the same change, so
+   any run converges the schema; the backfill then fills the values.
 3. **`refresh_letterboxd_data`** — nothing to do *if* you leave the pre-seed loop alone.
    `DataFrame.update()` silently ignores columns absent from the target, so the
    `refresh_df.columns.difference(data_df.columns)` loop is what lets refreshed rows gain a column added

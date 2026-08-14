@@ -731,6 +731,15 @@ typecheck (mypy blocking + ty advisory), security, test.
   Man`), not the literal translation (`Les bons gars`, `Un homme sérieux`) — 93.25% agreement on 400 films,
   and the release title is the one that matches Allocine. Everything else is locale-invariant, so new TMDB
   fields belong on the bundle (20-append limit, no extra request). See `movies_management/CACHE_COLUMNS.md`.
+- **A newly required cache column needs `_SCHEMA_MIGRATION_COLUMNS`, because nothing else adds it to a quiet
+  cache.** Both routes that introduce a column need a row to actually be fetched — `get_letterboxd_data`'s
+  concat fires only on a *new* slug, `refresh_letterboxd_data`'s pre-seed loop only on a *stale* one — and age
+  is the only refresh trigger. So a cache a recent backfill rewrote in full has neither, and
+  `write_parquet_validated` fails on **every** run, not occasionally; `--reset_database` is no escape (it
+  refetches ~6.7k films and drops any whose Letterboxd page has since gone). `get_letterboxd_data` therefore
+  seeds those columns null on the loaded cache. It is a migration step with an expiry, not a standing guard —
+  drop an entry once no cache in use predates it — and it seeds *presence* only, never values, so a populated
+  column is never clobbered.
 - **Age is `main.py`'s only refresh trigger — a null column never re-queues a row.** `find_stale_slugs`
   (`integration_date` older than `letterboxd_days_to_update`, bounded by `letterboxd_refresh_limit`,
   1000/run) is the whole selection. The `find_missing_cast_slugs` null-`cast` backfill that once ran beside

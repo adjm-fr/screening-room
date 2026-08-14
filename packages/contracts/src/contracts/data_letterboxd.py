@@ -50,11 +50,16 @@ DATA_LETTERBOXD = ParquetContract(
         }
     ),
     notes=(
-        "`studio`/`country`/`language` became required when they moved off Letterboxd's "
-        "dynamic `**details_by_type` expansion onto TMDB "
-        "(`production_companies`/`production_countries`/`spoken_languages`), joining the "
-        "new `origin_country`/`original_language`: `_fetch_movie` now seeds all five as "
-        "None on every row, so their presence is guaranteed the same way `composers`' is. "
+        "`studio`/`country`/`language` became required when they stopped being expanded "
+        "from Letterboxd's dynamic `**details_by_type` and started being seeded on every "
+        "row, joined by the new `origin_country`/`original_language`. Their *producer* is "
+        "mid-migration behind `USE_TMDB_TERRITORIES` (default off = Letterboxd's details "
+        "tab; on = TMDB `production_companies`/`production_countries`/`spoken_languages`), "
+        "but the contract is unaffected either way: `_fetch_movie` seeds all five as None "
+        "regardless, so presence is guaranteed the same way `composers`' is and only the "
+        "values depend on the flag. Under the default, `origin_country`/`original_language` "
+        "are null placeholders — Letterboxd has no equivalent — so a null in those two "
+        'means "not migrated yet", not "upstream had nothing". '
         "Presence only — like every column here, they are nullable, and TMDB genuinely "
         "has no company or country on record for some obscure films. "
         "`country` and `origin_country` are NOT two spellings of one field: `country` is "

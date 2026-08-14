@@ -662,10 +662,16 @@ typecheck (mypy blocking + ty advisory), security, test.
   the swap safe for the watchlist↔showtimes join.
   **Corollary: without `TMDB_API_KEY`, `directors` is now null**, which silently guts the taste ranker's
   highest-weighted dimension *and* the join's director confirmation — `main.py` warns about this at startup.
-- **`studio`/`country`/`language` are TMDB's too, and `country` ≠ `origin_country`.** The same
-  `_fetch_bundle` round-trip also fills five territory columns, read by `_parse_territories` off the *base*
-  movie payload the request already returns — no second call, no extra `append_to_response` block, so adding
-  a territory field must never add a request. `studio` ← `production_companies[].name`, `country` ←
+- **`studio`/`country`/`language` are mid-migration behind `USE_TMDB_TERRITORIES` (default off), and
+  `country` ≠ `origin_country`.** Both producers stay wired up: with the flag off, Letterboxd's details tab
+  fills the trio exactly as it always has and `origin_country`/`original_language` are **null placeholders**;
+  with it on, the three Letterboxd detail types are filtered out (`_TMDB_OWNED_DETAIL_TYPES`) and
+  `_parse_territories` fills all five off the *base* movie payload `_fetch_bundle` already requests — no
+  second call, no extra `append_to_response` block, so adding a territory field must never add a request.
+  **`_fetch_movie` seeds all five in both positions**, so the parquet schema — and therefore
+  `contracts.DATA_LETTERBOXD` — does not depend on the flag; only the values do. That is what let the
+  contract tighten before any value moved. Flipping *back* is free; leaving a cache half-written under each
+  setting is not (see the spellings note below). `studio` ← `production_companies[].name`, `country` ←
   `production_countries[].name`, `origin_country` ← `origin_country`, `language` ←
   `spoken_languages[].english_name` (**not** `name`, which is the endonym `Français`/`日本語`),
   `original_language` ← `original_language`. They ride the locale-free call because they are locale-invariant
@@ -681,17 +687,19 @@ typecheck (mypy blocking + ty advisory), security, test.
   **`origin_country` is carried but is deliberately not a `_DIM_COLUMNS` taste dimension** — it was measured
   as a *replacement*, never as an *addition*, so wiring it in needs its own backtest against the
   0.667 / 1.98 reference.
-  Two further consequences. The swap uses **TMDB names verbatim, no alias table**, so `USA` →
+  Two further consequences of turning it on. TMDB names are used **verbatim, no alias table**, so `USA` →
   `United States of America`, `UK` → `United Kingdom`, `Chinese` → `Mandarin` (semantic: Letterboxd collapses
   Mandarin into "Chinese" while keeping Cantonese separate) — raw agreement with the old values is only 46.7%
-  on `country`, 99.5% once normalised, which is exactly why a **one-pass backfill of all rows is mandatory**:
-  a half-migrated cache splits one affinity key into two. And the old duplicated-`language` quirk is gone —
-  Letterboxd listed Primary *and* Spoken Languages under one URL path (40 of 120 sampled rows repeated a
-  value); TMDB's `spoken_languages` is a proper list (0 of 120).
+  on `country`, 99.5% once normalised, which is why **flipping the flag and running the one-pass backfill are
+  one operation**: a cache half-written under each setting splits one affinity key into two, and age won't
+  fix it (`find_stale_slugs` would need a full `LETTERBOXD_DAYS_TO_UPDATE` cycle). And the duplicated-
+  `language` quirk goes away — Letterboxd lists Primary *and* Spoken Languages under one URL path (40 of 120
+  sampled rows repeat a value); TMDB's `spoken_languages` is a proper list (0 of 120).
   **The landmine:** `**details_by_type` is expanded *last* in `_fetch_movie`'s dict literal and Letterboxd
-  still serves all three detail types, so the three are filtered out via `_TMDB_OWNED_DETAIL_TYPES` rather
-  than left to be overwritten. Put them back and the TMDB values are silently overwritten by Letterboxd's —
-  right values fetched, wrong values written, nothing raised.
+  serves all three detail types regardless of the flag, so with the flag on they must be *filtered out*
+  rather than left to be overwritten — that is the only thing `_TMDB_OWNED_DETAIL_TYPES` does. Widen the
+  filter to run unconditionally and the default path silently loses three columns; drop it and the migration
+  silently does nothing. Both fail with right values fetched, wrong values written, and nothing raised.
 - **The two TMDB fetchers parse through Pydantic models (`movies_management/modules/tmdb.py`), and a
   `logger.warning` from one of them means upstream schema drift, not a missing film.** `MovieDetail` /
   `MovieBundle` (`credits`/`videos`, wrapping `CreditsResponse` and `VideosResponse`, plus the five

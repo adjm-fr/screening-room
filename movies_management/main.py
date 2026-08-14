@@ -100,14 +100,24 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
     days_to_update = settings.letterboxd_days_to_update
     refresh_limit = settings.letterboxd_refresh_limit
     tmdb_api_key = settings.tmdb_api_key.get_secret_value()
+    use_tmdb_territories = settings.use_tmdb_territories
+    logger.info(
+        "Territory columns (studio/country/language) sourced from %s%s",
+        "TMDB" if use_tmdb_territories else "Letterboxd",
+        "" if use_tmdb_territories else " — origin_country/original_language stay null (USE_TMDB_TERRITORIES=false)",
+    )
     if not tmdb_api_key:
         logger.warning(
             "TMDB_API_KEY is not set — french_title, cast, the crew columns "
-            "(directors/producers/writers/composers), trailer_url and the territory columns "
-            "(studio/country/origin_country/language/original_language) will all be null. That is "
-            "three of the taste ranker's dimensions (directors, country, language), and `directors` "
-            "additionally confirms the watchlist<->showtimes join, so the dashboard degrades badly "
-            "without it."
+            "(directors/producers/writers/composers) and trailer_url will all be null. `directors` is "
+            "the taste ranker's highest-weighted dimension and confirms the "
+            "watchlist<->showtimes join, so the dashboard degrades badly without it.%s",
+            (
+                " USE_TMDB_TERRITORIES is also on, so studio/country/language "
+                "(two more ranker dimensions) and origin_country/original_language go null too."
+                if use_tmdb_territories
+                else ""
+            ),
         )
 
     letterboxd_data_output_path = output_path / "data_letterboxd.parquet"
@@ -153,7 +163,12 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
             if letterboxd_data_output_path.exists():
                 letterboxd_data_output_path.unlink()
                 logger.info("Cache file deleted for full rebuild.")
-        data_letterboxd_df = ldm.get_letterboxd_data(all_movies_df["slug"].tolist(), letterboxd_data_output_path, tmdb_api_key)
+        data_letterboxd_df = ldm.get_letterboxd_data(
+            all_movies_df["slug"].tolist(),
+            letterboxd_data_output_path,
+            tmdb_api_key,
+            use_tmdb_territories=use_tmdb_territories,
+        )
 
         logger.info("Cache size: %s", data_letterboxd_df.shape)
 
@@ -188,6 +203,7 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
                 data_letterboxd_df,
                 list(slugs_to_refresh),
                 tmdb_api_key,
+                use_tmdb_territories=use_tmdb_territories,
             )
 
         # === ASSIGN PROVENANCE & PERSIST CACHE ===
@@ -266,7 +282,13 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
     # not only the user's watchlist and ratings.
     if enrich_from_allocine:
         unresolved_path = output_path / "unresolved_allocine.parquet"
-        enrich_cache_from_showtimes(enrich_from_allocine, letterboxd_data_output_path, unresolved_path, tmdb_api_key)
+        enrich_cache_from_showtimes(
+            enrich_from_allocine,
+            letterboxd_data_output_path,
+            unresolved_path,
+            tmdb_api_key,
+            use_tmdb_territories=use_tmdb_territories,
+        )
 
 
 if __name__ == "__main__":

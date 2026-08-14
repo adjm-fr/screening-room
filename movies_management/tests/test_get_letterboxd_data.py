@@ -69,40 +69,68 @@ def test_empty_genres_returns_none(mocker, make_movie):
     assert result["mini_themes"] is None
 
 
-def test_tmdb_owned_detail_types_are_dropped_not_expanded(mocker, make_movie):
-    """Letterboxd still serves studio/country/language; _fetch_movie must ignore all three.
+_TERRITORY_DETAILS = [
+    {"type": "studio", "name": "A24"},
+    {"type": "country", "name": "USA"},
+    {"type": "country", "name": "UK"},
+    {"type": "language", "name": "English"},
+]
+
+
+def test_details_grouped_by_type_by_default(mocker, make_movie):
+    """Default flag: studio/country/language still come from Letterboxd, exactly as before."""
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=_TERRITORY_DETAILS))
+    result = _fetch_movie("some-slug")
+    assert result is not None
+    assert result["studio"] == "A24"
+    assert result["country"] == "USA, UK"
+    assert result["language"] == "English"
+
+
+def test_placeholder_territory_columns_present_under_letterboxd(mocker, make_movie):
+    """The new schema exists before the migration does — that is what lets the contract
+    require all five columns while Letterboxd is still the source of three of them.
+
+    origin_country/original_language have no Letterboxd equivalent, so they are null
+    placeholders. A film whose page carries no detail types at all must still get every
+    key, or the column would vanish from the frame entirely.
+    """
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=[]))
+    result = _fetch_movie("some-slug")
+    assert result is not None
+    for column in ("studio", "country", "origin_country", "language", "original_language"):
+        assert column in result
+        assert result[column] is None
+
+
+def test_tmdb_owned_detail_types_are_dropped_when_flag_on(mocker, make_movie):
+    """Letterboxd still serves studio/country/language; with the flag on all three are dropped.
 
     The sharp regression: ``**details_by_type`` is expanded *last* in the returned dict
     literal, so a surviving Letterboxd value would overwrite the TMDB one seeded above it
     and the column move would be a silent no-op — right values fetched, wrong values
     written, nothing raised. Asserting None (not "A24") is what pins that.
     """
-    details = [
-        {"type": "studio", "name": "A24"},
-        {"type": "country", "name": "USA"},
-        {"type": "country", "name": "UK"},
-        {"type": "language", "name": "English"},
-    ]
-    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=details))
-    result = _fetch_movie("some-slug")
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=_TERRITORY_DETAILS))
+    result = _fetch_movie("some-slug", use_tmdb_territories=True)
     assert result is not None
     assert result["studio"] is None
     assert result["country"] is None
     assert result["language"] is None
-    # Seeded on every row so the contract can require them, TMDB key or not.
     assert result["origin_country"] is None
     assert result["original_language"] is None
 
 
-def test_unknown_detail_types_still_expand(mocker, make_movie):
-    """Only the three TMDB-owned types are dropped — a new Letterboxd type still gets a column."""
+@pytest.mark.parametrize("use_tmdb_territories", [False, True])
+def test_unknown_detail_types_still_expand(mocker, make_movie, use_tmdb_territories):
+    """The flag scopes to the three TMDB-owned types — any other type expands either way."""
     details = [
         {"type": "studio", "name": "A24"},
         {"type": "format", "name": "IMAX"},
         {"type": "format", "name": "70mm"},
     ]
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=details))
-    result = _fetch_movie("some-slug")
+    result = _fetch_movie("some-slug", use_tmdb_territories=use_tmdb_territories)
     assert result is not None
     assert result["format"] == "IMAX, 70mm"
 
@@ -272,7 +300,7 @@ def test_refresh_adds_columns_missing_from_target_cache(mocker):
         ),
     )
 
-    result = refresh_letterboxd_data(df, ["slug-a"], "fake-key")
+    result = refresh_letterboxd_data(df, ["slug-a"], "fake-key", use_tmdb_territories=True)
 
     assert "cast" in result.columns
     assert "trailer_url" in result.columns
@@ -286,6 +314,47 @@ def test_refresh_adds_columns_missing_from_target_cache(mocker):
     assert row["origin_country"] == "US"
     assert row["original_language"] == "en"
     assert row["directors"] == "Jane Doe"
+
+
+def test_refresh_adds_placeholder_columns_under_the_default_flag(mocker):
+    """The schema converges even while Letterboxd is still the territory source.
+
+    origin_country/original_language exist on no cached row anywhere, and under the default
+    flag nothing *populates* them — but `_fetch_movie` still emits the keys, so the pre-seed
+    loop adds the columns (null) and an old cache can satisfy the tightened contract without
+    a --reset_database and without migrating a single value.
+    """
+    df = pd.DataFrame([{"slug": "slug-a", "title": "Old Title"}])
+    df["integration_date"] = pd.to_datetime(date(2023, 1, 1))
+
+    # Mirrors what the real _fetch_movie returns under the default flag: Letterboxd's
+    # territory values, plus the two placeholders seeded as None.
+    mocker.patch(
+        "modules.get_letterboxd_data._fetch_movie",
+        return_value={
+            "slug": "slug-a",
+            "title": "New Title",
+            "tmdb_id": "42",
+            "studio": "Gaumont",
+            "country": "France",
+            "origin_country": None,
+            "language": "French",
+            "original_language": None,
+        },
+    )
+    mocker.patch("modules.get_letterboxd_data._fetch_french_title", return_value=None)
+    mocker.patch("modules.get_letterboxd_data._fetch_bundle", return_value=TmdbColumns())
+
+    result = refresh_letterboxd_data(df, ["slug-a"], "fake-key")
+
+    row = result.loc[result["slug"] == "slug-a"].iloc[0]
+    assert "origin_country" in result.columns
+    assert "original_language" in result.columns
+    assert pd.isna(row["origin_country"])
+    assert pd.isna(row["original_language"])
+    # Letterboxd remains the source of the trio, unchanged.
+    assert row["studio"] == "Gaumont"
+    assert row["country"] == "France"
 
 
 # ── retry behaviour ───────────────────────────────────────────────────────────
@@ -797,7 +866,7 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
         )
     )
 
-    results = await _fetch_all(["some-slug"], api_key="fake-key")
+    results = await _fetch_all(["some-slug"], api_key="fake-key", use_tmdb_territories=True)
     assert results[0] is not None
     assert results[0]["french_title"] == "Titre Français"
     assert results[0]["cast"] == "Actor A"
@@ -816,6 +885,50 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
     # Two requests per film, not three — the whole point of the bundle. Eleven TMDB columns
     # now ride the second one, so adding a territory field must never add a request.
     assert (title_route.call_count, bundle_route.call_count) == (1, 1)
+
+
+@respx.mock
+async def test_fetch_all_keeps_letterboxd_territories_by_default(mocker, make_movie):
+    """Flag off: TMDB's territory values are parsed but must not reach the row.
+
+    The bundle carries them regardless (they ride the credits payload), so the guard is the
+    assignment, not the fetch. Without it this PR would silently change every cached row's
+    `country` spelling the moment it merged — the migration happening by accident rather
+    than by decision.
+    """
+    movie_mock = make_movie(details=[{"type": "studio", "name": "Gaumont"}, {"type": "country", "name": "France"}])
+    movie_mock.tmdb_id = "42"
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=movie_mock)
+    respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"language": "fr-FR"}).mock(
+        return_value=httpx.Response(200, json={"title": "Titre Français"})
+    )
+    respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"append_to_response": "credits,videos"}).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 42,
+                "credits": {"cast": [], "crew": [_crew("Jane Doe", "Director")]},
+                "videos": {"results": []},
+                "production_companies": [{"name": "A24"}],
+                "production_countries": [{"iso_3166_1": "US", "name": "United States of America"}],
+                "origin_country": ["US"],
+                "spoken_languages": [{"iso_639_1": "en", "english_name": "English"}],
+                "original_language": "en",
+            },
+        )
+    )
+
+    results = await _fetch_all(["some-slug"], api_key="fake-key")
+    assert results[0] is not None
+    # Letterboxd's values survive, TMDB's are discarded.
+    assert results[0]["studio"] == "Gaumont"
+    assert results[0]["country"] == "France"
+    # Placeholders stay null: the schema is here, the data is not, and that is the point.
+    assert results[0]["origin_country"] is None
+    assert results[0]["original_language"] is None
+    # Everything else TMDB owns is unaffected by the flag.
+    assert results[0]["directors"] == "Jane Doe"
+    assert results[0]["french_title"] == "Titre Français"
 
 
 @respx.mock

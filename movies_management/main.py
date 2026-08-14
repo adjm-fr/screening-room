@@ -100,11 +100,13 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
     days_to_update = settings.letterboxd_days_to_update
     refresh_limit = settings.letterboxd_refresh_limit
     tmdb_api_key = settings.tmdb_api_key.get_secret_value()
-    use_tmdb_territories = settings.use_tmdb_territories
+    tmdb_groups = settings.tmdb_column_groups
+    # Logged every run, and logged as the *whole* setting rather than one line per group:
+    # which groups were on is the thing that has to be recorded beside a backtest number,
+    # since the cache a run produces is only interpretable against it.
     logger.info(
-        "Territory columns (studio/country/language) sourced from %s%s",
-        "TMDB" if use_tmdb_territories else "Letterboxd",
-        "" if use_tmdb_territories else " — origin_country/original_language stay null (USE_TMDB_TERRITORIES=false)",
+        "TMDB column groups enabled: %s (everything else keeps Letterboxd as its producer)",
+        ", ".join(sorted(tmdb_groups)) or "none",
     )
     if not tmdb_api_key:
         logger.warning(
@@ -113,9 +115,9 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
             "the taste ranker's highest-weighted dimension and confirms the "
             "watchlist<->showtimes join, so the dashboard degrades badly without it.%s",
             (
-                " USE_TMDB_TERRITORIES is also on, so studio/country/language "
-                "(two more ranker dimensions) and origin_country/original_language go null too."
-                if use_tmdb_territories
+                f" TMDB_COLUMN_GROUPS={','.join(sorted(tmdb_groups))} is also set, so those groups' "
+                "columns go null too rather than falling back to Letterboxd."
+                if tmdb_groups
                 else ""
             ),
         )
@@ -167,7 +169,7 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
             all_movies_df["slug"].tolist(),
             letterboxd_data_output_path,
             tmdb_api_key,
-            use_tmdb_territories=use_tmdb_territories,
+            tmdb_groups=tmdb_groups,
         )
 
         logger.info("Cache size: %s", data_letterboxd_df.shape)
@@ -203,7 +205,7 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
                 data_letterboxd_df,
                 list(slugs_to_refresh),
                 tmdb_api_key,
-                use_tmdb_territories=use_tmdb_territories,
+                tmdb_groups=tmdb_groups,
             )
 
         # === ASSIGN PROVENANCE & PERSIST CACHE ===
@@ -287,7 +289,7 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
             letterboxd_data_output_path,
             unresolved_path,
             tmdb_api_key,
-            use_tmdb_territories=use_tmdb_territories,
+            tmdb_groups=tmdb_groups,
         )
 
 

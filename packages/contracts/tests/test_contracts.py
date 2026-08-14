@@ -60,6 +60,7 @@ def test_data_letterboxd_declares_the_stable_core_columns() -> None:
             "poster_url",
             "banner_url",
             "genres",
+            "keywords",
             "themes",
             "mini_themes",
             "directors",
@@ -85,6 +86,22 @@ def test_data_letterboxd_requires_the_tmdb_territory_columns() -> None:
     # presence is guaranteed and the contract can enforce it.
     for column in ("studio", "country", "origin_country", "language", "original_language"):
         assert column in DATA_LETTERBOXD.required_columns
+
+
+def test_data_letterboxd_requires_the_tmdb_taxonomy_columns() -> None:
+    # `genres` was always here; `keywords` joins it as the additive half of the same
+    # migration group, seeded as None on every row by _fetch_movie so its presence is
+    # guaranteed before any row has actually been migrated.
+    for column in ("genres", "keywords"):
+        assert column in DATA_LETTERBOXD.required_columns
+
+
+def test_data_letterboxd_notes_keep_keywords_distinct_from_themes() -> None:
+    # The trap: `keywords` looks like a replacement for themes/mini_themes and is not.
+    # Both vocabularies coexist, so the notes must say which producer owns which.
+    assert "keywords" in DATA_LETTERBOXD.notes
+    assert "mini_themes" in DATA_LETTERBOXD.notes
+    assert "TMDB_COLUMN_GROUPS" in DATA_LETTERBOXD.notes
 
 
 def test_data_letterboxd_notes_distinguish_the_two_country_columns() -> None:

@@ -32,6 +32,7 @@ DATA_LETTERBOXD = ParquetContract(
             "poster_url",
             "banner_url",
             "genres",
+            "keywords",
             "themes",
             "mini_themes",
             "directors",
@@ -53,8 +54,8 @@ DATA_LETTERBOXD = ParquetContract(
         "`studio`/`country`/`language` became required when they stopped being expanded "
         "from Letterboxd's dynamic `**details_by_type` and started being seeded on every "
         "row, joined by the new `origin_country`/`original_language`. Their *producer* is "
-        "mid-migration behind `USE_TMDB_TERRITORIES` (default off = Letterboxd's details "
-        "tab; on = TMDB `production_companies`/`production_countries`/`spoken_languages`), "
+        "mid-migration behind the `territories` group of `TMDB_COLUMN_GROUPS` (unset = Letterboxd's "
+        "details tab; set = TMDB `production_companies`/`production_countries`/`spoken_languages`), "
         "but the contract is unaffected either way: `_fetch_movie` seeds all five as None "
         "regardless, so presence is guaranteed the same way `composers`' is and only the "
         "values depend on the flag. Under the default, `origin_country`/`original_language` "
@@ -70,6 +71,16 @@ DATA_LETTERBOXD = ParquetContract(
         "ranker keys on `country`; `origin_country` is carried but not yet a dimension. "
         "`original_language` is an ISO 639-1 code, whereas `language` is a comma-joined "
         "list of English language names — also not the same vocabulary. "
+        "`genres` is mid-migration behind the `genres` group of the same setting "
+        "(unset = Letterboxd's genre list; set = TMDB `genres[].name`), with the same "
+        "presence guarantee: `_fetch_movie` writes the key in both positions. `keywords` is "
+        "the additive column that rides that flag — TMDB's open, crowd-maintained tag "
+        "vocabulary (~10 tags/film, e.g. `dual identity`, `based on novel or book`), null "
+        'under the default, where a null means "not migrated yet". It is NOT a replacement '
+        "for `themes`/`mini_themes`: those stay Letterboxd's curated theme vocabulary in "
+        "both flag positions, and the two tag spaces are adjacent but distinct. TMDB genre "
+        "names are locale-sensitive and are deliberately fetched without a `language` "
+        "param, so they stay English like the Letterboxd values the ranker keys on. "
         "`original_title` is null when it equals `title` — "
         "Letterboxd omits it rather than repeating it (~33% populated in the real cache; "
         'a null means "same as title", NOT missing data). `letterboxd_avg_rating` (and '

@@ -107,6 +107,54 @@ class VideosResponse(BaseModel):
     results: list[Video] = Field(default_factory=list)
 
 
+class Genre(BaseModel):
+    """One entry of a movie payload's ``genres`` list — the ``genres`` column.
+
+    ``name`` is **locale-sensitive**, which is why this rides :class:`MovieBundle` and not
+    :class:`MovieDetail`: under ``language=fr-FR`` TMDB returns ``Drame``/``Science-Fiction``
+    where the bare call returns ``Drama``/``Science Fiction``. The cache has always carried
+    Letterboxd's English genre names and the taste ranker keys its affinities on them, so a
+    localised value would split every genre into two affinity keys. Same hazard as the
+    person names in :class:`MovieDetail`, different field.
+
+    ``id`` is TMDB's stable genre id, carried because the vocabulary is a closed set of 19
+    (unlike ``keywords``) and the id is the thing that survives a rename upstream.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: int | None = None
+    name: str | None = None
+
+
+class Keyword(BaseModel):
+    """One entry of the ``keywords`` block — a single free-form TMDB tag."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: int | None = None
+    name: str | None = None
+
+
+class KeywordsResponse(BaseModel):
+    """The ``keywords`` block of :class:`MovieBundle` — note the doubled nesting.
+
+    ``append_to_response=keywords`` returns ``{"keywords": {"keywords": [...]}}``, i.e. an
+    *object* wrapping the list, not the list itself (TV calls name the inner key
+    ``results`` instead; only movies are fetched here). Modelling the wrapper is what makes
+    the shape explicit rather than a surprise at the first ``[0]``.
+
+    The inner list is a :data:`NullableList` even though the block is required: asking for
+    the block guarantees the wrapper, not its contents, and a film with no tags on record
+    is ordinary — TMDB's keyword vocabulary is crowd-maintained and thinner on older and
+    non-English cinema.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    keywords: NullableList[Keyword] = Field(default_factory=list)
+
+
 class ProductionCompany(BaseModel):
     """One entry of a movie payload's ``production_companies`` list — the ``studio`` column."""
 
@@ -153,29 +201,38 @@ class MovieBundle(BaseModel):
     150 films the new two-call shape reproduced the old three-call one exactly on
     french_title, directors, top-8 cast and trailer videos (0 mismatches each).
 
-    ``credits`` and ``videos`` are **required**, unlike every other field on these models:
-    they are exactly the blocks this request asks for, so TMDB omitting one is the schema
-    drift these models exist to surface, not a film that happens to have no data (an
-    empty film still comes back as empty lists inside a present block). The limit is 20
-    appends, so further fields (``keywords``, ``release_dates``, ``external_ids``, …)
-    can join this request at no extra cost.
+    ``credits``, ``videos`` and ``keywords`` are **required**, unlike every other field on
+    these models: they are exactly the blocks this request asks for, so TMDB omitting one
+    is the schema drift these models exist to surface, not a film that happens to have no
+    data (an empty film still comes back as empty lists inside a present block). The limit
+    is 20 appends, so further fields (``release_dates``, ``external_ids``, …) can still
+    join this request at no extra cost.
 
-    The five territory/provenance fields below are **not** appended blocks — they are
-    plain fields of the base movie payload this request already returns, so reading them
-    costs nothing at all. They are optional, unlike ``credits``/``videos``: the request
-    does not ask for them by name, and TMDB legitimately has no company or country on
-    record for obscure films — which is why the four lists are :data:`NullableList`, so a
-    field nobody asked for can never fail the payload that carries the credits. Their
-    locale-invariance is measured, not assumed (60 films:
+    The territory/provenance fields below, and ``genres``, are **not** appended blocks —
+    they are plain fields of the base movie payload this request already returns, so
+    reading them costs nothing at all. They are optional, unlike the three requested
+    blocks: the request does not ask for them by name, and TMDB legitimately has no
+    company or country on record for obscure films — which is why those lists are
+    :data:`NullableList`, so a field nobody asked for can never fail the payload that
+    carries the credits. Their locale-invariance is measured, not assumed (60 films:
     ``production_countries``, ``spoken_languages`` and ``production_companies`` identical
     with and without ``language=fr-FR``), which is what allows them to ride this call
     rather than :class:`MovieDetail`'s.
+
+    ``genres`` is the exception to that last sentence and the reason it must ride *this*
+    call rather than the localised one: genre **names** are translated (``Drama`` ->
+    ``Drame``), so fetching them alongside ``french_title`` would poison the taste
+    ranker's second-heaviest dimension. See :class:`Genre`. ``keywords`` is locale-*in*
+    variant in the other direction — the tags come back in English under ``fr-FR`` — but
+    it is an appended block either way, so it rides here with the rest.
     """
 
     model_config = ConfigDict(extra="ignore")
 
     credits: CreditsResponse
     videos: VideosResponse
+    keywords: KeywordsResponse
+    genres: NullableList[Genre] = Field(default_factory=list)
     production_companies: NullableList[ProductionCompany] = Field(default_factory=list)
     production_countries: NullableList[ProductionCountry] = Field(default_factory=list)
     # Bare ISO 3166-1 codes, not objects — TMDB ships no display names for this one.

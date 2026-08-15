@@ -144,11 +144,11 @@ def decade_profile_html(decades_df: pd.DataFrame) -> str:
     widest = int(decades_df["count"].max()) or 1
     rows = [
         BarRow(
-            label=f"{int(rec.decade)}s",
-            width_pct=int(rec.count) / widest * 100,
-            color=rating_to_hsl(rec.mean_rating, scale_max=5.0),
-            value_text=f"{int(rec.count)} · μ {'—' if pd.isna(rec.mean_rating) else f'{rec.mean_rating:.1f}'}",
+            label=f"{int(decade)}s",
+            width_pct=int(count) / widest * 100,
+            color=rating_to_hsl(mean, scale_max=5.0),
+            value_text=f"{int(count)} · μ {'—' if pd.isna(mean) else f'{mean:.1f}'}",
         )
-        for rec in decades_df.itertuples()
+        for decade, count, mean in zip(decades_df["decade"], decades_df["count"], decades_df["mean_rating"], strict=True)
     ]
     return f'<div class="hist-list">{bar_rows_html(rows)}</div>'

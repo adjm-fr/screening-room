@@ -66,3 +66,5 @@ ignore_missing_imports = true
 #   - It infers pandas types more precisely, so it reports narrowing gaps mypy
 #     accepts (see the `_as_date` / `StrPath` helpers added for exactly that).
 # One invocation covers every area; ~0.2s against mypy's ~22s.
+[tool.ty.src]
+exclude = ["**/tests/**"]

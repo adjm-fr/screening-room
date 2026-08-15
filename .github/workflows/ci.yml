@@ -51,16 +51,13 @@ jobs:
       # invocation covers every area the three mypy runs do. Promote it to
       # blocking (and drop `continue-on-error`) once it reaches 1.0 and has run
       # clean here for a while; see the note in the root pyproject.
+      # `tests/` exclusion lives in [tool.ty.src] in the root pyproject.toml, so this
+      # can pass whole-package paths instead of enumerating every file/subpackage.
       - name: ty (advisory)
         continue-on-error: true
         run: >
           uv run --no-sync ty check
-          packages/common/src/common packages/contracts/src/contracts
-          movies_management/main.py movies_management/modules
-          cinema_dashboard/app.py cinema_dashboard/config.py cinema_dashboard/core
-          cinema_dashboard/sources cinema_dashboard/integrations cinema_dashboard/chat
-          cinema_dashboard/ui cinema_dashboard/pages cinema_dashboard/pipeline
-          cinema_dashboard/orchestrate.py cinema_dashboard/backtest.py
+          packages/common packages/contracts movies_management cinema_dashboard
 
   security:
     runs-on: ubuntu-latest

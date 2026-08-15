@@ -31,9 +31,12 @@ import streamlit as st
 
 from config import settings
 from core.library import (
+    TABLE_PRESETS,
     decade_profile,
     delta_summary,
     explode_tags,
+    filter_table,
+    preset_columns,
     rating_disagreements,
     rating_histogram,
 )
@@ -53,6 +56,7 @@ from ui import (
     format_runtime,
     movie_href,
     rating_histogram_html,
+    render_chip_filter,
     render_empty_state,
     render_freshness_banner,
     render_kpi_strip,
@@ -416,7 +420,26 @@ def main() -> None:
         ratings_df_s = _with_detail_url(_with_streaming_column(ratings_df, str(output_path), subscribed))
         watchlist_df_s = _with_detail_url(_with_streaming_column(watchlist_df, str(output_path), subscribed))
 
-        sub_cache, sub_ratings, sub_watch = st.tabs(["Cache", "Ratings", "Watchlist"])
+        search_col, preset_col = st.columns([2, 3], vertical_alignment="bottom")
+        with search_col:
+            table_query = st.text_input(
+                "Search title or director",
+                key="db_table_search",
+                placeholder="🔍 Title or director…",
+                label_visibility="collapsed",
+            )
+        with preset_col:
+            preset_sel = render_chip_filter(
+                "Columns",
+                list(TABLE_PRESETS),
+                key="db_table_preset",
+                selection_mode="single",
+                default="Essentials",
+                label_visibility="collapsed",
+            )
+        # Deselecting the preset chip means "no column filter" — show everything.
+        preset = preset_sel[0] if preset_sel else "All"
+
         link_cfg = {
             "detail_url": st.column_config.LinkColumn("Details", display_text="View ↗"),
             "letterboxd_url": st.column_config.LinkColumn("Letterboxd", display_text="Open ↗"),
@@ -428,12 +451,19 @@ def main() -> None:
                 help="Subscribed services where this film is currently streamable in France (TMDB / JustWatch).",
             ),
         }
-        with sub_cache:
-            st.dataframe(cache_df_s, width="stretch", hide_index=True, column_config=link_cfg)
-        with sub_ratings:
-            st.dataframe(ratings_df_s, width="stretch", hide_index=True, column_config=link_cfg)
-        with sub_watch:
-            st.dataframe(watchlist_df_s, width="stretch", hide_index=True, column_config=link_cfg)
+        sub_tabs = st.tabs(["Cache", "Ratings", "Watchlist"])
+        for sub_tab, frame in zip(sub_tabs, (cache_df_s, ratings_df_s, watchlist_df_s), strict=True):
+            with sub_tab:
+                shown = filter_table(frame, table_query)
+                if shown.empty and table_query.strip():
+                    render_empty_state("🔍", "No rows match", "Clear or loosen the search to see this table.")
+                else:
+                    st.dataframe(
+                        shown[preset_columns(shown, preset)],
+                        width="stretch",
+                        hide_index=True,
+                        column_config=link_cfg,
+                    )
 
     with tab_unresolved:
         st.caption(

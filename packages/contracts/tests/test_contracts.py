@@ -101,7 +101,17 @@ def test_data_letterboxd_notes_keep_keywords_distinct_from_themes() -> None:
     # Both vocabularies coexist, so the notes must say which producer owns which.
     assert "keywords" in DATA_LETTERBOXD.notes
     assert "mini_themes" in DATA_LETTERBOXD.notes
-    assert "TMDB_COLUMN_GROUPS" in DATA_LETTERBOXD.notes
+
+
+def test_data_letterboxd_notes_reflect_the_completed_tmdb_migration() -> None:
+    # TMDB_COLUMN_GROUPS was deleted once the territories+genres migration completed
+    # (2026-08-15) — TMDB is now the unconditional producer, no flag left to gate it.
+    # The notes may still name the flag as history ("was removed"), so this checks the
+    # *current* claim rather than the historical mention, which a bare `"TMDB_COLUMN_
+    # GROUPS" in notes` check can't distinguish — that's what let the "mid-migration"
+    # wording go stale silently after the flag was removed in the first place.
+    assert "unconditional" in DATA_LETTERBOXD.notes
+    assert "mid-migration" not in DATA_LETTERBOXD.notes
 
 
 def test_data_letterboxd_notes_distinguish_the_two_country_columns() -> None:

@@ -379,6 +379,21 @@ typecheck (mypy blocking + ty advisory), security, test.
   (`data/chat_state.json`, `data/paris_cart.json`, `data/streaming_providers.parquet`) listed in both this project's and the
   workspace root's `.gitignore` — a Python package placed there would be silently untracked and never
   committed.
+- **The Movies Database page renders; `core/library.py` and `ui/stats.py` decide.** Five tabs
+  (Overview / Taste / Discover / Tables / Unmatched). The ratings breakdown (half-star histogram under
+  the tier-ladder headers, you-vs-Letterboxd disagreements, decade profile) and the Tables tab's
+  search + column presets are pure functions in `core/library.py`; the stat bars are pure `-> str`
+  builders in `ui/stats.py` using `.hist-*` CSS **cloned from `.contrib-*`** (deliberately CSS, not
+  more Plotly — the tier grouping is the chart's point and pure builders are testable). Three things
+  to know: **there is no watched/diary date anywhere in the data** — `release_year` → decade is the
+  only temporal axis, so don't promise a "ratings over time" chart; `core.taste.dimension_profile`
+  (behind the Taste tab) is a **read-only accessor** over the profile — it computes nothing new, so it
+  needs no backtest, and liked/disliked stays tier-relative (`SENTIMENT_PIVOT`), which is why a ✓
+  value can carry a negative bar; and the page's `build_affinity(ratings_df)` call replaced the old
+  fire-and-forget `build_taste_profile` warm — same `@st.cache_data` entry, since the loader's string
+  formatter delegates to it. Ratings are 0–5: every `rating_to_hsl` call on this page passes
+  `scale_max=5.0` (feeding a 0–5 mean through the 0–10 default was a shipped bug; a frequency must
+  never ride the rating ramp at all).
 - **Unmatched Allocine films are surfaced, not just counted.** `movies_management`'s Allocine cache
   enrichment (`allocine_enrichment.enrich_cache_from_showtimes`) writes films it couldn't resolve to a
   Letterboxd slug to `{OUTPUT_PATH}/unresolved_allocine.parquet` — previously read by exactly one thing,

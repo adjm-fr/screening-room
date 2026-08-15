@@ -48,6 +48,7 @@ Public API:
     score_films(df, profile)   -> 0–100 match Series, index-aligned
     explain(row, profile)      -> top-k liked (label, contribution) pairs
     contributions(row, p)      -> every per-value Contribution behind the score
+    dimension_profile(p, dim)  -> one dimension's AffinityEntry list, best first
     quality_prior(row)         -> the community-quality term, or None
     match_from_raw(raw)        -> the fixed logistic mapping raw -> 0–100
     attach_match(df, wl, p)    score the watchlist, left-join match by tmdb_id
@@ -353,6 +354,40 @@ def contributions(row: pd.Series, profile: TasteProfile) -> list[Contribution]:
             for value, affinity in known
         )
     return out
+
+
+@dataclasses.dataclass(frozen=True)
+class AffinityEntry:
+    """One feature value of one dimension, as the profile knows it.
+
+    ``liked`` is the tier-relative sentiment (:func:`_is_liked`), not the
+    affinity's sign — pair it with the value in any UI so a negative-affinity
+    but watchable-to-good value isn't branded a dislike.
+    """
+
+    value: str
+    affinity: float
+    n_rated: int
+    liked: bool
+
+
+def dimension_profile(profile: TasteProfile, dim: str, *, min_count: int = 1) -> list[AffinityEntry]:
+    """One dimension's values ranked by shrunk affinity, best first (name breaks ties).
+
+    The read-only accessor behind the database page's Taste tab: it exposes
+    what the profile already holds and computes nothing new, so it can never
+    move a score. ``min_count`` filters thin evidence the same way
+    :func:`format_taste_profile` requires ≥2 rated films for directors and
+    actors. An unknown ``dim`` (or an empty profile) yields ``[]``.
+    """
+    affinities = profile.affinities.get(dim, {})
+    counts = profile.counts.get(dim, {})
+    entries = [
+        AffinityEntry(value=value, affinity=affinity, n_rated=counts[value], liked=_is_liked(affinity, counts[value], profile.mu))
+        for value, affinity in affinities.items()
+        if counts.get(value, 0) >= min_count
+    ]
+    return sorted(entries, key=lambda e: (-e.affinity, e.value))
 
 
 def quality_prior(row: pd.Series) -> float | None:

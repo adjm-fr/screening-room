@@ -18,6 +18,7 @@ from core.taste import (
     attach_match,
     build_affinity,
     contributions,
+    dimension_profile,
     explain,
     format_taste_profile,
     match_from_raw,
@@ -530,3 +531,39 @@ def test_breakdown_reconciles_without_a_community_rating():
     raw = sum(c.contribution for c in contributions(row, profile)) + (quality_prior(row) or 0.0)
 
     assert match_from_raw(raw) == pytest.approx(score_films(pd.DataFrame([row]), profile).iloc[0])
+
+
+# ---------------------------------------------------------------------------
+# dimension_profile
+# ---------------------------------------------------------------------------
+
+
+def test_dimension_profile_sorted_best_first_with_name_tiebreak():
+    profile = _profile({"genres": {"B": 0.5, "A": 0.5, "C": -0.4}})
+    entries = dimension_profile(profile, "genres")
+    assert [e.value for e in entries] == ["A", "B", "C"]
+    assert entries[0].n_rated == 10
+
+
+def test_dimension_profile_min_count_filters_thin_evidence():
+    profile = TasteProfile(
+        mu=3.0,
+        n_ratings=5,
+        affinities={"directors": {"One Film": 0.9, "Regular": 0.2}},
+        counts={"directors": {"One Film": 1, "Regular": 4}},
+    )
+    assert [e.value for e in dimension_profile(profile, "directors", min_count=2)] == ["Regular"]
+
+
+def test_dimension_profile_liked_is_tier_relative_not_sign():
+    # n=10 in _profile means mean rating = 3 + 1.5·a: a = -0.4 → 2.4 ≥ 2.25,
+    # liked despite negative affinity (the [SENTIMENT_PIVOT, μ) band); a = -0.6
+    # → 2.1 < 2.25, disliked.
+    profile = _profile({"genres": {"Border": -0.4, "Sunk": -0.6}})
+    by_value = {e.value: e.liked for e in dimension_profile(profile, "genres")}
+    assert by_value == {"Border": True, "Sunk": False}
+
+
+def test_dimension_profile_unknown_dim_and_empty_profile_yield_empty():
+    assert dimension_profile(_profile({}), "genres") == []
+    assert dimension_profile(TasteProfile(mu=0.0, n_ratings=0, affinities={}, counts={}), "directors") == []

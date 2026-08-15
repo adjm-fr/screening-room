@@ -85,6 +85,52 @@ def rating_histogram_html(hist_df: pd.DataFrame) -> str:
     return f'<div class="hist-list">{"".join(groups)}</div>'
 
 
+@dataclasses.dataclass(frozen=True)
+class SignedBarRow:
+    """One signed affinity bar: ``signed_width_pct`` in −100…100 picks the pos/neg fill."""
+
+    marker: str
+    label: str
+    sublabel: str
+    signed_width_pct: float
+    value_text: str
+
+
+def signed_bar_rows_html(rows: Sequence[SignedBarRow]) -> str:
+    """Render signed bars through the movie detail page's ``.contrib-*`` vocabulary.
+
+    Same markup as ``pages/movie.py``'s taste breakdown, so the two surfaces
+    share one CSS contract: marker + label with a ``contrib-n`` sublabel, a
+    pos (green) / neg (red) fill sized by ``|signed_width_pct|``, and the
+    numeric value in ``contrib-value``. The marker (✓/✗ sentiment) and the
+    fill sign (affinity) are deliberately independent — a liked value can
+    carry a negative bar (the tier-ladder [pivot, μ) band).
+    """
+    parts = []
+    for row in rows:
+        fill = "pos" if row.signed_width_pct >= 0 else "neg"
+        parts.append(
+            f'<div class="contrib-row">'
+            f'<span class="contrib-label">{html.escape(row.marker)} {html.escape(row.label)}'
+            f'<span class="contrib-n">{html.escape(row.sublabel)}</span></span>'
+            f'<span class="contrib-bar"><span class="contrib-fill contrib-fill--{fill}" '
+            f'style="width:{abs(row.signed_width_pct):.0f}%"></span></span>'
+            f'<span class="contrib-value">{html.escape(row.value_text)}</span>'
+            f"</div>"
+        )
+    return "".join(parts)
+
+
+def affinity_dimension_html(title: str, weight_text: str, rows: Sequence[SignedBarRow]) -> str:
+    """One dimension block for the Taste tab: a ``.contrib-dim-head`` header over its signed bars."""
+    if not rows:
+        return ""
+    return (
+        f'<div class="contrib-dim"><div class="contrib-dim-head">{html.escape(title)}'
+        f'<span class="contrib-weight">{html.escape(weight_text)}</span></div>{signed_bar_rows_html(rows)}</div>'
+    )
+
+
 def decade_profile_html(decades_df: pd.DataFrame) -> str:
     """Films rated per decade: bar width is the count, fill color the mean rating given.
 

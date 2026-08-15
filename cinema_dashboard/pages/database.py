@@ -1,16 +1,21 @@
 """
 Movies Database page.
 
-Reorganises the Letterboxd cache + ratings + watchlist into three calmer tabs:
+Reorganises the Letterboxd cache + ratings + watchlist into five tabs. The
+computation behind them lives in :mod:`core.library` (pure stats) and
+:mod:`ui.stats` (pure HTML builders); this module only renders.
 
-- **Overview** — one hero Plotly bubble (genre × avg rating × count) plus
-  three micro-card insights (runtime distribution, top directors chip cloud,
-  top themes chip cloud). Designed to be scanned, not parsed.
+- **Overview** — the ratings breakdown: half-star histogram grouped under the
+  tier-ladder headers, by-decade profile, the you-vs-Letterboxd disagreement
+  table, plus the genre × avg-rating bar and the runtime distribution.
+- **Taste** — the affinity profile behind every match badge, one signed-bar
+  block per dimension (same ``.contrib-*`` vocabulary as the movie detail
+  page's score breakdown), liked/disliked judged tier-relatively.
 - **Discover** — chip filters (genre, director, min-rating slider) over a
-  poster rail of matching films. The taste profile becomes interactive,
-  not a static chart wall.
-- **Tables** — the three raw dataframes with poster + a "Details" link into
-  the movie detail page + IMDB/TMDB/Letterboxd link columns for power users.
+  ranked poster rail of matching films.
+- **Tables** — the three raw dataframes behind a search box + column presets,
+  with poster + a "Details" link into the movie detail page +
+  IMDB/TMDB/Letterboxd link columns for power users.
 - **Unmatched** — Allocine screenings whose film couldn't be resolved to a
   Letterboxd slug during cache enrichment (``unresolved_allocine.parquet``),
   otherwise invisible to the rest of the dashboard.
@@ -18,7 +23,6 @@ Reorganises the Letterboxd cache + ratings + watchlist into three calmer tabs:
 
 from __future__ import annotations
 
-import html
 import re
 
 import pandas as pd
@@ -33,9 +37,9 @@ from core.library import (
     rating_disagreements,
     rating_histogram,
 )
+from core.taste import WEIGHTS, AffinityEntry, build_affinity, dimension_profile
 from sources.loader import (
     attach_streaming,
-    build_taste_profile,
     build_unresolved_showtimes,
     get_paths,
     load_letterboxd_cache,
@@ -49,12 +53,28 @@ from ui import (
     format_runtime,
     movie_href,
     rating_histogram_html,
-    rating_to_hsl,
     render_empty_state,
     render_freshness_banner,
     render_kpi_strip,
     render_poster_rail,
 )
+from ui.stats import SignedBarRow, affinity_dimension_html
+
+# Mirrors pages/movie.py's _DIMENSION_LABELS so the two .contrib-* surfaces
+# name the taste dimensions identically.
+_DIMENSION_LABELS = {
+    "directors": "Directors",
+    "genres": "Genres",
+    "themes": "Themes",
+    "cast": "Cast",
+    "decade": "Decades",
+    "country": "Countries",
+    "language": "Languages",
+}
+
+# format_taste_profile requires ≥2 rated films for people (a single film says
+# more about the film than the person); broad dimensions keep everything.
+_MIN_COUNT_BY_DIM = {"directors": 2, "cast": 2}
 
 
 def _streaming_label(row: pd.Series) -> str:
@@ -164,49 +184,32 @@ def _runtime_sparkline(ratings_df: pd.DataFrame) -> None:
     st.plotly_chart(spark, width="stretch")
 
 
-def _chip_cloud(items: list[tuple[str, float]], *, kind: str = "genre", max_items: int = 8, scale_max: float = 5.0) -> None:
-    """Render a static chip cloud where chip color saturation reflects a 0–``scale_max`` rating.
+def _taste_dimension_rows(entries: list[AffinityEntry]) -> list[SignedBarRow]:
+    """Format one dimension's Taste-tab rows: top-5 liked, then the 3 most-disliked.
 
-    The score must be an actual rating (user means are 0–5) — the amber ramp
-    is the rating heatmap, so a non-rating quantity may not ride through here.
+    ``entries`` arrive best-first from :func:`core.taste.dimension_profile`,
+    so the disliked tail is simply the list's last rows — the block reads as
+    one gradient from strongest like to strongest dislike. Bar widths are
+    normalised against the widest |affinity| actually shown; marker (✓/✗
+    tier-relative sentiment) and bar sign (μ-relative affinity) are
+    independent by design.
     """
-    if not items:
-        st.caption("Not enough data.")
-        return
-    chips_html = ""
-    for name, score in items[:max_items]:
-        bg = rating_to_hsl(score, scale_max=scale_max)
-        cls = f"chip chip--{kind} chip--rating"
-        chips_html += f'<span class="{cls}" style="background:{bg}">{html.escape(name)} · {score:.1f}</span>'
-    st.markdown(chips_html, unsafe_allow_html=True)
-
-
-def _top_directors(ratings_df: pd.DataFrame, *, min_films: int = 2) -> list[tuple[str, float]]:
-    if "directors" not in ratings_df.columns or "user_rating" not in ratings_df.columns:
+    liked = [e for e in entries if e.liked][:5]
+    disliked = [e for e in entries if not e.liked][-3:]
+    shown = [*liked, *disliked]
+    if not shown:
         return []
-    exploded = (
-        ratings_df[["directors", "user_rating"]]
-        .dropna()
-        .assign(director=lambda d: d["directors"].str.split(", "))
-        .explode("director")
-    )
-    exploded["director"] = exploded["director"].str.strip()
-    summary = (
-        exploded.groupby("director")["user_rating"]
-        .agg(["mean", "count"])
-        .query(f"count >= {min_films}")
-        .sort_values("mean", ascending=False)
-        .head(8)
-    )
-    return [(str(idx), float(row["mean"])) for idx, row in summary.iterrows()]
-
-
-def _top_themes(cache_df: pd.DataFrame) -> list[tuple[str, int]]:
-    """Most frequent themes as ``(name, film count)`` — a frequency, not a rating, so it never rides the rating ramp."""
-    if "themes" not in cache_df.columns:
-        return []
-    counts = explode_tags(cache_df["themes"]).value_counts().head(8)
-    return [(str(name), int(count)) for name, count in counts.items()]
+    widest = max(abs(e.affinity) for e in shown) or 1.0
+    return [
+        SignedBarRow(
+            marker="✓" if e.liked else "✗",
+            label=e.value,
+            sublabel=f"{'liked' if e.liked else 'disliked'} · {e.n_rated} rated",
+            signed_width_pct=e.affinity / widest * 100,
+            value_text=f"{e.affinity:+.2f}",
+        )
+        for e in shown
+    ]
 
 
 def _unresolved_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -272,10 +275,13 @@ def main() -> None:
     cache_file = output_path / "data_letterboxd.parquet"
     render_freshness_banner(cache_file)
 
-    # Warm the taste-profile cache so the Recommendations page is instant.
-    build_taste_profile(ratings_df)
+    # Also warms the @st.cache_data profile the Recommendations page reads
+    # (sources.loader.build_taste_profile formats this same cached object).
+    profile = build_affinity(ratings_df)
 
-    tab_overview, tab_discover, tab_tables, tab_unresolved = st.tabs(["📈 Overview", "🔎 Discover", "📋 Tables", "🧩 Unmatched"])
+    tab_overview, tab_taste, tab_discover, tab_tables, tab_unresolved = st.tabs(
+        ["📈 Overview", "🧬 Taste", "🔎 Discover", "📋 Tables", "🧩 Unmatched"]
+    )
 
     with tab_overview:
         st.caption(
@@ -336,23 +342,39 @@ def main() -> None:
         st.markdown("##### Genre × avg rating (rated films only)")
         _genre_bubble_chart(ratings_df)
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
+        runtime_col, _ = st.columns([1, 1])
+        with runtime_col:
             _runtime_sparkline(ratings_df)
-        with c2:
-            st.markdown("<div class='kpi-label'>Top directors</div>", unsafe_allow_html=True)
-            _chip_cloud(_top_directors(ratings_df), kind="genre")
-        with c3:
-            st.markdown("<div class='kpi-label'>Top themes</div>", unsafe_allow_html=True)
-            themes_source = ratings_df if "themes" in ratings_df.columns else cache_df
-            top_themes = _top_themes(themes_source)
-            if top_themes:
-                st.markdown(
-                    "".join(f'<span class="chip chip--theme">{html.escape(name)} · {count}</span>' for name, count in top_themes),
-                    unsafe_allow_html=True,
+
+    with tab_taste:
+        if profile.is_empty:
+            render_empty_state(
+                "🧬",
+                "No taste profile yet",
+                "Rate films on Letterboxd and rerun the movies_management pipeline to build one.",
+            )
+        else:
+            st.caption(
+                f"The profile behind every ◎ match badge: signed affinities distilled from your "
+                f"{profile.n_ratings} ratings (μ {profile.mu:.2f}), per dimension with its blend weight. "
+                "✓/✗ is tier-ladder sentiment; the bar is the value's pull relative to your own average — "
+                "a value can be liked and still pull slightly negative."
+            )
+            dim_cols = st.columns(2)
+            shown_dims = 0
+            for dim, weight in WEIGHTS.items():
+                entries = dimension_profile(profile, dim, min_count=_MIN_COUNT_BY_DIM.get(dim, 1))
+                block = affinity_dimension_html(
+                    _DIMENSION_LABELS.get(dim, dim),
+                    f"weight {weight:g}",
+                    _taste_dimension_rows(entries),
                 )
-            else:
-                st.caption("Not enough data.")
+                if block:
+                    with dim_cols[shown_dims % 2]:
+                        st.markdown(block, unsafe_allow_html=True)
+                    shown_dims += 1
+            if not shown_dims:
+                render_empty_state("🧬", "Nothing to show yet", "The rated films carry no usable metadata dimensions.")
 
     with tab_discover:
         st.markdown("##### Filter your watchlist + ratings")

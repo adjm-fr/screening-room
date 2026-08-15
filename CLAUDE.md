@@ -72,13 +72,9 @@ uv run --no-sync --directory cinema_dashboard  mypy app.py config.py core/ sourc
 
 # ty (Astral) runs beside mypy, NON-BLOCKING in CI while it is pre-1.0 — mypy is still
 # the gate. One invocation covers every area the three above do (~0.2s vs mypy's ~22s).
-uv run --no-sync ty check \
-  packages/common/src/common packages/contracts/src/contracts \
-  movies_management/main.py movies_management/modules \
-  cinema_dashboard/app.py cinema_dashboard/config.py cinema_dashboard/core \
-  cinema_dashboard/sources cinema_dashboard/integrations cinema_dashboard/chat \
-  cinema_dashboard/ui cinema_dashboard/pages cinema_dashboard/pipeline \
-  cinema_dashboard/orchestrate.py cinema_dashboard/backtest.py
+# `tests/` is excluded via [tool.ty.src] in the root pyproject.toml, so whole-package
+# paths are enough here — no need to enumerate every file/subpackage like mypy does.
+uv run --no-sync ty check packages/common packages/contracts movies_management cinema_dashboard
 
 # Security: bandit on source; pip-audit on SHIPPED runtime deps only
 uv run --no-sync bandit -r -ll packages/common/src packages/contracts/src \

@@ -1,7 +1,7 @@
 """Unit tests for modules/config.py."""
 
 import pytest
-from modules.config import Settings
+from modules.config import Settings, TmdbColumnGroup
 from pydantic import ValidationError
 
 
@@ -79,3 +79,45 @@ def test_extra_env_vars_ignored(tmp_path, monkeypatch):
     s = _settings(tmp_path)
     assert not hasattr(s, "letterboxd_username")
     assert not hasattr(s, "tmdb_api_url")
+
+
+def test_tmdb_column_groups_default_is_empty(tmp_path, monkeypatch):
+    """No groups set means every column keeps Letterboxd — the pre-migration state."""
+    monkeypatch.setenv("OUTPUT_PATH", str(tmp_path / "output"))
+    monkeypatch.delenv("TMDB_COLUMN_GROUPS", raising=False)
+    s = _settings(tmp_path)
+    assert s.tmdb_column_groups == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("territories", {TmdbColumnGroup.TERRITORIES}),
+        ("genres", {TmdbColumnGroup.GENRES}),
+        ("territories,genres", {TmdbColumnGroup.TERRITORIES, TmdbColumnGroup.GENRES}),
+        # Whitespace and a trailing comma are what a hand-edited .env actually looks like.
+        (" territories , genres , ", {TmdbColumnGroup.TERRITORIES, TmdbColumnGroup.GENRES}),
+        ("", set()),
+    ],
+)
+def test_tmdb_column_groups_parses_the_comma_separated_env_form(tmp_path, monkeypatch, raw, expected):
+    """pydantic-settings JSON-decodes complex fields by default, which would reject all of
+    these — `NoDecode` plus the splitting validator is what makes the plain env form work.
+    """
+    monkeypatch.setenv("OUTPUT_PATH", str(tmp_path / "output"))
+    monkeypatch.setenv("TMDB_COLUMN_GROUPS", raw)
+    s = _settings(tmp_path)
+    assert s.tmdb_column_groups == frozenset(expected)
+
+
+def test_tmdb_column_groups_rejects_an_unknown_group(tmp_path, monkeypatch):
+    """A typo'd group must fail loudly rather than silently reverting a migration.
+
+    `extra="ignore"` already swallows a misspelled *key*; a misspelled *value* landing in
+    the same silent bucket would mean a run quietly writing Letterboxd values into a cache
+    the operator believes is migrated — and only a taste backtest would ever notice.
+    """
+    monkeypatch.setenv("OUTPUT_PATH", str(tmp_path / "output"))
+    monkeypatch.setenv("TMDB_COLUMN_GROUPS", "territorys")
+    with pytest.raises(ValidationError):
+        _settings(tmp_path)

@@ -17,6 +17,7 @@ from letterboxdpy.movie import Movie
 from pydantic import ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from modules.config import TmdbColumnGroup
 from modules.tmdb import CreditMember, CreditsResponse, MovieBundle, MovieDetail, VideosResponse
 
 logger = logging.getLogger(__name__)
@@ -86,17 +87,19 @@ async def _fetch_french_title(client: httpx.AsyncClient, tmdb_id: str | None, ap
     retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
 )
 async def _get_tmdb_bundle(client: httpx.AsyncClient, tmdb_id: str, api_key: str) -> httpx.Response:
-    """GET a movie's credits and videos in one request, retrying on transport errors and 429/5xx.
+    """GET a movie's credits, videos and keywords in one request, retrying on transport errors and 429/5xx.
 
     ``append_to_response`` folds what used to be a ``/credits`` call and a ``/videos``
-    call into this one, which TMDB bills as a single request. No ``language`` parameter:
-    the credits must stay in their canonical (Latin) name forms — see
+    call into this one, which TMDB bills as a single request; ``keywords`` joined them at
+    no extra cost (the cap is 20 appends). No ``language`` parameter: the credits must
+    stay in their canonical (Latin) name forms, and ``genres`` — a plain field of the base
+    payload this same request returns — must stay in English. See
     ``modules.tmdb.MovieBundle``.
     """
     resp = await client.get(
         f"{TMDB_API_URL}/movie/{tmdb_id}",
         params={
-            "append_to_response": "credits,videos",
+            "append_to_response": "credits,videos,keywords",
             "include_video_language": "fr,en,null",
             "api_key": api_key,
         },
@@ -123,7 +126,7 @@ class Credits(NamedTuple):
 
 
 class TmdbColumns(NamedTuple):
-    """Every cache column one ``_get_tmdb_bundle`` request yields: credits, trailer, territories.
+    """Every cache column one ``_get_tmdb_bundle`` request yields: credits, trailer, territories, taxonomy.
 
     Deliberately *not* in ``modules.tmdb`` beside ``MovieBundle``, which it is easy to
     mistake it for. That module models TMDB's **wire shapes** — its classes exist to
@@ -145,6 +148,8 @@ class TmdbColumns(NamedTuple):
     origin_country: str | None = None
     language: str | None = None
     original_language: str | None = None
+    genres: str | None = None
+    keywords: str | None = None
 
 
 # TMDB returns `cast` pre-sorted by billing `order`, so the first entries are the leads —
@@ -266,12 +271,43 @@ def _parse_territories(payload: MovieBundle) -> TmdbColumns:
     )
 
 
-async def _fetch_bundle(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> TmdbColumns:
-    """Fetch a film's cast, crew, trailer and territories from TMDB in a single request.
+def _parse_taxonomy(payload: MovieBundle) -> tuple[str | None, str | None]:
+    """Read the two taxonomy columns — ``genres`` and ``keywords`` — off a validated payload.
 
-    One ``append_to_response=credits,videos`` round-trip fills eleven cache columns — the
-    five in :class:`Credits`, plus ``trailer_url``, plus the five
-    :func:`_parse_territories` reads straight off the base movie payload.
+    Returns them as a plain pair rather than a :class:`TmdbColumns`, unlike
+    :func:`_parse_territories`: they come from two *different* places in the payload
+    (``genres`` is a base field, ``keywords`` an appended block), so there is no single
+    "the taxonomy section" to mirror.
+
+    The two are different vocabularies doing different jobs, and the asymmetry is the
+    point. ``genres`` is a **closed set of 19** TMDB-curated names, so it maps onto the
+    cache's existing Letterboxd ``genres`` column and can replace it. ``keywords`` is an
+    **open, crowd-maintained** tag vocabulary running to tens of thousands of values
+    ("dual identity", "based on novel or book"), which is why it lands in a column of its
+    own instead of being folded into ``themes``/``mini_themes``: those are Letterboxd's
+    curated theme vocabulary, a different taxonomy that happens to be adjacent, and
+    merging two tag spaces into one affinity dimension would double-count whatever they
+    agree on.
+
+    Both are comma-joined like every other list column here, and deduplicated the way
+    ``_join_crew`` is rather than the way ``_join_names`` is not: TMDB can and does list
+    the same keyword twice on a film when two contributors added it under different ids.
+    """
+    genres = _join_names([g.name for g in payload.genres])
+    seen: dict[str, None] = {}
+    for kw in payload.keywords.keywords:
+        if kw.name:
+            seen.setdefault(kw.name, None)
+    return genres, ", ".join(seen) or None
+
+
+async def _fetch_bundle(client: httpx.AsyncClient, tmdb_id: str | None, api_key: str | None) -> TmdbColumns:
+    """Fetch a film's cast, crew, trailer, territories and taxonomy from TMDB in a single request.
+
+    One ``append_to_response=credits,videos,keywords`` round-trip fills thirteen cache
+    columns — the five in :class:`Credits`, plus ``trailer_url``, plus the five
+    :func:`_parse_territories` reads straight off the base movie payload, plus the two
+    from :func:`_parse_taxonomy`.
 
     Returns an empty ``TmdbColumns`` when ``tmdb_id`` or ``api_key`` is falsy, on any
     non-200 response, when the payload fails validation (see ``modules.tmdb`` — this is
@@ -287,9 +323,12 @@ async def _fetch_bundle(client: httpx.AsyncClient, tmdb_id: str | None, api_key:
         resp = await _get_tmdb_bundle(client, tmdb_id, api_key)
         if resp.status_code == 200:
             payload = MovieBundle.model_validate(resp.json())
+            genres, keywords = _parse_taxonomy(payload)
             return _parse_territories(payload)._replace(
                 credits=_parse_credits(payload.credits),
                 trailer_url=_pick_trailer(payload.videos),
+                genres=genres,
+                keywords=keywords,
             )
         logger.debug("TMDB bundle returned %d for tmdb_id=%s", resp.status_code, tmdb_id)
     except ValidationError as e:
@@ -302,7 +341,7 @@ async def _fetch_bundle(client: httpx.AsyncClient, tmdb_id: str | None, api_key:
 
 
 # The three Letterboxd detail types TMDB can replace, dropped from `**details_by_type` when
-# `use_tmdb_territories` is on. Dropping them is load-bearing rather than tidy: the expansion
+# the `territories` group is on. Dropping them is load-bearing rather than tidy: the expansion
 # is the *last* entry in _fetch_movie's dict literal, so a surviving Letterboxd "country"
 # would overwrite the TMDB value seeded above it and the switch would be a silent no-op —
 # right values fetched, wrong values written, no error anywhere. Letterboxd keeps serving all
@@ -327,7 +366,7 @@ _TMDB_OWNED_DETAIL_TYPES = frozenset({"studio", "country", "language"})
 #
 # Values are NOT backfilled here: null means "not migrated yet" and the real values arrive
 # with the one-pass backfill. Drop an entry once no cache in use predates it.
-_SCHEMA_MIGRATION_COLUMNS = ("origin_country", "original_language")
+_SCHEMA_MIGRATION_COLUMNS = ("origin_country", "original_language", "keywords")
 
 
 @retry(stop=_RETRY_STOP, wait=_RETRY_WAIT, reraise=True)
@@ -336,15 +375,19 @@ def _build_movie(slug: str) -> Movie:
     return Movie(slug)
 
 
-def _fetch_movie(slug: str, use_tmdb_territories: bool = False) -> dict | None:
+def _fetch_movie(slug: str, tmdb_groups: frozenset[TmdbColumnGroup] = frozenset()) -> dict | None:
     """
     Fetch movie metadata from Letterboxd for a single movie slug.
 
     Args:
         slug: The Letterboxd movie slug identifier.
-        use_tmdb_territories: When True, drop Letterboxd's ``studio``/``country``/
-            ``language`` detail types so ``_fetch_all`` can fill them from TMDB instead.
-            When False (the default) they are read from Letterboxd exactly as before.
+        tmdb_groups: The column groups TMDB is producing (see ``Settings.tmdb_column_groups``).
+            This function's job for each enabled group is to *withhold* Letterboxd's values
+            so ``_fetch_all`` can fill them from TMDB instead: ``territories`` drops the
+            ``studio``/``country``/``language`` detail types, ``genres`` leaves ``genres``
+            null. Groups not listed are read from Letterboxd exactly as before.
+            ``themes``/``mini_themes`` are unaffected by any group — TMDB's ``keywords`` is
+            a separate vocabulary in a column of its own, not a replacement for them.
 
     Returns:
         Dictionary containing movie metadata (title, year, genres, ratings, etc.) with the
@@ -361,9 +404,11 @@ def _fetch_movie(slug: str, use_tmdb_territories: bool = False) -> dict | None:
           (``directors``/``producers``/``writers``/``composers``) and ``trailer_url`` are
           sourced from TMDB instead, mirroring how ``french_title`` is added — see
           ``_fetch_bundle``.
-        - genres is split into genres/themes/mini_themes based on the "type" field.
-        - **All five territory columns are keys of the returned dict in both flag
-          positions**, so the parquet schema never depends on the flag. Under the default,
+        - genres is split into genres/themes/mini_themes based on the "type" field. Under
+          the ``genres`` group only the first is withheld for TMDB to fill; the two theme
+          columns keep coming from this split either way.
+        - **Every migratable column is a key of the returned dict whichever groups are
+          enabled**, so the parquet schema never depends on them. With no groups on,
           ``studio``/``country``/``language`` carry Letterboxd's values and
           ``origin_country``/``original_language`` are the null placeholders that let the
           contract require them before the migration finishes. Any other detail type still
@@ -383,7 +428,7 @@ def _fetch_movie(slug: str, use_tmdb_territories: bool = False) -> dict | None:
         # --- Details (studio, country, language, … unless TMDB is serving those) ---
         # movie.details is a list[dict] with keys: type, name, slug, url
         # Group by type and comma-join names; each type becomes its own column.
-        skip = _TMDB_OWNED_DETAIL_TYPES if use_tmdb_territories else frozenset()
+        skip = _TMDB_OWNED_DETAIL_TYPES if TmdbColumnGroup.TERRITORIES in tmdb_groups else frozenset()
         details_grouped: dict[str, list[str]] = {}
         for d in movie.details or []:
             t = d.get("type")
@@ -419,15 +464,30 @@ def _fetch_movie(slug: str, use_tmdb_territories: bool = False) -> dict | None:
             # Media
             "poster_url": movie.poster,
             "banner_url": movie.banner,
-            # Genres / themes
-            "genres": genres,
+            # Genres / themes. `genres` is withheld (left null) under the `genres` group so
+            # `_fetch_all` can fill it from TMDB — the equivalent of dropping a detail type
+            # from the expansion below, but done here because genres never travel through
+            # `details_by_type`: they come off `movie.genres`, a separate Letterboxd field.
+            # There is therefore no overwrite hazard from the expansion for this column;
+            # the key is static, and Letterboxd's details tab serves no "genres" type.
+            # `themes`/`mini_themes` stay Letterboxd's in both positions — TMDB's parallel
+            # vocabulary lands in `keywords`, beside them rather than over them.
+            "genres": None if TmdbColumnGroup.GENRES in tmdb_groups else genres,
             "themes": themes,
             "mini_themes": mini_themes,
+            # Taxonomy — no Letterboxd equivalent, so seeded null and filled by `_fetch_all`
+            # only under the `genres` group, exactly like origin_country/original_language
+            # under `territories`. Gating it (rather than always filling it) is what
+            # keeps a null unambiguous: uniformly null means "not migrated", and after the
+            # backfill a null means "TMDB has no tags for this film". Filling it
+            # unconditionally would instead drip-feed it through the age-based refresh,
+            # ~1000 rows a run, leaving a column where the two meanings are indistinguishable.
+            "keywords": None,
             # Territories / provenance. Seeded unconditionally so the parquet carries all
-            # five in both flag positions — the schema is fixed, only the values move.
-            # Under the default, the expansion below overwrites the first three with
+            # five whichever groups are enabled — the schema is fixed, only the values move.
+            # With `territories` off, the expansion below overwrites the first three with
             # Letterboxd's values and the last two stay null (the placeholders the contract
-            # requires); under `use_tmdb_territories`, the three are filtered out of the
+            # requires); with it on, the three are filtered out of the
             # expansion and `_fetch_all` fills all five from TMDB. `country` is then the
             # co-production list and `origin_country` the production's nationality as ISO
             # codes — different fields, not two spellings.
@@ -447,22 +507,27 @@ def _fetch_movie(slug: str, use_tmdb_territories: bool = False) -> dict | None:
 
 
 async def _fetch_all(
-    slugs: list[str], api_key: str = "", concurrency: int = 20, *, use_tmdb_territories: bool = False
+    slugs: list[str],
+    api_key: str = "",
+    concurrency: int = 20,
+    *,
+    tmdb_groups: frozenset[TmdbColumnGroup] = frozenset(),
 ) -> list[dict | None]:
     """Run _fetch_movie for every slug concurrently, then attach TMDB enrichment.
 
     A single shared ``httpx.AsyncClient`` is opened for the whole batch so all TMDB
     lookups reuse pooled connections; the blocking Letterboxd scrape still runs in a
     worker thread per slug. The two TMDB lookups for a given movie run concurrently in a
-    nested ``asyncio.TaskGroup``: ``_fetch_bundle`` fills eleven columns (cast, the four
-    crew columns, trailer_url and the five territory columns) from one
-    ``append_to_response`` request, and ``_fetch_french_title`` is the separate
+    nested ``asyncio.TaskGroup``: ``_fetch_bundle`` fills thirteen columns (cast, the four
+    crew columns, trailer_url, the five territory columns and the two taxonomy ones) from
+    one ``append_to_response`` request, and ``_fetch_french_title`` is the separate
     French-locale call that cannot be merged into it without localising the credits'
-    person names (see ``modules.tmdb``).
+    person names *and* the genre names (see ``modules.tmdb``).
 
-    ``use_tmdb_territories`` gates only the *assignment* of those last five, not the fetch:
-    they ride a payload already being requested for the credits, so parsing them
-    unconditionally costs nothing and keeps the two code paths identical up to one branch.
+    Both flags gate only the *assignment* of their columns, not the fetch: every one of
+    them rides a payload already being requested for the credits, so parsing them
+    unconditionally costs nothing and keeps the code paths identical up to two branches.
+    The flags are independent — territories and taxonomy migrate separately.
     """
     sem = asyncio.Semaphore(concurrency)
     total = len(slugs)
@@ -472,7 +537,7 @@ async def _fetch_all(
     async def _guarded(client: httpx.AsyncClient, i: int, slug: str) -> None:
         nonlocal done
         async with sem:
-            result = await asyncio.to_thread(_fetch_movie, slug, use_tmdb_territories)
+            result = await asyncio.to_thread(_fetch_movie, slug, tmdb_groups)
             if result is not None:
                 tmdb_id = result.get("tmdb_id")
                 async with asyncio.TaskGroup() as movie_tg:
@@ -489,7 +554,7 @@ async def _fetch_all(
                 result["producers"] = film_credits.producers
                 result["writers"] = film_credits.writers
                 result["composers"] = film_credits.composers
-                if use_tmdb_territories:
+                if TmdbColumnGroup.TERRITORIES in tmdb_groups:
                     # Off by default: _fetch_movie has already put Letterboxd's values in
                     # studio/country/language, and overwriting them here is exactly the
                     # migration. origin_country/original_language have no Letterboxd
@@ -500,6 +565,15 @@ async def _fetch_all(
                     result["origin_country"] = film_bundle.origin_country
                     result["language"] = film_bundle.language
                     result["original_language"] = film_bundle.original_language
+                if TmdbColumnGroup.GENRES in tmdb_groups:
+                    # Off by default, and the mirror image of the branch above: _fetch_movie
+                    # has already withheld `genres` (left it null) rather than filled it
+                    # from Letterboxd, so this assignment is the only thing that puts a
+                    # value there. `keywords` has no Letterboxd equivalent and rides the
+                    # same flag so that one flip plus one backfill leaves the whole taxonomy
+                    # from a single producer — see the seeds in _fetch_movie.
+                    result["genres"] = film_bundle.genres
+                    result["keywords"] = film_bundle.keywords
             results[i] = result
         done += 1
         if done % 50 == 0 or done == total:
@@ -513,7 +587,11 @@ async def _fetch_all(
 
 
 def get_letterboxd_data(
-    all_slugs: list[str], output_path: str | os.PathLike, api_key: str = "", *, use_tmdb_territories: bool = False
+    all_slugs: list[str],
+    output_path: str | os.PathLike,
+    api_key: str = "",
+    *,
+    tmdb_groups: frozenset[TmdbColumnGroup] = frozenset(),
 ) -> pd.DataFrame:
     """
     Fetch Letterboxd movie data, reusing an on-disk cache to skip already-known slugs.
@@ -526,9 +604,11 @@ def get_letterboxd_data(
         all_slugs: List of Letterboxd movie slugs to fetch data for.
         output_path: Path to the existing cache file, read to skip cached slugs.
         api_key: TMDB API key for authenticated requests.
-        use_tmdb_territories: Source ``studio``/``country``/``language`` from TMDB rather
-            than Letterboxd, and populate ``origin_country``/``original_language``. See
-            ``Settings.use_tmdb_territories``; only affects rows fetched by this call.
+        tmdb_groups: Column groups to source from TMDB rather than Letterboxd —
+            ``territories`` swaps ``studio``/``country``/``language`` and populates
+            ``origin_country``/``original_language``; ``genres`` swaps ``genres`` and
+            populates ``keywords``. See ``Settings.tmdb_column_groups``; only affects rows
+            fetched by this call.
 
     Returns:
         DataFrame combining the loaded cache and any newly fetched rows, with columns:
@@ -564,7 +644,13 @@ def get_letterboxd_data(
     logger.info("New slugs to fetch: %d", len(new_slugs))
 
     if new_slugs:
-        fetched = asyncio.run(_fetch_all(new_slugs, api_key, use_tmdb_territories=use_tmdb_territories))
+        fetched = asyncio.run(
+            _fetch_all(
+                new_slugs,
+                api_key,
+                tmdb_groups=tmdb_groups,
+            )
+        )
         results = [r for r in fetched if r]  # Filter out None results from failed fetches
 
         if results:
@@ -581,7 +667,11 @@ def get_letterboxd_data(
 
 
 def refresh_letterboxd_data(
-    data_df: pd.DataFrame, slugs_to_refresh: list[str], api_key: str = "", *, use_tmdb_territories: bool = False
+    data_df: pd.DataFrame,
+    slugs_to_refresh: list[str],
+    api_key: str = "",
+    *,
+    tmdb_groups: frozenset[TmdbColumnGroup] = frozenset(),
 ) -> pd.DataFrame:
     """
     Refetch metadata for the given slugs and return the updated DataFrame.
@@ -594,9 +684,10 @@ def refresh_letterboxd_data(
         data_df: Existing DataFrame with cached movie data.
         slugs_to_refresh: List of movie slugs to update.
         api_key: TMDB API key for authenticated requests.
-        use_tmdb_territories: See :func:`get_letterboxd_data`. Refreshed rows are rewritten
-            under the current setting, so flipping it mid-migration is what splits a taste
-            affinity key in two — flip once, then backfill every row.
+        tmdb_groups: See :func:`get_letterboxd_data`. Refreshed rows are rewritten under
+            the current setting, so enabling a group mid-migration is what splits a taste
+            affinity key in two — enable once, then backfill every row in one pass rather
+            than letting the age trigger dribble it through.
 
     Returns:
         Updated DataFrame with refreshed movie data and new integration_date.
@@ -608,7 +699,13 @@ def refresh_letterboxd_data(
 
     logger.info("Refreshing %d movies", len(slugs_to_refresh))
 
-    fetched = asyncio.run(_fetch_all(slugs_to_refresh, api_key, use_tmdb_territories=use_tmdb_territories))
+    fetched = asyncio.run(
+        _fetch_all(
+            slugs_to_refresh,
+            api_key,
+            tmdb_groups=tmdb_groups,
+        )
+    )
     results = [r for r in fetched if r]
 
     fetched_slugs = {r["slug"] for r in results}

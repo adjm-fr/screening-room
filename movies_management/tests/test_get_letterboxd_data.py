@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 import respx
 from common.logging import RedactingFormatter
+from modules.config import TmdbColumnGroup
 from modules.get_letterboxd_data import (
     TMDB_API_URL,
     Credits,
@@ -112,7 +113,7 @@ def test_tmdb_owned_detail_types_are_dropped_when_flag_on(mocker, make_movie):
     written, nothing raised. Asserting None (not "A24") is what pins that.
     """
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=_TERRITORY_DETAILS))
-    result = _fetch_movie("some-slug", use_tmdb_territories=True)
+    result = _fetch_movie("some-slug", frozenset({TmdbColumnGroup.TERRITORIES}))
     assert result is not None
     assert result["studio"] is None
     assert result["country"] is None
@@ -121,16 +122,57 @@ def test_tmdb_owned_detail_types_are_dropped_when_flag_on(mocker, make_movie):
     assert result["original_language"] is None
 
 
-@pytest.mark.parametrize("use_tmdb_territories", [False, True])
-def test_unknown_detail_types_still_expand(mocker, make_movie, use_tmdb_territories):
-    """The flag scopes to the three TMDB-owned types — any other type expands either way."""
+def test_letterboxd_genres_withheld_when_genres_group_on(mocker, make_movie):
+    """With the `genres` group on, Letterboxd's genre list is left for TMDB to overwrite.
+
+    The mirror of the detail-type drop above, but a different mechanism: genres never
+    travel through ``**details_by_type``, so withholding is an explicit None here rather
+    than a filtered key. Themes and mini-themes come off the same Letterboxd list and must
+    survive — they are nobody's migration.
+    """
+    genres = [
+        {"type": "genre", "name": "Drama"},
+        {"type": "theme", "name": "Revenge"},
+        {"type": "mini-theme", "name": "Heist"},
+    ]
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(genres=genres))
+    result = _fetch_movie("some-slug", frozenset({TmdbColumnGroup.GENRES}))
+    assert result is not None
+    assert result["genres"] is None
+    assert result["keywords"] is None
+    assert result["themes"] == "Revenge"
+    assert result["mini_themes"] == "Heist"
+
+
+def test_genres_group_does_not_touch_the_territory_columns(mocker, make_movie):
+    """The two groups are independent — enabling one must not migrate the other."""
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=_TERRITORY_DETAILS))
+    result = _fetch_movie("some-slug", frozenset({TmdbColumnGroup.GENRES}))
+    assert result is not None
+    assert result["studio"] == "A24"
+    assert result["country"] == "USA, UK"
+    assert result["language"] == "English"
+
+
+def test_keywords_key_present_whichever_groups_are_enabled(mocker, make_movie):
+    """`keywords` is seeded on every row, so the contract can require it pre-migration."""
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie())
+    for groups in (frozenset(), frozenset({TmdbColumnGroup.GENRES}), frozenset({TmdbColumnGroup.TERRITORIES})):
+        result = _fetch_movie("some-slug", groups)
+        assert result is not None
+        assert "keywords" in result
+
+
+@pytest.mark.parametrize("tmdb_groups", [frozenset(), frozenset({TmdbColumnGroup.TERRITORIES})])
+def test_unknown_detail_types_still_expand(mocker, make_movie, tmdb_groups):
+    """The group scopes to the three TMDB-owned types — any other type expands either way."""
     details = [
         {"type": "studio", "name": "A24"},
         {"type": "format", "name": "IMAX"},
         {"type": "format", "name": "70mm"},
     ]
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=details))
-    result = _fetch_movie("some-slug", use_tmdb_territories=use_tmdb_territories)
+    result = _fetch_movie("some-slug", tmdb_groups)
     assert result is not None
     assert result["format"] == "IMAX, 70mm"
 
@@ -333,7 +375,7 @@ def test_refresh_adds_columns_missing_from_target_cache(mocker):
         ),
     )
 
-    result = refresh_letterboxd_data(df, ["slug-a"], "fake-key", use_tmdb_territories=True)
+    result = refresh_letterboxd_data(df, ["slug-a"], "fake-key", tmdb_groups=frozenset({TmdbColumnGroup.TERRITORIES}))
 
     assert "cast" in result.columns
     assert "trailer_url" in result.columns
@@ -483,21 +525,27 @@ def _video(key: str, lang: str | None, *, official: bool = True, site: str = "Yo
     return {"key": key, "iso_639_1": lang, "official": official, "site": site, "type": video_type}
 
 
-def _bundle_json(*, cast=None, crew=None, videos=None, credits=None) -> dict:
-    """One ``append_to_response=credits,videos`` payload.
+def _bundle_json(*, cast=None, crew=None, videos=None, credits=None, keywords=None, genres=None) -> dict:
+    """One ``append_to_response=credits,videos,keywords`` payload.
 
-    Both blocks are always present because ``MovieBundle`` requires them — TMDB omitting
-    one is the schema drift the model exists to catch, which is its own test below.
+    All three blocks are always present because ``MovieBundle`` requires them — TMDB
+    omitting one is the schema drift the model exists to catch, which is its own test
+    below. ``genres`` is a plain base-payload field, so it is optional and only appears
+    when a test asks for it.
     """
-    return {
+    payload = {
         "id": 12345,
         "credits": {"cast": cast or [], "crew": crew or []} if credits is None else credits,
         "videos": {"results": videos or []},
+        "keywords": {"keywords": keywords or []},
     }
+    if genres is not None:
+        payload["genres"] = genres
+    return payload
 
 
 def _mock_bundle(payload: dict | None = None, status: int = 200) -> None:
-    respx.get(f"{TMDB_API_URL}/movie/12345", params__contains={"append_to_response": "credits,videos"}).mock(
+    respx.get(f"{TMDB_API_URL}/movie/12345", params__contains={"append_to_response": "credits,videos,keywords"}).mock(
         return_value=httpx.Response(status, json=payload)
     )
 
@@ -760,7 +808,7 @@ async def test_fetch_bundle_logs_warning_when_an_appended_block_is_missing(caplo
     """``credits``/``videos`` are required on ``MovieBundle`` precisely so a dropped
     append block is loud: it would otherwise null six columns on every film at once.
     """
-    respx.get(f"{TMDB_API_URL}/movie/12345", params__contains={"append_to_response": "credits,videos"}).mock(
+    respx.get(f"{TMDB_API_URL}/movie/12345", params__contains={"append_to_response": "credits,videos,keywords"}).mock(
         return_value=httpx.Response(200, json={"id": 12345, "credits": {"cast": [], "crew": []}})
     )
     with caplog.at_level(logging.WARNING, logger="modules.get_letterboxd_data"):
@@ -836,7 +884,7 @@ async def test_fetch_bundle_logs_warning_when_video_results_wrong_type(caplog):
     """``results`` no longer being a list (e.g. TMDB starts sending a dict/error blob in
     its place) must log at WARNING and still return the safe empty fallback.
     """
-    _mock_bundle({"id": 12345, "credits": {"cast": [], "crew": []}, "videos": {"results": "oops"}})
+    _mock_bundle({"id": 12345, "credits": {"cast": [], "crew": []}, "videos": {"results": "oops"}, "keywords": {"keywords": []}})
     with caplog.at_level(logging.WARNING, logger="modules.get_letterboxd_data"):
         async with httpx.AsyncClient() as client:
             result = await _fetch_bundle(client, "12345", "fake-key")
@@ -857,9 +905,89 @@ async def test_fetch_bundle_requests_one_call_for_credits_and_videos():
         await _fetch_bundle(client, "12345", "fake-key")
     assert route.call_count == 1
     params = route.calls[0].request.url.params
-    assert params["append_to_response"] == "credits,videos"
+    assert params["append_to_response"] == "credits,videos,keywords"
     assert params["include_video_language"] == "fr,en,null"
     assert "language" not in params
+
+
+# ── _fetch_bundle: taxonomy half (async, httpx + respx) ─────────────────────────
+
+
+@respx.mock
+async def test_fetch_bundle_reads_genres_and_keywords():
+    """Both taxonomy columns ride the same payload as the credits — still one request."""
+    _mock_bundle(
+        _bundle_json(
+            genres=[{"id": 18, "name": "Drama"}, {"id": 53, "name": "Thriller"}],
+            keywords=[{"id": 851, "name": "dual identity"}, {"id": 1541, "name": "nihilism"}],
+        )
+    )
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.genres == "Drama, Thriller"
+    assert result.keywords == "dual identity, nihilism"
+
+
+@respx.mock
+async def test_fetch_bundle_dedupes_keywords():
+    """TMDB can list one tag twice under different ids — the cache string must not.
+
+    Unlike the territory lists (see ``_join_names``, deliberately un-deduped), the keyword
+    block is crowd-maintained and duplicates do occur; a repeated value would be counted
+    twice by any affinity built on the column.
+    """
+    _mock_bundle(_bundle_json(keywords=[{"id": 1, "name": "heist"}, {"id": 2, "name": "heist"}, {"id": 3, "name": "paris"}]))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.keywords == "heist, paris"
+
+
+@respx.mock
+async def test_fetch_bundle_empty_taxonomy_is_none_not_empty_string():
+    """A film with no genres and no tags yields None, the cache's "nothing on record" value."""
+    _mock_bundle(_bundle_json())
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.genres is None
+    assert result.keywords is None
+
+
+@respx.mock
+async def test_fetch_bundle_tolerates_a_null_genres_list():
+    """``genres`` is a field nobody asked for, so a null must not fail the whole payload.
+
+    Same NullableList contract as the territory lists: a null here would otherwise take the
+    *required* credits down with it and null `directors` on a film that parsed fine.
+    """
+    _mock_bundle(_bundle_json(crew=[_crew("Jane Doe", "Director")]) | {"genres": None})
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.genres is None
+    assert result.credits.directors == "Jane Doe"
+
+
+@respx.mock
+async def test_fetch_bundle_logs_warning_when_keywords_block_is_missing(caplog):
+    """``keywords`` is a requested block, so its absence is drift — warning, not debug.
+
+    The inner list may be empty (a film with no tags is ordinary); the wrapper may not.
+    """
+    _mock_bundle({"id": 12345, "credits": {"cast": [], "crew": []}, "videos": {"results": []}})
+    with caplog.at_level(logging.WARNING):
+        async with httpx.AsyncClient() as client:
+            result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result == TmdbColumns()
+    assert "failed validation" in caplog.text
+
+
+@respx.mock
+async def test_fetch_bundle_empty_keywords_block_is_not_drift():
+    """The mirror of the test above: an empty inner list is data, and must stay quiet."""
+    _mock_bundle(_bundle_json(crew=[_crew("Jane Doe", "Director")]))
+    async with httpx.AsyncClient() as client:
+        result = await _fetch_bundle(client, "12345", "fake-key")
+    assert result.keywords is None
+    assert result.credits.directors == "Jane Doe"
 
 
 # ── _fetch_all TMDB enrichment integration ──────────────────────────────────────
@@ -875,7 +1003,7 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
     title_route = respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"language": "fr-FR"}).mock(
         return_value=httpx.Response(200, json={"title": "Titre Français"})
     )
-    bundle_route = respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"append_to_response": "credits,videos"}).mock(
+    bundle_route = respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"append_to_response": "credits,videos,keywords"}).mock(
         return_value=httpx.Response(
             200,
             json={
@@ -890,6 +1018,8 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
                     ],
                 },
                 "videos": {"results": [_video("fr-key", "fr")]},
+                "keywords": {"keywords": [{"name": "heist"}, {"name": "dual identity"}]},
+                "genres": [{"id": 18, "name": "Drama"}, {"id": 53, "name": "Thriller"}],
                 "production_companies": [{"name": "A24"}],
                 "production_countries": [{"iso_3166_1": "US", "name": "United States of America"}],
                 "origin_country": ["US"],
@@ -899,7 +1029,7 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
         )
     )
 
-    results = await _fetch_all(["some-slug"], api_key="fake-key", use_tmdb_territories=True)
+    results = await _fetch_all(["some-slug"], api_key="fake-key", tmdb_groups=frozenset({TmdbColumnGroup.TERRITORIES}))
     assert results[0] is not None
     assert results[0]["french_title"] == "Titre Français"
     assert results[0]["cast"] == "Actor A"
@@ -921,27 +1051,32 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
 
 
 @respx.mock
-async def test_fetch_all_keeps_letterboxd_territories_by_default(mocker, make_movie):
-    """Flag off: TMDB's territory values are parsed but must not reach the row.
+async def test_fetch_all_keeps_letterboxd_values_when_no_groups_enabled(mocker, make_movie):
+    """No groups: TMDB's territory *and* taxonomy values are parsed but must not reach the row.
 
     The bundle carries them regardless (they ride the credits payload), so the guard is the
     assignment, not the fetch. Without it this PR would silently change every cached row's
-    `country` spelling the moment it merged — the migration happening by accident rather
-    than by decision.
+    `country` spelling and genre vocabulary the moment it merged — the migration happening
+    by accident rather than by decision.
     """
-    movie_mock = make_movie(details=[{"type": "studio", "name": "Gaumont"}, {"type": "country", "name": "France"}])
+    movie_mock = make_movie(
+        genres=[{"type": "genre", "name": "Drame"}, {"type": "theme", "name": "Revenge"}],
+        details=[{"type": "studio", "name": "Gaumont"}, {"type": "country", "name": "France"}],
+    )
     movie_mock.tmdb_id = "42"
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=movie_mock)
     respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"language": "fr-FR"}).mock(
         return_value=httpx.Response(200, json={"title": "Titre Français"})
     )
-    respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"append_to_response": "credits,videos"}).mock(
+    respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"append_to_response": "credits,videos,keywords"}).mock(
         return_value=httpx.Response(
             200,
             json={
                 "id": 42,
                 "credits": {"cast": [], "crew": [_crew("Jane Doe", "Director")]},
                 "videos": {"results": []},
+                "keywords": {"keywords": [{"name": "heist"}]},
+                "genres": [{"id": 18, "name": "Drama"}],
                 "production_companies": [{"name": "A24"}],
                 "production_countries": [{"iso_3166_1": "US", "name": "United States of America"}],
                 "origin_country": ["US"],
@@ -956,12 +1091,56 @@ async def test_fetch_all_keeps_letterboxd_territories_by_default(mocker, make_mo
     # Letterboxd's values survive, TMDB's are discarded.
     assert results[0]["studio"] == "Gaumont"
     assert results[0]["country"] == "France"
+    assert results[0]["genres"] == "Drame"
     # Placeholders stay null: the schema is here, the data is not, and that is the point.
     assert results[0]["origin_country"] is None
     assert results[0]["original_language"] is None
-    # Everything else TMDB owns is unaffected by the flag.
+    assert results[0]["keywords"] is None
+    # Themes are nobody's migration — Letterboxd owns them whichever groups are enabled.
+    assert results[0]["themes"] == "Revenge"
+    # Everything else TMDB owns is unaffected by the groups.
     assert results[0]["directors"] == "Jane Doe"
     assert results[0]["french_title"] == "Titre Français"
+
+
+@respx.mock
+async def test_fetch_all_swaps_genres_and_fills_keywords_under_the_genres_group(mocker, make_movie):
+    """Group on: TMDB's genre list replaces Letterboxd's and `keywords` is populated.
+
+    The counterpart to the no-groups test above. Note the assertion that `themes` still
+    carries Letterboxd's value: `keywords` lands *beside* the theme columns, not over
+    them, so enabling this group must not empty a dimension the ranker already uses.
+    """
+    movie_mock = make_movie(
+        genres=[{"type": "genre", "name": "Drame"}, {"type": "theme", "name": "Revenge"}],
+        details=[{"type": "studio", "name": "Gaumont"}],
+    )
+    movie_mock.tmdb_id = "42"
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=movie_mock)
+    respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"language": "fr-FR"}).mock(
+        return_value=httpx.Response(200, json={"title": "Titre Français"})
+    )
+    respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"append_to_response": "credits,videos,keywords"}).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 42,
+                "credits": {"cast": [], "crew": [_crew("Jane Doe", "Director")]},
+                "videos": {"results": []},
+                "keywords": {"keywords": [{"name": "heist"}, {"name": "paris"}]},
+                "genres": [{"id": 18, "name": "Drama"}, {"id": 53, "name": "Thriller"}],
+                "production_companies": [{"name": "A24"}],
+            },
+        )
+    )
+
+    results = await _fetch_all(["some-slug"], api_key="fake-key", tmdb_groups=frozenset({TmdbColumnGroup.GENRES}))
+    assert results[0] is not None
+    assert results[0]["genres"] == "Drama, Thriller"
+    assert results[0]["keywords"] == "heist, paris"
+    # Letterboxd keeps the theme columns, and — the other group being off — the studio.
+    assert results[0]["themes"] == "Revenge"
+    assert results[0]["studio"] == "Gaumont"
 
 
 @respx.mock

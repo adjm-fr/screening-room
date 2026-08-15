@@ -642,7 +642,7 @@ typecheck (mypy blocking + ty advisory), security, test.
 - **`cast`, the four crew columns, and `trailer_url` are TMDB-sourced cache columns** in
   `data_letterboxd.parquet` (not from letterboxdpy): `_fetch_bundle` fills `cast` (top-8 billed, `", "`-joined),
   `directors`/`producers`/`writers`/`composers` **and** `trailer_url` (a YouTube link preferring FR over EN)
-  from **one** `/movie/{id}?append_to_response=credits,videos` round-trip — fetched beside
+  from **one** `/movie/{id}?append_to_response=credits,videos,keywords` round-trip — fetched beside
   `_fetch_french_title` on the same client, `None` without a `tmdb_id`. Each crew column is a job filter
   (`_DIRECTOR_JOBS`/`_PRODUCER_JOBS`/`_WRITER_JOBS`/`_COMPOSER_JOBS`), deduped because
   TMDB lists a person once *per job*. `_COMPOSER_JOBS` is `{"Original Music Composer"}` only: TMDB's looser
@@ -658,8 +658,8 @@ typecheck (mypy blocking + ty advisory), security, test.
   the swap safe for the watchlist↔showtimes join.
   **Corollary: without `TMDB_API_KEY`, `directors` is now null**, which silently guts the taste ranker's
   highest-weighted dimension *and* the join's director confirmation — `main.py` warns about this at startup.
-- **`studio`/`country`/`language` are mid-migration behind `USE_TMDB_TERRITORIES` (default off), and
-  `country` ≠ `origin_country`.** Both producers stay wired up: with the flag off, Letterboxd's details tab
+- **`studio`/`country`/`language` are mid-migration behind the `territories` group of `TMDB_COLUMN_GROUPS`
+  (default empty), and `country` ≠ `origin_country`.** Both producers stay wired up: with the group off, Letterboxd's details tab
   fills the trio exactly as it always has and `origin_country`/`original_language` are **null placeholders**;
   with it on, the three Letterboxd detail types are filtered out (`_TMDB_OWNED_DETAIL_TYPES`) and
   `_parse_territories` fills all five off the *base* movie payload `_fetch_bundle` already requests — no
@@ -696,6 +696,37 @@ typecheck (mypy blocking + ty advisory), security, test.
   rather than left to be overwritten — that is the only thing `_TMDB_OWNED_DETAIL_TYPES` does. Widen the
   filter to run unconditionally and the default path silently loses three columns; drop it and the migration
   silently does nothing. Both fail with right values fetched, wrong values written, and nothing raised.
+- **`TMDB_COLUMN_GROUPS` is one setting for every TMDB migration, not one boolean per group.** Values are
+  names from `TmdbColumnGroup` (`territories`, `genres`), comma-separated in the env
+  (`TMDB_COLUMN_GROUPS=territories,genres`); empty means every column keeps the producer its cached rows were
+  written from. Groups are enabled **one at a time** so each one's effect on the taste ranker is measurable
+  in isolation — that is the whole reason it is a set of names rather than a boolean per migration, which
+  would multiply with every group and let two flip in one run and confound the comparison. `main.py` logs
+  the enabled set every run, because a cache is only interpretable against it. Parsing needs
+  `Annotated[frozenset[...], NoDecode]` plus a splitting `field_validator`: pydantic-settings JSON-decodes
+  complex fields *before* validation, so a bare `frozenset` field rejects `territories,genres` with a
+  `SettingsError` no validator can intercept. An unknown group name **raises** — a typo'd value silently
+  reverting a migration is the same silent failure `extra="ignore"` already allows for misspelled *keys*,
+  and only a taste backtest would ever catch it.
+- **`genres` is mid-migration behind the `genres` group, and `keywords` is the additive column that rides
+  it — but Letterboxd's genre list *is* TMDB's.** Measured across all 6,761 cached films with a `tmdb_id`
+  (Aug 2026, 100% fetch success): **the same 19-term vocabulary on both sides**, none unique to either;
+  per film **98.18% exact set match**, mean Jaccard **0.9934**, and **zero disjoint films**. So unlike
+  `territories` this swap has **no vocabulary-split hazard** (there is no `USA` → `United States of America`
+  here) and a half-migrated cache is harmless — and equally, swapping `genres` alone will not move the
+  ranker, since it rewrites ~1.8% of films by one term. **`keywords` is the reason the group exists.**
+  It is TMDB's open, crowd-maintained tag space (`keywords.keywords[].name`, an appended block, so the
+  request is still one round-trip): 90.9% coverage, 10.42 tags/film, 14,780 distinct terms of which 47.9%
+  appear on exactly one film. **It is not a replacement for `themes`/`mini_themes`**, which stay
+  Letterboxd's in both positions — those are 140 curated sentences ("Moving relationship stories") at 69.5%
+  coverage, and the two vocabularies intersect on **8 terms** (5.7% of the theme vocabulary). They are
+  adjacent taxonomies in different registers, so both are kept in separate columns; folding them into one
+  affinity dimension would double-count the overlap. Whether `keywords` earns a `_DIM_COLUMNS` dimension
+  *beside* `themes` is unmeasured and needs its own backtest against the 0.667 / 1.98 reference — note it
+  carries production metadata as well as content (`woman director` 312 films, `black and white` 382,
+  `aftercreditsstinger` 152), which is signal or noise depending on the question.
+  **TMDB genre names are locale-sensitive** (`Drama` → `Drame` under `fr-FR`), which is a second, independent
+  reason the bundle call must stay locale-free — the same hazard as person names, a different field.
 - **The two TMDB fetchers parse through Pydantic models (`movies_management/modules/tmdb.py`), and a
   `logger.warning` from one of them means upstream schema drift, not a missing film.** `MovieDetail` /
   `MovieBundle` (`credits`/`videos`, wrapping `CreditsResponse` and `VideosResponse`, plus the five
@@ -719,7 +750,7 @@ typecheck (mypy blocking + ty advisory), security, test.
   obscure films.
 - **`language=fr-FR` localises TMDB person names, so the credits can never ride the French call.** This is
   what fixes the fetch at two requests rather than one: `_get_tmdb_movie` carries the locale and reads only
-  `title`; `_get_tmdb_bundle` carries `append_to_response=credits,videos` and no `language` at all. Measured
+  `title`; `_get_tmdb_bundle` carries `append_to_response=credits,videos,keywords` and no `language` at all. Measured
   on 120 films, adding the locale rewrites 5 director sets and 15 top-8 cast lists into local script and name
   order (`Ho Meng-Hua` → `何夢華`, `Marcell Jankovics` → `Jankovics Marcell`), which would break
   `_directors_overlap` against Latin-script Allocine names. Nor can `french_title` come from an appended

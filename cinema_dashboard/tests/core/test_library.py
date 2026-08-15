@@ -3,6 +3,7 @@
 import pandas as pd
 import pytest
 
+from core.agenda import RUNTIME_BUCKETS
 from core.library import (
     HALF_STARS,
     RATING_TIERS,
@@ -11,9 +12,11 @@ from core.library import (
     delta_summary,
     explode_tags,
     filter_table,
+    genre_counts,
     preset_columns,
     rating_disagreements,
     rating_histogram,
+    runtime_bucket_counts,
 )
 
 # ── Tier ladder ─────────────────────────────────────────────────────────────
@@ -182,3 +185,48 @@ def test_preset_columns_never_returns_empty():
 
 def test_every_preset_is_a_tuple():
     assert all(isinstance(cols, tuple) for cols in TABLE_PRESETS.values())
+
+
+# ── runtime_bucket_counts ────────────────────────────────────────────────────
+
+
+def test_runtime_bucket_counts_all_buckets_zero_filled(make_ratings):
+    df = make_ratings([{"runtime": 80}, {"runtime": 100}, {"runtime": 150}, {"runtime": 200}])
+    out = runtime_bucket_counts(df)
+    assert list(out["bucket"]) == list(RUNTIME_BUCKETS)
+    assert out.loc[out["bucket"] == "<90", "count"].item() == 1
+    assert out.loc[out["bucket"] == "90–120", "count"].item() == 1
+    assert out.loc[out["bucket"] == ">120", "count"].item() == 2
+
+
+def test_runtime_bucket_counts_without_column_is_zero_filled():
+    out = runtime_bucket_counts(pd.DataFrame({"title": ["x"]}))
+    assert list(out["bucket"]) == list(RUNTIME_BUCKETS)
+    assert out["count"].sum() == 0
+
+
+def test_runtime_bucket_counts_ignores_unknown_runtimes(make_ratings):
+    df = make_ratings([{"runtime": None}, {"runtime": 100}])
+    out = runtime_bucket_counts(df)
+    assert out["count"].sum() == 1
+
+
+# ── genre_counts ─────────────────────────────────────────────────────────────
+
+
+def test_genre_counts_most_frequent_first(make_ratings):
+    df = make_ratings([{"genres": "Drama, Comedy"}, {"genres": "Drama"}, {"genres": "Drama, Horror"}, {"genres": "Comedy"}])
+    out = genre_counts(df)
+    assert list(out["genre"]) == ["Drama", "Comedy", "Horror"]
+    assert out.loc[out["genre"] == "Drama", "count"].item() == 3
+
+
+def test_genre_counts_respects_n(make_ratings):
+    df = make_ratings([{"genres": "A, B, C"}])
+    assert len(genre_counts(df, n=2)) == 2
+
+
+def test_genre_counts_without_column_is_empty():
+    out = genre_counts(pd.DataFrame({"title": ["x"]}))
+    assert out.empty
+    assert list(out.columns) == ["genre", "count"]

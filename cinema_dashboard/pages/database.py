@@ -7,12 +7,13 @@ computation behind them lives in :mod:`core.library` (pure stats) and
 
 - **Overview** — the ratings breakdown: half-star histogram grouped under the
   tier-ladder headers, by-decade profile, the you-vs-Letterboxd disagreement
-  table, plus the genre × avg-rating bar and the runtime distribution.
+  table, the genre × avg-rating bar, and two small frequency bars (runtime
+  buckets, most-watched genres) side by side.
 - **Taste** — the affinity profile behind every match badge, one signed-bar
   block per dimension (same ``.contrib-*`` vocabulary as the movie detail
   page's score breakdown), liked/disliked judged tier-relatively.
-- **Discover** — chip filters (genre, director, min-rating slider) over a
-  ranked poster rail of matching films.
+- **Discover** — chip filters (genre, director, min Letterboxd/your-rating
+  sliders) over a ranked poster rail of matching films.
 - **Tables** — the three raw dataframes behind a search box + column presets,
   with poster + a "Details" link into the movie detail page +
   IMDB/TMDB/Letterboxd link columns for power users.
@@ -36,9 +37,11 @@ from core.library import (
     delta_summary,
     explode_tags,
     filter_table,
+    genre_counts,
     preset_columns,
     rating_disagreements,
     rating_histogram,
+    runtime_bucket_counts,
 )
 from core.taste import WEIGHTS, AffinityEntry, build_affinity, dimension_profile
 from sources.loader import (
@@ -62,7 +65,7 @@ from ui import (
     render_kpi_strip,
     render_poster_rail,
 )
-from ui.stats import SignedBarRow, affinity_dimension_html
+from ui.stats import SignedBarRow, affinity_dimension_html, frequency_bars_html
 
 # Mirrors pages/movie.py's _DIMENSION_LABELS so the two .contrib-* surfaces
 # name the taste dimensions identically.
@@ -166,7 +169,8 @@ def _genre_bubble_chart(ratings_df: pd.DataFrame) -> None:
     st.plotly_chart(fig, width="stretch")
 
 
-def _runtime_sparkline(ratings_df: pd.DataFrame) -> None:
+def _runtime_stats(ratings_df: pd.DataFrame) -> None:
+    """P25/P50/P75 plus a compact 3-bucket runtime bar — a small CSS list, not a full-width chart."""
     if "runtime" not in ratings_df.columns:
         st.caption("No runtime data.")
         return
@@ -176,16 +180,13 @@ def _runtime_sparkline(ratings_df: pd.DataFrame) -> None:
         return
     p25, p50, p75 = (int(runtimes.quantile(q)) for q in (0.25, 0.5, 0.75))
     st.markdown(
-        f"<div class='kpi-card'><div class='kpi-label'>Runtime · P25/P50/P75</div>"
+        f"<div class='kpi-card'><div class='kpi-label'>P25/P50/P75</div>"
         f"<div class='kpi-value'>{format_runtime(p25)} · {format_runtime(p50)} · {format_runtime(p75)}</div></div>",
         unsafe_allow_html=True,
     )
-    bins = list(range(0, int(runtimes.max()) + 30, 30))
-    hist = pd.cut(runtimes, bins=bins).value_counts().sort_index()
-    spark = px.bar(x=[str(b) for b in hist.index], y=hist.values, labels={"x": "", "y": ""})
-    spark.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=80, showlegend=False, xaxis_visible=False, yaxis_visible=False)
-    spark.update_traces(marker_color="#E63946", hovertemplate="%{x}: %{y} films<extra></extra>")
-    st.plotly_chart(spark, width="stretch")
+    bucket_html = frequency_bars_html(runtime_bucket_counts(ratings_df), label_col="bucket", count_col="count")
+    if bucket_html:
+        st.markdown(bucket_html, unsafe_allow_html=True)
 
 
 def _taste_dimension_rows(entries: list[AffinityEntry]) -> list[SignedBarRow]:
@@ -346,9 +347,17 @@ def main() -> None:
         st.markdown("##### Genre × avg rating (rated films only)")
         _genre_bubble_chart(ratings_df)
 
-        runtime_col, _ = st.columns([1, 1])
+        runtime_col, genre_count_col = st.columns(2)
         with runtime_col:
-            _runtime_sparkline(ratings_df)
+            st.markdown("##### Runtime")
+            _runtime_stats(ratings_df)
+        with genre_count_col:
+            st.markdown("##### Most-watched genres")
+            genre_html = frequency_bars_html(genre_counts(ratings_df), label_col="genre", count_col="count")
+            if genre_html:
+                st.markdown(genre_html, unsafe_allow_html=True)
+            else:
+                st.caption("No genres to count yet.")
 
     with tab_taste:
         if profile.is_empty:
@@ -384,13 +393,18 @@ def main() -> None:
         st.markdown("##### Filter your watchlist + ratings")
         all_genres = sorted(explode_tags(cache_df.get("genres", pd.Series(dtype=str))).unique().tolist())
         all_directors = sorted(explode_tags(cache_df.get("directors", pd.Series(dtype=str))).unique().tolist())
-        f1, f2, f3 = st.columns([2, 2, 2])
+        f1, f2, f3, f4 = st.columns([2, 2, 1.3, 1.3])
         with f1:
             sel_genres = st.pills("Genre", options=all_genres, selection_mode="multi", key="db_genre")
         with f2:
             sel_directors = st.multiselect("Director", options=all_directors, placeholder="Search directors…", key="db_director")
         with f3:
             min_rating = st.slider("Min Letterboxd rating", 0.0, 5.0, 0.0, 0.5, key="db_minrating")
+        with f4:
+            # Only films you've actually rated carry user_rating — watchlist-only
+            # films are naturally excluded once this is raised above 0, which is
+            # the point: "min your rating" is a rewatch/favorites filter.
+            min_user_rating = st.slider("Min your rating", 0.0, 5.0, 0.0, 0.5, key="db_min_user_rating")
 
         pool = pd.concat([watchlist_df, ratings_df], ignore_index=True).drop_duplicates(subset=["slug"])
         if sel_genres and "genres" in pool.columns:
@@ -401,6 +415,8 @@ def main() -> None:
             pool = pool[pool["directors"].fillna("").str.contains(pattern, case=False, regex=True)]
         if min_rating > 0 and "letterboxd_avg_rating" in pool.columns:
             pool = pool[pool["letterboxd_avg_rating"].fillna(0) >= min_rating]
+        if min_user_rating > 0 and "user_rating" in pool.columns:
+            pool = pool[pool["user_rating"].fillna(0) >= min_user_rating]
 
         if pool.empty:
             render_empty_state("🔍", "No matches", "Loosen the filters to see more films.")

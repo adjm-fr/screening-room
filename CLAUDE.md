@@ -393,7 +393,11 @@ typecheck (mypy blocking + ty advisory), security, test.
   fire-and-forget `build_taste_profile` warm — same `@st.cache_data` entry, since the loader's string
   formatter delegates to it. Ratings are 0–5: every `rating_to_hsl` call on this page passes
   `scale_max=5.0` (feeding a 0–5 mean through the 0–10 default was a shipped bug; a frequency must
-  never ride the rating ramp at all).
+  never ride the rating ramp at all — `ui.stats.frequency_bars_html` is the enforcement point: runtime
+  buckets and most-watched-genre counts always render in the flat `var(--primary-color)` accent, never
+  `rating_to_hsl`). `core.library.runtime_bucket_counts` reuses `core.agenda.RUNTIME_BUCKETS`/
+  `runtime_bucket` rather than re-deriving bucket boundaries — the same three buckets the calendar and
+  Paris pages filter on.
 - **Unmatched Allocine films are surfaced, not just counted.** `movies_management`'s Allocine cache
   enrichment (`allocine_enrichment.enrich_cache_from_showtimes`) writes films it couldn't resolve to a
   Letterboxd slug to `{OUTPUT_PATH}/unresolved_allocine.parquet` — previously read by exactly one thing,

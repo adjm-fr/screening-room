@@ -5,7 +5,7 @@ import html
 import pandas as pd
 
 from core.library import RATING_TIERS, rating_histogram
-from ui.stats import BarRow, bar_rows_html, decade_profile_html, rating_histogram_html
+from ui.stats import BarRow, bar_rows_html, decade_profile_html, frequency_bars_html, rating_histogram_html
 
 
 def _hist_df(counts: dict[float, int]) -> pd.DataFrame:
@@ -77,3 +77,26 @@ def test_decade_html_widths_and_value_text():
 
 def test_decade_html_empty_frame_is_empty():
     assert decade_profile_html(pd.DataFrame({"decade": [], "count": [], "mean_rating": []})) == ""
+
+
+# ── frequency_bars_html ──────────────────────────────────────────────────────
+
+
+def test_frequency_bars_widths_and_values():
+    df = pd.DataFrame({"bucket": ["<90", "90–120"], "count": [1, 4]})
+    out = frequency_bars_html(df, label_col="bucket", count_col="count")
+    assert "width:25%" in out
+    assert "width:100%" in out
+    assert ">1<" in out and ">4<" in out
+
+
+def test_frequency_bars_use_flat_color_not_rating_ramp():
+    df = pd.DataFrame({"genre": ["Drama"], "count": [3]})
+    out = frequency_bars_html(df, label_col="genre", count_col="count")
+    assert "hsl(" not in out
+    assert "var(--primary-color)" in out
+
+
+def test_frequency_bars_empty_or_all_zero_is_empty():
+    assert frequency_bars_html(pd.DataFrame({"genre": [], "count": []}), label_col="genre", count_col="count") == ""
+    assert frequency_bars_html(pd.DataFrame({"genre": ["A"], "count": [0]}), label_col="genre", count_col="count") == ""

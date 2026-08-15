@@ -5,7 +5,7 @@ Streamlit-free by design ("a page renders, a core module decides" — same split
 as :mod:`core.agenda` for the calendar page): everything here takes a DataFrame
 and returns plain data, so it is unit-testable without importing the page.
 
-Two vocabularies live here:
+Three vocabularies live here:
 
 - **Ratings breakdown** — :data:`RATING_TIERS` (the semantic tier ladder the
   0–5 half-star scale encodes, mirroring :mod:`core.taste`'s documented
@@ -13,6 +13,9 @@ Two vocabularies live here:
   :func:`delta_summary` (you vs the Letterboxd community), and
   :func:`decade_profile` (``release_year`` is the only temporal axis — there
   is no watched/diary date anywhere in the data).
+- **Plain frequency counts** — :func:`runtime_bucket_counts` (reusing
+  :mod:`core.agenda`'s bucket vocabulary) and :func:`genre_counts`: "how many"
+  rather than "how good", so they carry no rating dimension.
 - **Tables tab** — :func:`filter_table` and the :data:`TABLE_PRESETS` column
   subsets, so the three raw parquet dumps become scannable.
 
@@ -23,6 +26,8 @@ Every function is total: a missing column or empty frame degrades to an empty
 from __future__ import annotations
 
 import pandas as pd
+
+from core.agenda import RUNTIME_BUCKETS, runtime_bucket
 
 # The user's rating scale is a semantic tier ladder, not a linear quality axis
 # (see core/taste.py: the low mean ~2.5 is the scale's design, not harshness).
@@ -134,6 +139,35 @@ def decade_profile(ratings_df: pd.DataFrame) -> pd.DataFrame:
     )
     out["count"] = out["count"].astype(int)
     return out
+
+
+def runtime_bucket_counts(ratings_df: pd.DataFrame) -> pd.DataFrame:
+    """Films rated per runtime bucket, reusing :func:`core.agenda.runtime_bucket`.
+
+    Always all of :data:`core.agenda.RUNTIME_BUCKETS` (``<90`` / ``90–120`` /
+    ``>120``), zero-filled, in that order. A film with no usable runtime is
+    bucketed to ``"Unknown"`` by :func:`core.agenda.runtime_bucket` and
+    excluded here — mirroring the KPI strip's median-runtime convention of
+    only describing known runtimes. Returns ``bucket``, ``count``.
+    """
+    empty = pd.DataFrame({"bucket": list(RUNTIME_BUCKETS), "count": [0] * len(RUNTIME_BUCKETS)})
+    if "runtime" not in ratings_df.columns:
+        return empty
+    counts = ratings_df["runtime"].apply(runtime_bucket).value_counts()
+    return pd.DataFrame({"bucket": list(RUNTIME_BUCKETS), "count": [int(counts.get(b, 0)) for b in RUNTIME_BUCKETS]})
+
+
+def genre_counts(ratings_df: pd.DataFrame, *, n: int = 8) -> pd.DataFrame:
+    """The ``n`` most frequent genres among rated films, most common first.
+
+    A plain frequency, distinct from the genre-vs-avg-rating breakdown
+    elsewhere on the page: that answers "what do you rate highest", this
+    answers "what do you watch most". Returns ``genre``, ``count``.
+    """
+    if "genres" not in ratings_df.columns:
+        return pd.DataFrame({"genre": pd.Series(dtype=str), "count": pd.Series(dtype=int)})
+    counts = explode_tags(ratings_df["genres"]).value_counts().head(n)
+    return pd.DataFrame({"genre": counts.index.astype(str), "count": counts.to_numpy(dtype=int)})
 
 
 def explode_tags(series: pd.Series, separator: str = ", ") -> pd.Series:

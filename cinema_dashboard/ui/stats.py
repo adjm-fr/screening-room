@@ -51,6 +51,25 @@ def bar_rows_html(rows: Sequence[BarRow]) -> str:
     return "".join(parts)
 
 
+def frequency_bars_html(df: pd.DataFrame, *, label_col: str, count_col: str, color: str = "var(--primary-color)") -> str:
+    """A plain count-based bar list — runtime buckets, genre frequency, and the like.
+
+    Unlike the rating/decade builders there is no quality axis here, so every
+    bar shares one flat color (the app's red accent, the same one the old
+    Plotly runtime sparkline used) rather than the amber rating heatmap — the
+    color itself signals "this is a count, not a rating". Returns ``""`` on an
+    empty frame or when every count is zero.
+    """
+    if df.empty or int(df[count_col].sum()) == 0:
+        return ""
+    widest = int(df[count_col].max()) or 1
+    rows = [
+        BarRow(label=str(label), width_pct=int(count) / widest * 100, color=color, value_text=str(int(count)))
+        for label, count in zip(df[label_col], df[count_col], strict=True)
+    ]
+    return f'<div class="hist-list">{bar_rows_html(rows)}</div>'
+
+
 def rating_histogram_html(hist_df: pd.DataFrame) -> str:
     """The half-star rating distribution, grouped under the tier-ladder headers.
 

@@ -19,22 +19,30 @@ below holds regardless of which pipeline ingested a row.
 
 | # | Producer | What it fills | Fails to |
 |---|----------|---------------|----------|
-| 1 | **Letterboxd** — HTML scrape via `letterboxdpy`'s `Movie(slug)` | 17 columns: identifiers, core info, media, themes — **plus `genres` while the `genres` group is off, and `studio`/`country`/`language` while `territories` is off (both default)** | The whole row (`_fetch_movie` returns `None`, the film is skipped) |
-| 2 | **TMDB** — 2 REST calls on one shared `httpx.AsyncClient` | 7 columns: `french_title`, `cast`, the 4 crew columns, `trailer_url` — **plus the 5 territory columns under the `territories` group and `genres`/`keywords` under `genres`** | `None` per column — never raises into the batch |
+| 1 | **Letterboxd** — HTML scrape via `letterboxdpy`'s `Movie(slug)` | 17 columns: identifiers, core info, media, themes | The whole row (`_fetch_movie` returns `None`, the film is skipped) |
+| 2 | **TMDB** — 2 REST calls on one shared `httpx.AsyncClient` | 14 columns: `french_title`, `cast`, the 4 crew columns, `trailer_url`, the 5 territory columns, `genres`, `keywords` | `None` per column — never raises into the batch |
 | 3 | **This pipeline** — computed locally, no network | 3 columns: `slug`, `integration_date`, `source` | n/a |
 
 A TMDB failure degrades columns; a Letterboxd failure drops the film. That asymmetry is deliberate: without
-Letterboxd there is no slug, no title and no cache row to attach anything to. The flip side is that TMDB now
-owns 7 of the 34 columns today, 12 with the `territories` group enabled and 14 with both — at which point
-four of the taste ranker's dimensions depend on it rather than one. `main.py` warns at startup, and says which.
+Letterboxd there is no slug, no title and no cache row to attach anything to. **`TMDB_API_KEY` is required**
+(`Settings` fails fast at startup without it) precisely because TMDB now owns 14 of the 34 columns, including
+four of the taste ranker's dimensions (`directors`, `genres`, `country`, `language`) and the field that
+confirms `cinema_dashboard`'s watchlist↔showtimes join (`directors`).
+
+The territories (`studio`/`country`/`origin_country`/`language`/`original_language`) and taxonomy
+(`genres`/`keywords`) columns were migrated from Letterboxd to TMDB behind a `TMDB_COLUMN_GROUPS` flag,
+backfilled across the whole cache in one pass on 2026-08-15, and measured ranker-neutral (spearman +0.0001,
+quartile lift +0.0008 against the pre-migration cache on identical seeded splits — see the taste-ranker
+memory for the full before/after). The flag has since been removed: TMDB is now the columns' only producer,
+unconditionally, with no Letterboxd fallback and no setting to revert to one.
 
 ## Column map
 
-34 columns, all required by the contract. Nothing is dynamic any more: `studio`/`country`/`language` are
-seeded on every row rather than expanded from whatever detail types a page happens to carry, and
-`origin_country`/`original_language`/`keywords` are seeded beside them, so the contract enforces all 34
-regardless of which producer is filling the territory five or the taxonomy two. Coverage is the share of non-null rows measured against the
-real cache.
+34 columns, all required by the contract. `studio`/`country`/`language` are filtered out of Letterboxd's
+`**details_by_type` expansion (`_TMDB_OWNED_DETAIL_TYPES`) rather than read from it, and every TMDB-sourced
+column is seeded `None` in `_fetch_movie`'s return dict so the key exists even before `_fetch_all` fills it —
+that is what lets the contract require all 34 unconditionally. Coverage is the share of non-null rows
+measured against the real cache (6,763 rows, post-backfill).
 
 ### Identifiers
 
@@ -45,11 +53,15 @@ real cache.
 | `letterboxd_url` | Letterboxd | The profile page's **post-redirect** canonical URL | 100% |
 | `imdb_id` | Letterboxd | `a[data-track-action="IMDb"]` href, `tt\d+` | 99.8% |
 | `imdb_url` | Letterboxd | `a[data-track-action="IMDb"]` href | 99.8% |
-| `tmdb_id` | Letterboxd | `a[data-track-action="TMDB"]` href, `movie/(\d+)` | 100.0% (3 rows null) |
+| `tmdb_id` | Letterboxd | `a[data-track-action="TMDB"]` href, `movie/(\d+)` | 100.0% (2 rows null) |
 | `tmdb_url` | Letterboxd | `a[data-track-action="TMDB"]` href | 100% |
 
 `tmdb_id` is scraped from **Letterboxd**, not fetched from TMDB — it is the key that unlocks producer 2, so
-the 3 rows without one get all 7 TMDB columns as null regardless of `TMDB_API_KEY`.
+the 2 rows without one get all 14 TMDB columns as null regardless of `TMDB_API_KEY`. Both are films TMDB
+catalogues under `/tv/` rather than `/movie/` (`histoires-du-cinema-1989`, `the-sorrow-and-the-pity-1969`
+— Letterboxd's `movie/(\d+)` regex never matches a `/tv/` link), so they keep their native Letterboxd
+`studio`/`country`/`language`/`genres` values indefinitely: `DataFrame.update()` in `refresh_letterboxd_data`
+only writes non-null values, and with no `tmdb_id` these two rows will never get one.
 
 ### Core information
 
@@ -86,34 +98,30 @@ language-rankable (fr → en → any, `_TRAILER_LANGUAGE_PRIORITY`).
 
 ### Genres & themes
 
-The three Letterboxd columns are one element, split on the link's URL path segment (`type`):
+`themes`/`mini_themes` are Letterboxd's, one element split on the link's URL path segment (`type`).
+`genres` and `keywords` are both TMDB's — `genres` a plain field of the base movie payload, `keywords` an
+appended block — read off the same `GET /movie/{tmdb_id}?append_to_response=credits,videos,keywords`
+round-trip `_fetch_bundle` already makes for the cast/crew columns, so neither costs an extra request:
 
 | Column | Source | Upstream origin | Coverage |
 |---|---|---|---|
-| `genres` | Letterboxd *or* TMDB (see below) | `div#tab-panel-genres` links where `type == "genre"` | 99.8% |
-| `themes` | Letterboxd | same block, `type == "theme"` | 68.7% |
+| `genres` | **TMDB** | base payload `genres[].name` | 99.8% |
+| `themes` | Letterboxd | `div#tab-panel-genres` links, `type == "theme"` | 68.7% |
 | `mini_themes` | Letterboxd | same block, `type == "mini-theme"` | 69.5% |
-| `keywords` | TMDB, `genres` group only | `keywords.keywords[].name` | 90.9% (null until migrated) |
+| `keywords` | **TMDB** | appended `keywords.keywords[].name` | 90.9% |
 
-**`genres` is mid-migration, and the `genres` group of `TMDB_COLUMN_GROUPS` picks the producer.** Same shape
-as the territory migration: both paths stay wired up, both write the column, so the schema never depends on
-the setting.
+> **Letterboxd's genre list *was* TMDB's genre list, which is why swapping the producer barely moved
+> anything.** Measured across all 6,761 cached films with a `tmdb_id` before the swap (Aug 2026, 100% fetch
+> success): the two vocabularies were **the same 19 terms**, with none unique to either side; per film the
+> sets matched **exactly on 98.18%**, mean Jaccard **0.9934**, and **not one film was disjoint**. The
+> one-pass backfill (2026-08-15) confirmed it live: of 6,761 films refetched, 126 (1.86%) had a real set
+> change, 3,491 were pure reordering (the string differs, the term set doesn't — invisible to the taste
+> ranker, which splits on commas and averages), and the rest were already identical. `genres` therefore has
+> **no vocabulary-split hazard** the way `territories` did — there was never a `USA` → `United States of
+> America`-shaped rename here.
 
-> **Letterboxd's genre list *is* TMDB's genre list.** Measured across all 6,761 cached films with a
-> `tmdb_id` (Aug 2026, 100% fetch success): the two vocabularies are **the same 19 terms**, with none unique
-> to either side; per film the sets match **exactly on 98.18%**, mean Jaccard **0.9934**, and **not one film
-> is disjoint**. Letterboxd evidently re-serves TMDB's genres. Two consequences, both load-bearing:
->
-> - **The swap is near-free and near-pointless on its own.** It rewrites ~1.8% of films by one term
->   (the whole disagreement list is 4 single-film swaps like `Fantasy` → `Horror`), so it will not move the
->   taste ranker's `genres` dimension. `keywords` is the reason this group exists.
-> - **`genres` has no vocabulary-split hazard**, unlike `territories`. There is no `USA` →
->   `United States of America` here, so a half-migrated cache does *not* split an affinity key. The backfill
->   is still worth doing for `keywords` (null until a row is refetched), but for `genres` alone it is
->   optional — this is the one migration in this file where mixing producers is harmless.
-
-`keywords` is TMDB's open, crowd-maintained tag space — **14,780 distinct terms** across the cache,
-**10.42 per film**, and it is emphatically **not** a replacement for `themes`/`mini_themes`:
+`keywords` is TMDB's open, crowd-maintained tag space — **14,780 distinct terms** across the pre-migration
+sample, **10.42 per film**, and it is emphatically **not** a replacement for `themes`/`mini_themes`:
 
 | | `keywords` (TMDB) | `themes` + `mini_themes` (Letterboxd) |
 |---|---|---|
@@ -152,34 +160,27 @@ All five are comma-joined, deduped (TMDB lists a person once *per job*), and `No
 `tmdb_id` or `TMDB_API_KEY` is unset.
 
 > ⚠️ `directors` is the taste ranker's highest-weighted dimension **and** what confirms `cinema_dashboard`'s
-> watchlist↔showtimes join. It moved off Letterboxd onto TMDB, so running without `TMDB_API_KEY` now leaves
-> it null and degrades both. Enabling `territories` adds `country` and `language` to that exposure and
-> `genres` adds a fourth, `genres` itself. `main.py` warns at startup and says which case applies.
+> watchlist↔showtimes join. `TMDB_API_KEY` is required precisely because a missing key would leave it null
+> and degrade both — along with `genres`, `country` and `language`, three more ranker dimensions that are
+> also TMDB's now. `Settings` fails fast at startup rather than letting the pipeline run degraded.
 
-### Territories & provenance — two producers, selected by group
+### Territories & provenance — all TMDB
 
-**These five columns are mid-migration, and the `territories` group of `TMDB_COLUMN_GROUPS` picks the producer.**
-Both paths stay wired up and both write all five columns, so **the parquet schema does not depend on the
-flag** — only the values do. That is the whole point: the schema can land, and the contract can require it,
-before a single value moves.
+All five columns are TMDB's, read off the same base movie payload
+`GET /movie/{tmdb_id}?append_to_response=credits,videos,keywords` already returns for the cast/crew
+columns — **zero extra cost**, no second call, no extra append:
 
-| Column | `territories` off (default) | `territories` on |
+| Column | Upstream origin | Coverage |
 |---|---|---|
-| `studio` | Letterboxd, `type == "studio"` (98.9%) | `production_companies[].name` (~99%) |
-| `country` | Letterboxd, `type == "country"` (99.7%) | `production_countries[].name`, ~1.47/film (~100%) |
-| `origin_country` | **null placeholder** | `origin_country` — bare ISO 3166-1 codes, ~1.14/film (100%) |
-| `language` | Letterboxd, `type == "language"` (100%) | `spoken_languages[].english_name` (~100%) |
-| `original_language` | **null placeholder** | `original_language` — one ISO 639-1 code (100%) |
+| `studio` | `production_companies[].name` | 98.9% |
+| `country` | `production_countries[].name`, ~1.47/film | 99.7% |
+| `origin_country` | `origin_country` — bare ISO 3166-1 codes, ~1.14/film | 99.8% |
+| `language` | `spoken_languages[].english_name` | 100% |
+| `original_language` | `original_language` — one ISO 639-1 code | 100% |
 
-Under the default, `_fetch_movie` seeds all five as `None` and Letterboxd's `**details_by_type` expansion
-then overwrites the first three; `origin_country`/`original_language` have no Letterboxd equivalent and stay
-null. **A null in those two is "not migrated yet", not "TMDB had nothing"** — they are the one place in this
-file where a null carries no information about the film.
-
-With the group on, the three Letterboxd detail types are filtered out (`_TMDB_OWNED_DETAIL_TYPES`) so the
-seeds survive, and `_parse_territories` fills all five from the base movie payload
-`GET /movie/{tmdb_id}?append_to_response=credits,videos,keywords` already returns — **zero extra cost**, no
-second call, no extra append.
+`_fetch_movie` seeds all five `None` and the three Letterboxd detail types they used to come from
+(`studio`/`country`/`language`) are filtered out of `**details_by_type` (`_TMDB_OWNED_DETAIL_TYPES`) so the
+seeds always survive to be filled from TMDB — there is no Letterboxd fallback path left in the code.
 
 > ⚠️ **`country` and `origin_country` are different fields, not two spellings of one.**
 > `production_countries` is the full co-production territory list; `origin_country` is the nationality of the
@@ -195,24 +196,43 @@ stored as codes — don't "fix" that with a lookup table without first deciding 
 `spoken_languages` is read via `english_name`, not `name`: `name` is the endonym (`Français`, `日本語`), while
 the cache has always carried the English form and the affinity keys depend on it.
 
-#### What flipping the flag changes, measured live on 120 real films
+#### What the migration changed, measured on the real 6,761-film backfill (2026-08-15)
 
-- **Names change, and that is what makes it one-way in practice.** Raw exact agreement between TMDB's values
-  and the cached Letterboxd ones is only 46.7% for `country` and 91.7% for `language` — almost entirely
-  `USA` → `United States of America`, `UK` → `United Kingdom`, `Chinese` → `Mandarin` (semantic: Letterboxd
-  collapses Mandarin into "Chinese" while keeping Cantonese separate). Normalised for those aliases the two
-  sources agree 99.5%/99.7%. TMDB names are used verbatim, with no alias table, so **flip the flag and then
-  backfill every row in one pass** — a cache half-written under each setting splits `USA` and
-  `United States of America` into two taste-affinity buckets. The flag is cheap to flip *back* (nothing
-  gains or loses a column); it is the *values* that don't want to be mixed.
-- **The language-duplication quirk goes away.** Letterboxd lists Primary Language *and* Spoken Languages
-  under the same URL path, so both collapse into one un-deduped column: 40 of 120 sampled rows repeat a value
-  (*Frankenstein* → `"English, Danish, English, French"`). TMDB's `spoken_languages` is a proper list —
-  0 of 120 duplicated.
-- **`origin_country` and `original_language` stop being placeholders.** `original_language` was previously
-  only recoverable as "first entry of `language`", 98.5% reliably; `origin_country` had no equivalent at all.
-- **`studio` barely moves** (95.0% exact, 0.979 jaccard); the residual is TMDB's catalogue being fresher
+Numbers below count films the backfill actually refetched; `new` means the cache had no value at all,
+`set_diff` means the term set changed (a real content change), `reorder` means the string changed but the
+term set didn't (invisible to the ranker), `kept_lb` means TMDB returned nothing and the old Letterboxd
+value survived (the pre-seed loop's `update()` never blanks a value with a null).
+
+| column | new | set_diff | reorder | kept_lb |
+|---|---|---|---|---|
+| `studio` | 1 | 372 | 2 | 0 |
+| `country` | 0 | 4,109 | 3 | 1 |
+| `origin_country` | 6,749 | 0 | 0 | 0 |
+| `language` | 0 | 588 | 1,879 | 27 |
+| `original_language` | 6,761 | 0 | 0 | 0 |
+
+- **`country`'s 4,109 set_diff is almost entirely a rename, not new information.** Raw exact string
+  agreement between TMDB's values and the pre-migration Letterboxd ones was measured at 46.7% before the
+  backfill, almost entirely `USA` → `United States of America`, `UK` → `United Kingdom`, `Chinese` →
+  `Mandarin` (semantic: Letterboxd collapsed Mandarin into "Chinese" while keeping Cantonese separate).
+  Post-backfill the cache carries **zero** occurrences of `USA` and 3,544 of `United States of America` —
+  the rename converged in the single pass, which is why it had to be one pass: a half-migrated cache would
+  have split `USA` and `United States of America` into two taste-affinity buckets, and age alone would not
+  have fixed it (`find_stale_slugs` takes a full `LETTERBOXD_DAYS_TO_UPDATE` cycle to touch every row).
+- **`language`'s 1,879 reorder is the old duplication quirk being fixed, not new content.** Letterboxd
+  listed Primary Language *and* Spoken Languages under the same URL path, so both collapsed into one
+  un-deduped column (*Frankenstein* → `"English, Danish, English, French"`, ~32% of sampled rows repeated a
+  value). TMDB's `spoken_languages` is a proper list — the string changed, the term set usually didn't.
+- **`origin_country`/`original_language` went from placeholder to populated on effectively every row**
+  (6,749 and 6,761 of 6,761 respectively) — neither had a Letterboxd equivalent before.
+- **`studio` barely moved** (372 set_diff of 6,761, ~5.5%); the residual is TMDB's catalogue being fresher
   (`One Cool Pictures` → `One Cool Films`, legal-suffix stripping).
+- **29 rows total kept a Letterboxd value** (`kept_lb` summed) where TMDB had nothing on record — these are
+  the only rows still carrying pre-migration values for a populated field, and they will only move if TMDB
+  later gains a record and the row is refetched.
+- **Ranker-neutral, as designed**: spearman 0.6735 → 0.6736, quartile lift 2.0212 → 2.0220 on identical
+  seeded splits, with an unchanged quality-only baseline (0.6012 / 1.8237) proving both runs saw the same
+  ratings. The migration moved vocabulary, not signal.
 
 ### Provenance / bookkeeping
 
@@ -229,25 +249,24 @@ Current split: 4,123 `ratings` / 2,283 `watchlist` / 353 `allocine_showtimes`.
 slug (from user lists, or resolved from an Allocine tuple)
   │
   ├─ asyncio.to_thread → _fetch_movie(slug)          [Letterboxd, blocking scrape]
-  │     └─ 17 columns (+ studio/country/language unless the territory flag is on)
-  │        + the 12 TMDB-fillable columns seeded as None
+  │     └─ 17 columns (identifiers, core info, media, themes)
+  │        + the 14 TMDB-fillable columns seeded as None
   │        (studio/country/language detail types dropped — see _TMDB_OWNED_DETAIL_TYPES)
   │
   └─ nested TaskGroup on one shared httpx.AsyncClient  [TMDB, 2 concurrent calls]
         ├─ _fetch_french_title  → french_title            [?language=fr-FR]
         └─ _fetch_bundle        → cast, directors, producers, writers, composers,
-                                  trailer_url,     [?append_to_response=credits,videos,keywords]
-                                  studio, country, origin_country,
+                                  trailer_url, genres, keywords,
+                                  studio, country, origin_country,     [?append_to_response=credits,videos,keywords]
                                   language, original_language
   │
   └─ integration_date stamped → concat into cache → source assigned → single validated write
 ```
 
-`_fetch_movie` seeds all twelve TMDB-fillable columns as `None` in its return dict before `_fetch_all`
-overwrites them (the territory five only when `territories` is on; otherwise Letterboxd's expansion
-supplies three of them and the other two stay null). That is what guarantees **column presence** even with no TMDB key at all — the columns exist and are
-null, rather than vanishing from the frame and failing contract validation. It is also what let the five
-territory columns join `required_columns`: presence is unconditional, values are not.
+`_fetch_movie` seeds all fourteen TMDB-fillable columns as `None` in its return dict; `_fetch_all`
+unconditionally overwrites all fourteen from the bundle it fetches. That is what guarantees **column
+presence** even with no TMDB key at all — the columns exist and are null, rather than vanishing from the
+frame and failing contract validation.
 
 > ⚠️ **The seeding only holds because the three TMDB-owned detail types are filtered out of
 > `**details_by_type`.** That expansion is the *last* entry in `_fetch_movie`'s dict literal, so a surviving
@@ -288,12 +307,13 @@ every column above is refetched, not just the stale one. **Age is the only trigg
   `Les bons gars`, `Un homme sérieux`, `Room: le monde de Jack`. Since `french_title` exists to match
   Allocine's display titles, the release title is the correct semantics — don't "save a request" by
   switching to `translations`.
-- **Enabling a group mixes two vocabularies in one cache, and age will not fix it.** Rows
-  rewritten after the flip read `United States of America` while everything else still reads `USA`, and the
-  taste ranker treats those as two unrelated affinity keys. `find_stale_slugs` would take a full
-  `LETTERBOXD_DAYS_TO_UPDATE` cycle to converge, so this is the one migration here that is not self-healing:
-  flip the flag and run the one-pass backfill in the same sitting. Flipping *back* is safe at any time — no
-  column appears or disappears — but leaving the cache half-written under each setting is not.
+- **The territories+genres migration was a one-pass backfill for exactly this reason.** A `TMDB_COLUMN_GROUPS`
+  flag drove it while it was in flight: enabling a group without an immediate backfill would have meant rows
+  rewritten after the flip reading `United States of America` while everything else still read `USA`, and
+  the taste ranker treating those as two unrelated affinity keys — `find_stale_slugs` would have taken a
+  full `LETTERBOXD_DAYS_TO_UPDATE` cycle to converge on its own. The backfill ran on 2026-08-15 in one pass
+  across all 6,761 films with a `tmdb_id`; the flag has since been removed (TMDB is now the unconditional
+  producer). This note is historical — there is no longer a setting that can half-migrate the cache.
 - **`origin_country` and `original_language` exist on no row cached before the move, and it is `main.py`'s
   own *write* that this breaks — not any read.** Nothing reads this parquet against the contract: the
   dashboard's `cinema_dashboard/sources/loader.py` uses a plain `pd.read_parquet`, so a cache missing the two
@@ -309,10 +329,9 @@ every column above is refetched, not just the stale one. **Age is the only trigg
   Letterboxd and drops any whose page has since gone.
   `get_letterboxd_data` therefore seeds `_SCHEMA_MIGRATION_COLUMNS` (null) onto the loaded cache, which is
   what makes the schema converge on *any* run rather than only a busy one — a migration step with an
-  expiry, not a permanent guard: drop an entry once no cache in use predates it. Values are untouched, so a
-  populated column is never clobbered.
-  All of this is **independent of `TMDB_COLUMN_GROUPS`**: the setting decides what the columns *contain*,
-  never whether they exist.
+  expiry, not a permanent guard: drop an entry once no cache in use predates it (i.e. once every checkout's
+  cache postdates 2026-08-15). Values are untouched, so a populated column is never clobbered. This applies
+  to any cache built by an older version of this pipeline, independent of the now-removed flag.
 - **`slug` is the requested slug, not the canonical one.** `_fetch_movie` stores its own argument, while
   `letterboxd_url` is the page's post-redirect URL. So an alias slug produces a row whose `slug` and
   `letterboxd_url` disagree.
@@ -365,6 +384,7 @@ above) or `--reset_database`. Rows also gain it on their own as they age past
 
 ---
 
-*Letterboxd-sourced coverage figures measured 2026-08-11 against the real cache (6,759 rows). The territory
-columns' figures were measured 2026-08-14 on a 120-film live TMDB sample, since no cached row carried them
-yet. They will drift; the sources above will not.*
+*Letterboxd-sourced coverage figures measured 2026-08-11 against the real cache (6,759 rows). The
+territories+genres migration ran as a one-pass backfill on 2026-08-15 across 6,761 films (6,763-row cache,
+2 skipped for having no `tmdb_id`); their coverage figures above reflect that backfilled cache. They will
+drift; the sources above will not.*

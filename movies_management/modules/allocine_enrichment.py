@@ -1,14 +1,15 @@
 """
 Allocine → Letterboxd cache enrichment.
 
-Resolves Allocine film tuples (title, original_title, director, release_year) to
-Letterboxd slugs and expands data_letterboxd.parquet to cover every film in a
-showtimes parquet, not only the user's watchlist and ratings.
+Resolves Allocine film tuples (title, original_title, director, release_year,
+runtime) to Letterboxd slugs and expands data_letterboxd.parquet to cover every
+film in a showtimes parquet, not only the user's watchlist and ratings.
 """
 
 import asyncio
 import logging
 import os
+import re
 import unicodedata
 
 import pandas as pd
@@ -21,6 +22,28 @@ from modules.config import TmdbColumnGroup
 from modules.get_letterboxd_data import get_letterboxd_data
 
 logger = logging.getLogger(__name__)
+
+#: How far Allocine's runtime may sit from the cache's before the runtime-proximity
+#: fallback (:func:`_match_by_runtime`) stops believing two rows are the same film.
+#: Calibrated on the real parquets (Aug 2026) over the 308 films tier 1 matches
+#: today: |Δ| is p50 1.0, p90 4.0, p95 8.0, p99 14.8, max 37.0 minutes, so ±10
+#: covers 97.7% of genuine matches.
+#:
+#: The tolerance is *not* what makes the fallback safe — uniqueness is. A sweep of
+#: the cache for same-title/overlapping-director pairs found 36, of which 30 sit
+#: within this tolerance of each other, including the three that are genuinely
+#: different films (``paranoia-1969``/``a-quiet-place-to-kill`` at 3 min,
+#: ``wild-and-woolfy``/``little-red-walking-hood`` at 1, ``who-killed-who``/
+#: ``thugs-with-dirty-mugs`` at 0). Tightening this number protects none of them;
+#: refusing to choose between two qualifying candidates does.
+RUNTIME_TOLERANCE_MINUTES = 10.0
+
+#: Allocine's ``runtime`` display string, e.g. ``"2h 48min"`` (the only shape in the
+#: real feed: all 107 distinct values match it, none null). Anchored end-to-end on
+#: purpose — a string this doesn't fully account for parses to ``None`` and simply
+#: skips tier 2, rather than silently yielding a wrong number of minutes (an
+#: unanchored ``(\d+)\s*h`` would read ``"2h12"`` as 120).
+_RUNTIME_RE = re.compile(r"^\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*min)?\s*$", re.IGNORECASE)
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=10), reraise=True)
@@ -190,6 +213,26 @@ def _normalize_title(raw: object) -> str:
     return " ".join(s.split())
 
 
+def _parse_runtime(raw: object) -> float | None:
+    """Minutes from Allocine's raw runtime string (``"2h 48min"``), or ``None``.
+
+    ``contracts.SHOWTIMES`` documents ``runtime`` as a raw display string, not
+    parsed minutes, and allows it to be null. Every non-string, empty or
+    unrecognised value therefore returns ``None`` rather than raising — the
+    callers treat that as "no runtime evidence", which just skips the fallback
+    tier and leaves the film unresolved exactly as it is today.
+    """
+    if not isinstance(raw, str):
+        return None
+    match = _RUNTIME_RE.match(raw)
+    if not match:
+        return None
+    hours, minutes = match.group(1), match.group(2)
+    if hours is None and minutes is None:
+        return None
+    return float((int(hours) * 60 if hours else 0) + (int(minutes) if minutes else 0))
+
+
 def _build_cache_index(cache_df: pd.DataFrame) -> dict[str, list[dict]]:
     """Index the existing cache by normalised title for cache-first matching.
 
@@ -210,9 +253,18 @@ def _build_cache_index(cache_df: pd.DataFrame) -> dict[str, list[dict]]:
             release_year = int(raw_year) if raw_year is not None else None
         except (TypeError, ValueError):
             release_year = None
+        # Cache `runtime` is float64 minutes; a NaN cell must become None, not nan —
+        # every arithmetic comparison against nan is False, which would read as
+        # "out of tolerance" rather than "no runtime to compare".
+        raw_runtime = getattr(row, "runtime", None)
+        try:
+            runtime = None if raw_runtime is None or pd.isna(raw_runtime) else float(raw_runtime)
+        except (TypeError, ValueError):
+            runtime = None
         entry = {
             "slug": slug,
             "release_year": release_year,
+            "runtime": runtime,
             "director_tokens": _split_director_tokens(getattr(row, "directors", None), ", "),
         }
         for col in ("title", "french_title", "original_title"):
@@ -222,14 +274,103 @@ def _build_cache_index(cache_df: pd.DataFrame) -> dict[str, list[dict]]:
     return index
 
 
+def _confirmed_candidates(film: dict, index: dict[str, list[dict]], allocine_tokens: list[frozenset[str]]) -> list[dict]:
+    """Cache entries sharing a normalised title with ``film`` and a confirmed director.
+
+    Deduped by slug and ordered ``title`` before ``original_title``, because
+    :func:`_build_cache_index` files one entry under every title spelling the row
+    carries: a cache row whose ``title`` and ``original_title`` both normalise to
+    the Allocine title would otherwise be counted twice, and
+    :func:`_match_by_runtime` would refuse it as "ambiguous" against itself.
+    """
+    confirmed: dict[str, dict] = {}
+    for title in (film["title"], film["original_title"]):
+        norm = _normalize_title(title)
+        if not norm:
+            continue
+        for candidate in index.get(norm, []):
+            if candidate["slug"] in confirmed:
+                continue
+            if _directors_overlap(allocine_tokens, candidate["director_tokens"]):
+                confirmed[candidate["slug"]] = candidate
+    return list(confirmed.values())
+
+
+def _match_by_runtime(film: dict, candidates: list[dict]) -> str | None:
+    """Pick the single candidate whose runtime is within tolerance of Allocine's.
+
+    The fallback tier, reached only when no candidate's ``release_year`` matched
+    exactly. Allocine sometimes carries a film's *production* year where
+    Letterboxd carries its *release* year (Bergman's *Scenes from a Marriage*:
+    Allocine 1973, cache 1974), and the resulting miss is worse than a bare
+    non-match — the film falls through to :func:`_search_letterboxd_slug`, whose
+    identical hard year filter then resolves the *other* Letterboxd entry for the
+    same film (``scenes-from-a-marriage-1973-1``, the 281-minute TV cut, which
+    TMDB catalogues under ``/tv/`` and so carries no ``tmdb_id`` and no TMDB
+    columns at all).
+
+    **Exactly one qualifying candidate, or nothing.** Two or more means the title
+    and director alone don't identify the film and only the year ever did, so
+    guessing would attach a wrong film's metadata silently and permanently — the
+    same call ``chat.pins.resolve_pin`` makes in ``cinema_dashboard``, where an
+    unlinked pin beats a wrong one. See :data:`RUNTIME_TOLERANCE_MINUTES` for why
+    the guard is uniqueness rather than a tighter tolerance.
+    """
+    allocine_runtime = _parse_runtime(film.get("runtime"))
+    if allocine_runtime is None:
+        return None
+
+    close = [
+        candidate
+        for candidate in candidates
+        if candidate["runtime"] is not None and abs(candidate["runtime"] - allocine_runtime) <= RUNTIME_TOLERANCE_MINUTES
+    ]
+    if len(close) != 1:
+        if close:
+            logger.debug(
+                "    runtime fallback declined for %r: %d candidates within %g min (%s)",
+                film["title"],
+                len(close),
+                RUNTIME_TOLERANCE_MINUTES,
+                [c["slug"] for c in close],
+            )
+        return None
+
+    match = close[0]
+    logger.debug(
+        "    runtime fallback matched %r → %s (cache year %s ≠ allocine %s, Δruntime %g min)",
+        film["title"],
+        match["slug"],
+        match["release_year"],
+        film["release_year"],
+        abs(match["runtime"] - allocine_runtime),
+    )
+    return match["slug"]
+
+
 def _match_cache(film: dict, index: dict[str, list[dict]]) -> str | None:
     """Resolve a film directly against the cache index, confirmed by director overlap.
+
+    Two tiers, both requiring a normalised title hit and director-token overlap:
+
+    1. **Exact ``release_year``** — handles ~99% of traffic (308 of 351 films in
+       the real feed) and is what keeps every same-title/overlapping-director
+       collision in the cache separated.
+    2. **Runtime proximity** (:func:`_match_by_runtime`), only when tier 1 found
+       nothing and only when exactly one candidate qualifies.
+
+    The order matters and is not interchangeable: runtime cannot separate 30 of
+    the 36 colliding pairs in the cache, so it must never be consulted while a
+    year still can.
 
     Rejects a match with no parseable ``release_year`` or no director tokens on
     either side — the same precision-first rule :func:`_search_letterboxd_slug`
     applies to a live search, needed here too so a recurring French title
     (e.g. ``"Le Retour"``, two unrelated films from 2003 and 2023) can't
-    attach to the wrong cache row.
+    attach to the wrong cache row. Note that a *missing* year still rejects
+    outright rather than falling through to tier 2: the fallback exists for the
+    measured case where the two sources disagree about a year, not for films that
+    carry none, which nothing here has ever matched.
     """
     try:
         year = int(film["release_year"])
@@ -239,14 +380,11 @@ def _match_cache(film: dict, index: dict[str, list[dict]]) -> str | None:
     if not allocine_tokens:
         return None
 
-    for title in (film["title"], film["original_title"]):
-        norm = _normalize_title(title)
-        if not norm:
-            continue
-        for candidate in index.get(norm, []):
-            if candidate["release_year"] == year and _directors_overlap(allocine_tokens, candidate["director_tokens"]):
-                return candidate["slug"]
-    return None
+    candidates = _confirmed_candidates(film, index, allocine_tokens)
+    for candidate in candidates:
+        if candidate["release_year"] == year:
+            return candidate["slug"]
+    return _match_by_runtime(film, candidates)
 
 
 def enrich_cache_from_showtimes(
@@ -259,11 +397,12 @@ def enrich_cache_from_showtimes(
 ) -> None:
     """Expand the Letterboxd metadata cache with films found in a showtimes parquet.
 
-    Reads unique (movie, original_title, director, release_year) tuples from
-    ``showtimes_path``. Each tuple is first matched directly against
-    ``cache_path`` (title + release_year, confirmed by director token overlap
-    — see :func:`_match_cache`); only films that don't already have a cache
-    row are resolved via a live Letterboxd search. New slugs get full
+    Reads unique (movie, original_title, director, release_year, runtime) tuples
+    from ``showtimes_path``. Each tuple is first matched directly against
+    ``cache_path`` (title + release_year, confirmed by director token overlap,
+    falling back to a uniquely-close runtime when the two sources disagree about
+    the year — see :func:`_match_cache`); only films that don't already have a
+    cache row are resolved via a live Letterboxd search. New slugs get full
     metadata via ``get_letterboxd_data``, stamped with
     ``source="allocine_showtimes"``, and persisted to ``cache_path``; tuples
     that still can't be resolved are written to ``unresolved_path`` for
@@ -278,8 +417,12 @@ def enrich_cache_from_showtimes(
     logger.info("Enriching Letterboxd cache from showtimes: %s", showtimes_path)
     showtimes_df = read_parquet_validated(showtimes_path, required_columns=SHOWTIMES.required_columns, label="showtimes")
 
-    # One row per distinct film — not per showtime slot
-    key_cols = [c for c in ("movie", "original_title", "director", "release_year") if c in showtimes_df.columns]
+    # One row per distinct film — not per showtime slot. `runtime` rides along for
+    # _match_cache's fallback tier without changing that grain: it is a property of
+    # the film, not the screening, so the real feed yields the same 351 unique films
+    # with or without it. The unresolved parquet below still writes only the 4-tuple
+    # its consumer (cinema_dashboard's build_unresolved_showtimes) joins back on.
+    key_cols = [c for c in ("movie", "original_title", "director", "release_year", "runtime") if c in showtimes_df.columns]
     unique_films = showtimes_df[key_cols].drop_duplicates().reset_index(drop=True)
     logger.info("Unique films in showtimes: %d", len(unique_films))
 
@@ -309,6 +452,9 @@ def enrich_cache_from_showtimes(
                 "original_title": str(row.get("original_title") or "").strip() or None,
                 "director": str(row.get("director") or "").strip() or None,
                 "release_year": row.get("release_year"),
+                # Raw Allocine display string ("2h 48min"); _parse_runtime handles the
+                # contract's nullability, so no cleanup here.
+                "runtime": row.get("runtime"),
             }
         )
 

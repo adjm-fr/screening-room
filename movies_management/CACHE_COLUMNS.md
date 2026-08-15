@@ -66,6 +66,13 @@ the 3 rows without one get all 7 TMDB columns as null regardless of `TMDB_API_KE
 
 `original_title`'s 33% is **not** missing data — a null means "same as `title`".
 
+> ⚠️ `runtime` is no longer display-only: it is the tie-breaker in
+> `allocine_enrichment._match_cache`'s fallback tier, which resolves a showtimes tuple to a cached film when
+> Allocine and Letterboxd disagree about the release year (Allocine sometimes carries the *production*
+> year). That match compares it against Allocine's raw `"2h 48min"` string parsed to minutes, with a ±10
+> minute tolerance, so changing this column's **units or type** would silently stop films matching rather
+> than raise. See [`README.md`](README.md#matching-a-showtimes-tuple-to-a-cached-film).
+
 ### Media
 
 | Column | Source | Upstream origin | Coverage |

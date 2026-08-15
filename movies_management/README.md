@@ -115,12 +115,51 @@ This mode can be run standalone (no `--username` needed) or combined with `--use
 
 1. Reads the showtimes parquet via `common.read_parquet_validated` against `contracts.SHOWTIMES` (the
    same contract `cinema_dashboard/sources/loader.py` enforces on its side of this file), then takes all
-   unique `(title, original_title, director, release_year)` tuples from it
-2. Resolves each to a Letterboxd slug via Letterboxd search (with year + director post-filtering); films that don't resolve are dropped from downstream processing
-3. Fetches and appends metadata for new slugs to `data_letterboxd.parquet` (idempotent — already-cached slugs are skipped)
-4. Writes tuples that could not be resolved to `{OUTPUT_PATH}/unresolved_allocine.parquet` for visibility
+   unique `(title, original_title, director, release_year, runtime)` tuples from it
+2. Matches each tuple against the films already in `data_letterboxd.parquet` before spending a live
+   search on it — see [Matching a showtimes tuple to a cached film](#matching-a-showtimes-tuple-to-a-cached-film)
+3. Resolves whatever the cache didn't already cover to a Letterboxd slug via Letterboxd search (with year + director post-filtering); films that don't resolve are dropped from downstream processing
+4. Fetches and appends metadata for new slugs to `data_letterboxd.parquet` (idempotent — already-cached slugs are skipped)
+5. Writes tuples that could not be resolved to `{OUTPUT_PATH}/unresolved_allocine.parquet` for visibility
 
 `cinema_dashboard`'s `orchestrate.py` calls this automatically after each Allocine scrape.
+
+#### Matching a showtimes tuple to a cached film
+
+`_match_cache` resolves a showtimes tuple against the cache in **two tiers**, both requiring a normalised
+title hit *and* director-token overlap (containment, not equality — see `_director_tokens`):
+
+| | Tier 1 | Tier 2 (fallback) |
+|---|---|---|
+| Extra condition | `release_year` matches exactly | `\|Δruntime\| ≤ 10 min` **and exactly one** candidate qualifies |
+| When it runs | always | only when tier 1 matched nothing |
+| Real feed (Aug 2026) | 308 of 351 films | +4 more |
+
+Tier 2 exists because **Allocine sometimes carries a film's production year where Letterboxd carries its
+release year**, and the resulting miss is worse than a plain non-match: the film falls through to the live
+Letterboxd search, whose year filter is just as strict, and resolves a *different* entry for the same film.
+Bergman's *Scènes de la vie conjugale* is the worked example — Allocine says 1973, the cache row
+`scenes-from-a-marriage` says 1974, and the live search lands on `scenes-from-a-marriage-1973-1`, the
+281-minute TV cut that TMDB catalogues under `/tv/` and which therefore has no `tmdb_id` and no TMDB columns
+at all. All four films tier 2 currently rescues are off-by-one years with a runtime delta of ≤1 minute.
+
+> ⚠️ **The tolerance is not the safety mechanism — uniqueness is.** Two or more candidates within tolerance
+> means title and director alone don't identify the film and only the year ever did, so `_match_cache`
+> returns `None` and leaves it unresolved rather than guessing. A sweep of the cache found 36
+> same-title/overlapping-director pairs, **30 of which runtime cannot separate at all** (most are duplicate
+> Letterboxd entries for one film, but three are genuinely different films: `paranoia-1969` vs
+> `a-quiet-place-to-kill`, and two pairs of Tex Avery shorts sharing a French title). They sit 0–3 minutes
+> apart, so a *tighter* tolerance would protect none of them. This is the same call
+> `cinema_dashboard`'s `chat.pins.resolve_pin` makes — an unlinked pin beats a wrong one.
+>
+> That is also why the year check is a separate first tier rather than being replaced by runtime, and why a
+> tuple with **no** parseable year still rejects outright instead of falling through: the fallback is for a
+> measured *disagreement* between the two sources, not for films carrying no year at all.
+
+A null or unrecognised `runtime` (the `SHOWTIMES` contract allows one; the real feed has none) simply skips
+tier 2 rather than raising. `runtime` rides in the tuple purely for this match — it is a property of the
+film, not of the screening, so it doesn't change the one-row-per-film grain, and
+`unresolved_allocine.parquet` still carries only the original four columns.
 
 ## Output
 

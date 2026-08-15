@@ -99,28 +99,12 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
     output_path = settings.output_path
     days_to_update = settings.letterboxd_days_to_update
     refresh_limit = settings.letterboxd_refresh_limit
+    # Required on Settings, so a missing key already failed at import time (see
+    # `settings = Settings()` above) rather than degrading columns silently — TMDB is
+    # the sole producer of french_title/cast/the crew columns/trailer_url and, since the
+    # territories+genres migration completed (Aug 2026), of studio/country/
+    # origin_country/language/original_language/genres/keywords too.
     tmdb_api_key = settings.tmdb_api_key.get_secret_value()
-    tmdb_groups = settings.tmdb_column_groups
-    # Logged every run, and logged as the *whole* setting rather than one line per group:
-    # which groups were on is the thing that has to be recorded beside a backtest number,
-    # since the cache a run produces is only interpretable against it.
-    logger.info(
-        "TMDB column groups enabled: %s (everything else keeps Letterboxd as its producer)",
-        ", ".join(sorted(tmdb_groups)) or "none",
-    )
-    if not tmdb_api_key:
-        logger.warning(
-            "TMDB_API_KEY is not set — french_title, cast, the crew columns "
-            "(directors/producers/writers/composers) and trailer_url will all be null. `directors` is "
-            "the taste ranker's highest-weighted dimension and confirms the "
-            "watchlist<->showtimes join, so the dashboard degrades badly without it.%s",
-            (
-                f" TMDB_COLUMN_GROUPS={','.join(sorted(tmdb_groups))} is also set, so those groups' "
-                "columns go null too rather than falling back to Letterboxd."
-                if tmdb_groups
-                else ""
-            ),
-        )
 
     letterboxd_data_output_path = output_path / "data_letterboxd.parquet"
 
@@ -169,7 +153,6 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
             all_movies_df["slug"].tolist(),
             letterboxd_data_output_path,
             tmdb_api_key,
-            tmdb_groups=tmdb_groups,
         )
 
         logger.info("Cache size: %s", data_letterboxd_df.shape)
@@ -205,7 +188,6 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
                 data_letterboxd_df,
                 list(slugs_to_refresh),
                 tmdb_api_key,
-                tmdb_groups=tmdb_groups,
             )
 
         # === ASSIGN PROVENANCE & PERSIST CACHE ===
@@ -289,7 +271,6 @@ def movies_management(username: str | None, reset_database: bool, enrich_from_al
             letterboxd_data_output_path,
             unresolved_path,
             tmdb_api_key,
-            tmdb_groups=tmdb_groups,
         )
 
 

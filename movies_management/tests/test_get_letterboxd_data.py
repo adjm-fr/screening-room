@@ -13,7 +13,6 @@ import pandas as pd
 import pytest
 import respx
 from common.logging import RedactingFormatter
-from modules.config import TmdbColumnGroup
 from modules.get_letterboxd_data import (
     TMDB_API_URL,
     Credits,
@@ -46,7 +45,10 @@ def cache_df():
 # ── _fetch_movie ──────────────────────────────────────────────────────────────
 
 
-def test_genres_split_by_type(mocker, make_movie):
+def test_genres_is_withheld_for_tmdb_but_themes_split_by_type(mocker, make_movie):
+    """`genres` is TMDB's now (see CACHE_COLUMNS.md), so _fetch_movie leaves it None even
+    when Letterboxd's own genre block carries a value — only themes/mini_themes are its job.
+    """
     genres = [
         {"type": "genre", "name": "Drama"},
         {"type": "genre", "name": "Thriller"},
@@ -56,7 +58,7 @@ def test_genres_split_by_type(mocker, make_movie):
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(genres=genres))
     result = _fetch_movie("some-slug")
     assert result is not None
-    assert result["genres"] == "Drama, Thriller"
+    assert result["genres"] is None
     assert result["themes"] == "Revenge"
     assert result["mini_themes"] == "Heist"
 
@@ -78,42 +80,17 @@ _TERRITORY_DETAILS = [
 ]
 
 
-def test_details_grouped_by_type_by_default(mocker, make_movie):
-    """Default flag: studio/country/language still come from Letterboxd, exactly as before."""
-    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=_TERRITORY_DETAILS))
-    result = _fetch_movie("some-slug")
-    assert result is not None
-    assert result["studio"] == "A24"
-    assert result["country"] == "USA, UK"
-    assert result["language"] == "English"
+def test_tmdb_owned_detail_types_are_dropped_not_expanded(mocker, make_movie):
+    """Letterboxd still serves studio/country/language on the page; TMDB owns those columns
+    now, so all three must be filtered out of ``**details_by_type`` rather than expanded.
 
-
-def test_placeholder_territory_columns_present_under_letterboxd(mocker, make_movie):
-    """The new schema exists before the migration does — that is what lets the contract
-    require all five columns while Letterboxd is still the source of three of them.
-
-    origin_country/original_language have no Letterboxd equivalent, so they are null
-    placeholders. A film whose page carries no detail types at all must still get every
-    key, or the column would vanish from the frame entirely.
-    """
-    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=[]))
-    result = _fetch_movie("some-slug")
-    assert result is not None
-    for column in ("studio", "country", "origin_country", "language", "original_language"):
-        assert column in result
-        assert result[column] is None
-
-
-def test_tmdb_owned_detail_types_are_dropped_when_flag_on(mocker, make_movie):
-    """Letterboxd still serves studio/country/language; with the flag on all three are dropped.
-
-    The sharp regression: ``**details_by_type`` is expanded *last* in the returned dict
-    literal, so a surviving Letterboxd value would overwrite the TMDB one seeded above it
-    and the column move would be a silent no-op — right values fetched, wrong values
-    written, nothing raised. Asserting None (not "A24") is what pins that.
+    The sharp regression this pins: that expansion is the *last* entry in the returned
+    dict literal, so a surviving Letterboxd value would overwrite the TMDB one
+    ``_fetch_all`` seeds above it — right values fetched, wrong values written, nothing
+    raised. Asserting None (not "A24") is what catches that.
     """
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=_TERRITORY_DETAILS))
-    result = _fetch_movie("some-slug", frozenset({TmdbColumnGroup.TERRITORIES}))
+    result = _fetch_movie("some-slug")
     assert result is not None
     assert result["studio"] is None
     assert result["country"] is None
@@ -122,57 +99,28 @@ def test_tmdb_owned_detail_types_are_dropped_when_flag_on(mocker, make_movie):
     assert result["original_language"] is None
 
 
-def test_letterboxd_genres_withheld_when_genres_group_on(mocker, make_movie):
-    """With the `genres` group on, Letterboxd's genre list is left for TMDB to overwrite.
-
-    The mirror of the detail-type drop above, but a different mechanism: genres never
-    travel through ``**details_by_type``, so withholding is an explicit None here rather
-    than a filtered key. Themes and mini-themes come off the same Letterboxd list and must
-    survive — they are nobody's migration.
+def test_placeholder_territory_and_taxonomy_columns_always_present(mocker, make_movie):
+    """Every TMDB-sourced column is a key of the returned dict even with nothing to fill it
+    — the contract requires all seven, so a film with no Letterboxd detail types at all
+    must still carry them as None rather than the column vanishing from the frame.
     """
-    genres = [
-        {"type": "genre", "name": "Drama"},
-        {"type": "theme", "name": "Revenge"},
-        {"type": "mini-theme", "name": "Heist"},
-    ]
-    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(genres=genres))
-    result = _fetch_movie("some-slug", frozenset({TmdbColumnGroup.GENRES}))
+    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=[]))
+    result = _fetch_movie("some-slug")
     assert result is not None
-    assert result["genres"] is None
-    assert result["keywords"] is None
-    assert result["themes"] == "Revenge"
-    assert result["mini_themes"] == "Heist"
+    for column in ("studio", "country", "origin_country", "language", "original_language", "genres", "keywords"):
+        assert column in result
+        assert result[column] is None
 
 
-def test_genres_group_does_not_touch_the_territory_columns(mocker, make_movie):
-    """The two groups are independent — enabling one must not migrate the other."""
-    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=_TERRITORY_DETAILS))
-    result = _fetch_movie("some-slug", frozenset({TmdbColumnGroup.GENRES}))
-    assert result is not None
-    assert result["studio"] == "A24"
-    assert result["country"] == "USA, UK"
-    assert result["language"] == "English"
-
-
-def test_keywords_key_present_whichever_groups_are_enabled(mocker, make_movie):
-    """`keywords` is seeded on every row, so the contract can require it pre-migration."""
-    mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie())
-    for groups in (frozenset(), frozenset({TmdbColumnGroup.GENRES}), frozenset({TmdbColumnGroup.TERRITORIES})):
-        result = _fetch_movie("some-slug", groups)
-        assert result is not None
-        assert "keywords" in result
-
-
-@pytest.mark.parametrize("tmdb_groups", [frozenset(), frozenset({TmdbColumnGroup.TERRITORIES})])
-def test_unknown_detail_types_still_expand(mocker, make_movie, tmdb_groups):
-    """The group scopes to the three TMDB-owned types — any other type expands either way."""
+def test_unknown_detail_types_still_expand(mocker, make_movie):
+    """The filter scopes to the three TMDB-owned types — any other type still expands."""
     details = [
         {"type": "studio", "name": "A24"},
         {"type": "format", "name": "IMAX"},
         {"type": "format", "name": "70mm"},
     ]
     mocker.patch("modules.get_letterboxd_data.Movie", return_value=make_movie(details=details))
-    result = _fetch_movie("some-slug", tmdb_groups)
+    result = _fetch_movie("some-slug")
     assert result is not None
     assert result["format"] == "IMAX, 70mm"
 
@@ -375,7 +323,7 @@ def test_refresh_adds_columns_missing_from_target_cache(mocker):
         ),
     )
 
-    result = refresh_letterboxd_data(df, ["slug-a"], "fake-key", tmdb_groups=frozenset({TmdbColumnGroup.TERRITORIES}))
+    result = refresh_letterboxd_data(df, ["slug-a"], "fake-key")
 
     assert "cast" in result.columns
     assert "trailer_url" in result.columns
@@ -391,45 +339,30 @@ def test_refresh_adds_columns_missing_from_target_cache(mocker):
     assert row["directors"] == "Jane Doe"
 
 
-def test_refresh_adds_placeholder_columns_under_the_default_flag(mocker):
-    """The schema converges even while Letterboxd is still the territory source.
-
-    origin_country/original_language exist on no cached row anywhere, and under the default
-    flag nothing *populates* them — but `_fetch_movie` still emits the keys, so the pre-seed
-    loop adds the columns (null) and an old cache can satisfy the tightened contract without
-    a --reset_database and without migrating a single value.
+def test_refresh_leaves_a_null_bundle_field_null(mocker):
+    """A TMDB field the bundle has nothing for stays null — `_fetch_all` writes every
+    migrated column unconditionally now, so there is no Letterboxd fallback to preserve.
     """
     df = pd.DataFrame([{"slug": "slug-a", "title": "Old Title"}])
     df["integration_date"] = pd.to_datetime(date(2023, 1, 1))
 
-    # Mirrors what the real _fetch_movie returns under the default flag: Letterboxd's
-    # territory values, plus the two placeholders seeded as None.
     mocker.patch(
         "modules.get_letterboxd_data._fetch_movie",
-        return_value={
-            "slug": "slug-a",
-            "title": "New Title",
-            "tmdb_id": "42",
-            "studio": "Gaumont",
-            "country": "France",
-            "origin_country": None,
-            "language": "French",
-            "original_language": None,
-        },
+        return_value={"slug": "slug-a", "title": "New Title", "tmdb_id": "42"},
     )
     mocker.patch("modules.get_letterboxd_data._fetch_french_title", return_value=None)
-    mocker.patch("modules.get_letterboxd_data._fetch_bundle", return_value=TmdbColumns())
+    mocker.patch("modules.get_letterboxd_data._fetch_bundle", return_value=TmdbColumns(studio="Gaumont"))
 
     result = refresh_letterboxd_data(df, ["slug-a"], "fake-key")
 
     row = result.loc[result["slug"] == "slug-a"].iloc[0]
-    assert "origin_country" in result.columns
-    assert "original_language" in result.columns
-    assert pd.isna(row["origin_country"])
-    assert pd.isna(row["original_language"])
-    # Letterboxd remains the source of the trio, unchanged.
     assert row["studio"] == "Gaumont"
-    assert row["country"] == "France"
+    assert pd.isna(row["country"])
+    assert pd.isna(row["origin_country"])
+    assert pd.isna(row["language"])
+    assert pd.isna(row["original_language"])
+    assert pd.isna(row["genres"])
+    assert pd.isna(row["keywords"])
 
 
 # ── retry behaviour ───────────────────────────────────────────────────────────
@@ -1029,7 +962,7 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
         )
     )
 
-    results = await _fetch_all(["some-slug"], api_key="fake-key", tmdb_groups=frozenset({TmdbColumnGroup.TERRITORIES}))
+    results = await _fetch_all(["some-slug"], api_key="fake-key")
     assert results[0] is not None
     assert results[0]["french_title"] == "Titre Français"
     assert results[0]["cast"] == "Actor A"
@@ -1039,25 +972,23 @@ async def test_fetch_all_attaches_tmdb_enrichment(mocker, make_movie):
     assert results[0]["producers"] == "John Smith"
     assert results[0]["writers"] == "Wanda"
     assert results[0]["composers"] == "Nino R."
-    # …and so do the five territory columns, off the base payload the bundle already returns.
+    # …and so do the five territory columns and the two taxonomy ones, off the same payload.
     assert results[0]["studio"] == "A24"
     assert results[0]["country"] == "United States of America"
     assert results[0]["origin_country"] == "US"
     assert results[0]["language"] == "English"
     assert results[0]["original_language"] == "en"
-    # Two requests per film, not three — the whole point of the bundle. Eleven TMDB columns
-    # now ride the second one, so adding a territory field must never add a request.
+    assert results[0]["genres"] == "Drama, Thriller"
+    assert results[0]["keywords"] == "heist, dual identity"
+    # Two requests per film, not three — the whole point of the bundle.
     assert (title_route.call_count, bundle_route.call_count) == (1, 1)
 
 
 @respx.mock
-async def test_fetch_all_keeps_letterboxd_values_when_no_groups_enabled(mocker, make_movie):
-    """No groups: TMDB's territory *and* taxonomy values are parsed but must not reach the row.
-
-    The bundle carries them regardless (they ride the credits payload), so the guard is the
-    assignment, not the fetch. Without it this PR would silently change every cached row's
-    `country` spelling and genre vocabulary the moment it merged — the migration happening
-    by accident rather than by decision.
+async def test_fetch_all_ignores_letterboxd_values_tmdb_now_owns(mocker, make_movie):
+    """TMDB's territory and taxonomy values always win over Letterboxd's, if Letterboxd
+    happens to carry any: `_fetch_movie` already withholds them (see the withheld/dropped
+    tests above), so this pins the *assignment* side of the same guarantee.
     """
     movie_mock = make_movie(
         genres=[{"type": "genre", "name": "Drame"}, {"type": "theme", "name": "Revenge"}],
@@ -1088,59 +1019,17 @@ async def test_fetch_all_keeps_letterboxd_values_when_no_groups_enabled(mocker, 
 
     results = await _fetch_all(["some-slug"], api_key="fake-key")
     assert results[0] is not None
-    # Letterboxd's values survive, TMDB's are discarded.
-    assert results[0]["studio"] == "Gaumont"
-    assert results[0]["country"] == "France"
-    assert results[0]["genres"] == "Drame"
-    # Placeholders stay null: the schema is here, the data is not, and that is the point.
-    assert results[0]["origin_country"] is None
-    assert results[0]["original_language"] is None
-    assert results[0]["keywords"] is None
-    # Themes are nobody's migration — Letterboxd owns them whichever groups are enabled.
+    # TMDB wins, even though Letterboxd carried a value for the same column.
+    assert results[0]["studio"] == "A24"
+    assert results[0]["country"] == "United States of America"
+    assert results[0]["genres"] == "Drama"
+    assert results[0]["origin_country"] == "US"
+    assert results[0]["original_language"] == "en"
+    assert results[0]["keywords"] == "heist"
+    # Themes stay Letterboxd's — TMDB's parallel vocabulary lands in keywords, not here.
     assert results[0]["themes"] == "Revenge"
-    # Everything else TMDB owns is unaffected by the groups.
     assert results[0]["directors"] == "Jane Doe"
     assert results[0]["french_title"] == "Titre Français"
-
-
-@respx.mock
-async def test_fetch_all_swaps_genres_and_fills_keywords_under_the_genres_group(mocker, make_movie):
-    """Group on: TMDB's genre list replaces Letterboxd's and `keywords` is populated.
-
-    The counterpart to the no-groups test above. Note the assertion that `themes` still
-    carries Letterboxd's value: `keywords` lands *beside* the theme columns, not over
-    them, so enabling this group must not empty a dimension the ranker already uses.
-    """
-    movie_mock = make_movie(
-        genres=[{"type": "genre", "name": "Drame"}, {"type": "theme", "name": "Revenge"}],
-        details=[{"type": "studio", "name": "Gaumont"}],
-    )
-    movie_mock.tmdb_id = "42"
-    mocker.patch("modules.get_letterboxd_data.Movie", return_value=movie_mock)
-    respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"language": "fr-FR"}).mock(
-        return_value=httpx.Response(200, json={"title": "Titre Français"})
-    )
-    respx.get(f"{TMDB_API_URL}/movie/42", params__contains={"append_to_response": "credits,videos,keywords"}).mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                "id": 42,
-                "credits": {"cast": [], "crew": [_crew("Jane Doe", "Director")]},
-                "videos": {"results": []},
-                "keywords": {"keywords": [{"name": "heist"}, {"name": "paris"}]},
-                "genres": [{"id": 18, "name": "Drama"}, {"id": 53, "name": "Thriller"}],
-                "production_companies": [{"name": "A24"}],
-            },
-        )
-    )
-
-    results = await _fetch_all(["some-slug"], api_key="fake-key", tmdb_groups=frozenset({TmdbColumnGroup.GENRES}))
-    assert results[0] is not None
-    assert results[0]["genres"] == "Drama, Thriller"
-    assert results[0]["keywords"] == "heist, paris"
-    # Letterboxd keeps the theme columns, and — the other group being off — the studio.
-    assert results[0]["themes"] == "Revenge"
-    assert results[0]["studio"] == "Gaumont"
 
 
 @respx.mock

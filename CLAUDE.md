@@ -656,22 +656,20 @@ typecheck (mypy blocking + ty advisory), security, test.
   line/associate/executive producers) and that column visibly changed content at the swap. `directors` matched
   98.4% exactly and **100% under the token-containment rule** `_directors_overlap` applies, which is what made
   the swap safe for the watchlist↔showtimes join.
-  **Corollary: without `TMDB_API_KEY`, `directors` is now null**, which silently guts the taste ranker's
-  highest-weighted dimension *and* the join's director confirmation — `main.py` warns about this at startup.
-- **`studio`/`country`/`language` are mid-migration behind the `territories` group of `TMDB_COLUMN_GROUPS`
-  (default empty), and `country` ≠ `origin_country`.** Both producers stay wired up: with the group off, Letterboxd's details tab
-  fills the trio exactly as it always has and `origin_country`/`original_language` are **null placeholders**;
-  with it on, the three Letterboxd detail types are filtered out (`_TMDB_OWNED_DETAIL_TYPES`) and
+  **Corollary: `TMDB_API_KEY` is a required `Settings` field**, not an optional one — `Settings()` (called at
+  `main.py` import time) raises `pydantic.ValidationError` and the pipeline never starts without it, rather
+  than silently running with `directors` and thirteen other columns null.
+- **`studio`/`country`/`language`/`origin_country`/`original_language` are all TMDB's now, unconditionally
+  — the `territories` migration completed and its `TMDB_COLUMN_GROUPS` flag was removed (2026-08-15) — and
+  `country` ≠ `origin_country`.** The three Letterboxd detail types are filtered out of
+  `**details_by_type` (`_TMDB_OWNED_DETAIL_TYPES`) so `_fetch_movie`'s `None` seeds always survive, and
   `_parse_territories` fills all five off the *base* movie payload `_fetch_bundle` already requests — no
   second call, no extra `append_to_response` block, so adding a territory field must never add a request.
-  **`_fetch_movie` seeds all five in both positions**, so the parquet schema — and therefore
-  `contracts.DATA_LETTERBOXD` — does not depend on the flag; only the values do. That is what let the
-  contract tighten before any value moved. Flipping *back* is free; leaving a cache half-written under each
-  setting is not (see the spellings note below). `studio` ← `production_companies[].name`, `country` ←
-  `production_countries[].name`, `origin_country` ← `origin_country`, `language` ←
-  `spoken_languages[].english_name` (**not** `name`, which is the endonym `Français`/`日本語`),
-  `original_language` ← `original_language`. They ride the locale-free call because they are locale-invariant
-  (measured identical across 60 films with and without `fr-FR`), unlike person names.
+  `studio` ← `production_companies[].name`, `country` ← `production_countries[].name`, `origin_country` ←
+  `origin_country`, `language` ← `spoken_languages[].english_name` (**not** `name`, which is the endonym
+  `Français`/`日本語`), `original_language` ← `original_language`. They ride the locale-free call because
+  they are locale-invariant (measured identical across 60 films with and without `fr-FR`), unlike person
+  names.
   **`country` and `origin_country` are different fields, not two spellings of one** — the trap this whole
   move started from. `production_countries` is the full co-production territory list as display names
   (~1.47/film); `origin_country` is the production's nationality as **bare ISO 3166-1 codes** (~1.14/film,
@@ -683,42 +681,36 @@ typecheck (mypy blocking + ty advisory), security, test.
   **`origin_country` is carried but is deliberately not a `_DIM_COLUMNS` taste dimension** — it was measured
   as a *replacement*, never as an *addition*, so wiring it in needs its own backtest against the
   0.667 / 1.98 reference.
-  Two further consequences of turning it on. TMDB names are used **verbatim, no alias table**, so `USA` →
-  `United States of America`, `UK` → `United Kingdom`, `Chinese` → `Mandarin` (semantic: Letterboxd collapses
-  Mandarin into "Chinese" while keeping Cantonese separate) — raw agreement with the old values is only 46.7%
-  on `country`, 99.5% once normalised, which is why **flipping the flag and running the one-pass backfill are
-  one operation**: a cache half-written under each setting splits one affinity key into two, and age won't
-  fix it (`find_stale_slugs` would need a full `LETTERBOXD_DAYS_TO_UPDATE` cycle). And the duplicated-
-  `language` quirk goes away — Letterboxd lists Primary *and* Spoken Languages under one URL path (40 of 120
-  sampled rows repeat a value); TMDB's `spoken_languages` is a proper list (0 of 120).
-  **The landmine:** `**details_by_type` is expanded *last* in `_fetch_movie`'s dict literal and Letterboxd
-  serves all three detail types regardless of the flag, so with the flag on they must be *filtered out*
-  rather than left to be overwritten — that is the only thing `_TMDB_OWNED_DETAIL_TYPES` does. Widen the
-  filter to run unconditionally and the default path silently loses three columns; drop it and the migration
-  silently does nothing. Both fail with right values fetched, wrong values written, and nothing raised.
-- **`TMDB_COLUMN_GROUPS` is one setting for every TMDB migration, not one boolean per group.** Values are
-  names from `TmdbColumnGroup` (`territories`, `genres`), comma-separated in the env
-  (`TMDB_COLUMN_GROUPS=territories,genres`); empty means every column keeps the producer its cached rows were
-  written from. Groups are enabled **one at a time** so each one's effect on the taste ranker is measurable
-  in isolation — that is the whole reason it is a set of names rather than a boolean per migration, which
-  would multiply with every group and let two flip in one run and confound the comparison. `main.py` logs
-  the enabled set every run, because a cache is only interpretable against it. Parsing needs
-  `Annotated[frozenset[...], NoDecode]` plus a splitting `field_validator`: pydantic-settings JSON-decodes
-  complex fields *before* validation, so a bare `frozenset` field rejects `territories,genres` with a
-  `SettingsError` no validator can intercept. An unknown group name **raises** — a typo'd value silently
-  reverting a migration is the same silent failure `extra="ignore"` already allows for misspelled *keys*,
-  and only a taste backtest would ever catch it.
-- **`genres` is mid-migration behind the `genres` group, and `keywords` is the additive column that rides
-  it — but Letterboxd's genre list *is* TMDB's.** Measured across all 6,761 cached films with a `tmdb_id`
-  (Aug 2026, 100% fetch success): **the same 19-term vocabulary on both sides**, none unique to either;
-  per film **98.18% exact set match**, mean Jaccard **0.9934**, and **zero disjoint films**. So unlike
-  `territories` this swap has **no vocabulary-split hazard** (there is no `USA` → `United States of America`
-  here) and a half-migrated cache is harmless — and equally, swapping `genres` alone will not move the
-  ranker, since it rewrites ~1.8% of films by one term. **`keywords` is the reason the group exists.**
+  TMDB names are used **verbatim, no alias table**, so `USA` → `United States of America`, `UK` →
+  `United Kingdom`, `Chinese` → `Mandarin` (semantic: Letterboxd collapses Mandarin into "Chinese" while
+  keeping Cantonese separate) — raw agreement with the pre-migration Letterboxd values was only 46.7% on
+  `country`, 99.5% once normalised. That is why the whole cache was **backfilled in one pass** rather than
+  left to the age-based refresh: a cache half-written under each producer would have split `USA` and
+  `United States of America` into two affinity keys, and `find_stale_slugs` would have taken a full
+  `LETTERBOXD_DAYS_TO_UPDATE` cycle to converge on its own. Post-backfill, measured against the real cache:
+  **zero** rows read `USA`, 3,544 read `United States of America`. And the duplicated-`language` quirk is
+  gone — Letterboxd listed Primary *and* Spoken Languages under one URL path (~32% of sampled rows repeated
+  a value); TMDB's `spoken_languages` is a proper list, confirmed 0 duplicated post-backfill.
+  **The landmine the filter exists to prevent:** `**details_by_type` is expanded *last* in `_fetch_movie`'s
+  dict literal and Letterboxd still serves all three detail types on every page regardless, so they must be
+  *filtered out* rather than left to be overwritten — that is the only thing `_TMDB_OWNED_DETAIL_TYPES`
+  does, and it is unconditional now (no flag to gate it). Widening the filter to run only sometimes would
+  silently lose three columns; dropping it would silently revert the whole territories migration. Both fail
+  with right values fetched, wrong values written, and nothing raised — `test_tmdb_owned_detail_types_are_dropped_not_expanded`
+  pins it.
+- **`genres`/`keywords` are TMDB's now too, unconditionally — the `genres` migration completed alongside
+  `territories`, same removed flag — but Letterboxd's genre list *was* already TMDB's.** Measured across all
+  6,761 cached films with a `tmdb_id` before the swap (Aug 2026, 100% fetch success): **the same 19-term
+  vocabulary on both sides**, none unique to either; per film **98.18% exact set match**, mean Jaccard
+  **0.9934**, and **zero disjoint films**. So unlike `territories` this swap carried **no vocabulary-split
+  hazard** (there was no `USA` → `United States of America` here), confirmed by the live backfill: of 6,761
+  refetched films, only 126 (1.86%) had a real term-set change, 3,491 were pure reordering. It did not move
+  the taste ranker (spearman 0.6735→0.6736, quartile lift 2.0212→2.0220 on identical seeded splits, quality-only
+  baseline unchanged). **`keywords` is the column that made the migration worth doing.**
   It is TMDB's open, crowd-maintained tag space (`keywords.keywords[].name`, an appended block, so the
   request is still one round-trip): 90.9% coverage, 10.42 tags/film, 14,780 distinct terms of which 47.9%
   appear on exactly one film. **It is not a replacement for `themes`/`mini_themes`**, which stay
-  Letterboxd's in both positions — those are 140 curated sentences ("Moving relationship stories") at 69.5%
+  Letterboxd's — those are 140 curated sentences ("Moving relationship stories") at 69.5%
   coverage, and the two vocabularies intersect on **8 terms** (5.7% of the theme vocabulary). They are
   adjacent taxonomies in different registers, so both are kept in separate columns; folding them into one
   affinity dimension would double-count the overlap. Whether `keywords` earns a `_DIM_COLUMNS` dimension

@@ -71,8 +71,7 @@ LETTERBOXD_DAYS_TO_UPDATE=365
 | `OUTPUT_PATH` | Yes | — | Directory path where parquet files will be saved |
 | `LETTERBOXD_DAYS_TO_UPDATE` | No | `365` | Number of days before cached movie metadata is refreshed |
 | `LETTERBOXD_REFRESH_LIMIT` | No | `1000` | Max stale movies to refresh per run (raise to lift the cap) |
-| `TMDB_API_KEY` | No | — | TMDB API key for the TMDB-sourced columns: `french_title`, `cast`, the crew columns (`directors`/`producers`/`writers`/`composers`) and `trailer_url` — plus the five territory columns under the `territories` group and `genres`/`keywords` under `genres`. Pipeline runs without it, but those columns stay `null`, and a null `directors` guts the taste ranker's highest-weighted dimension *and* the dashboard's showtimes matching |
-| `TMDB_COLUMN_GROUPS` | No | *(empty)* | Comma-separated groups of cache columns TMDB produces instead of Letterboxd, migrated one at a time so each one's taste impact can be measured on its own. `territories` → `studio`/`country`/`language` + `origin_country`/`original_language`; `genres` → `genres` + `keywords`. Every column is written whichever groups are set — only the values depend on this. An unknown group name raises at startup. See [`CACHE_COLUMNS.md`](CACHE_COLUMNS.md) before enabling one: `territories` rewrites spellings, so enable it and backfill in the same sitting (`genres` has no such hazard — Letterboxd's genre vocabulary is already TMDB's) |
+| `TMDB_API_KEY` | **Yes** | — | TMDB is the sole producer of `french_title`, `cast`, the crew columns (`directors`/`producers`/`writers`/`composers`), `trailer_url`, and — since the territories+genres migration completed — `studio`/`country`/`origin_country`/`language`/`original_language`/`genres`/`keywords`. `Settings` fails fast at startup (`pydantic.ValidationError`) without it; a null `directors` would otherwise gut the taste ranker's highest-weighted dimension *and* the dashboard's showtimes matching |
 
 ## Usage
 
@@ -166,8 +165,9 @@ fresh," and a validation error there would otherwise trigger a full, silent cach
 - `banner_url` - URL to movie banner image
 - `trailer_url` - Official YouTube trailer link from TMDB (French preferred, then English, then any other language); `null` when `TMDB_API_KEY` is unset or TMDB has no matching official trailer
 
-**Genres & Themes:**
-- `genres` - Comma-separated primary genres (e.g., "Drama, Sci-Fi")
+**Genres, themes & keywords:**
+- `genres` - Comma-separated primary genres (e.g., "Drama, Science Fiction") — TMDB's closed 19-term vocabulary, which Letterboxd's own genre list turned out to already re-serve almost exactly (98.18% exact set match measured across the cache)
+- `keywords` - TMDB's open, crowd-maintained tag space (e.g., "dual identity, paris") — not a replacement for the two theme columns below; the vocabularies intersect on only 8 terms
 - `themes` - Comma-separated Letterboxd themes (e.g., "Time Travel, Alternate History")
 - `mini_themes` - Comma-separated Letterboxd mini-themes (more specific classifications)
 
@@ -190,17 +190,14 @@ normal and expected (most films have no French retitle, no trailer, or no compos
 `debug`. Either way the affected column still comes back `null`/empty for that film; the warning never turns
 into a raised exception, so one malformed payload never aborts the batch.
 
-**Territories & Provenance — source depends on the `territories` group of `TMDB_COLUMN_GROUPS` (default off):**
-- `studio` - Production studio(s). Letterboxd's details tab by default; TMDB `production_companies` when on
-- `country` - Letterboxd's country list by default; when on, TMDB `production_countries` — the full
-  co-production territory list as display names
-- `origin_country` - **Null placeholder by default.** When on, TMDB `origin_country`: the nationality of the
-  production as **bare ISO 3166-1 codes** — a narrower list than `country`, not a re-spelling of it
-- `language` - Letterboxd's language list by default; TMDB `spoken_languages` (English names) when on
-- `original_language` - **Null placeholder by default.** When on, the ISO 639-1 code of the original language
-- *(Any other Letterboxd detail type still expands into its own column automatically, either way)*
-
-All five are present on every row in both positions, so the parquet schema does not depend on the flag.
+**Territories & provenance — all TMDB:**
+- `studio` - Production studio(s), from TMDB `production_companies`
+- `country` - The full co-production territory list as display names, from TMDB `production_countries`
+- `origin_country` - The nationality of the production as **bare ISO 3166-1 codes**, from TMDB
+  `origin_country` — a narrower list than `country`, not a re-spelling of it
+- `language` - Spoken languages as English names, from TMDB `spoken_languages`
+- `original_language` - The ISO 639-1 code of the original language, from TMDB `original_language`
+- *(Any other Letterboxd detail type still expands into its own column automatically)*
 
 **Metadata:**
 - `integration_date` - When metadata was fetched (used for refresh logic)
@@ -281,7 +278,7 @@ Split by source → Output files (ratings + watchlist)
 
 2. **Intelligent Refresh** - Age is the only trigger: `find_stale_slugs` selects cached rows whose `integration_date` is older than `LETTERBOXD_DAYS_TO_UPDATE`, bounded by the per-run `LETTERBOXD_REFRESH_LIMIT` cap — reducing API load while keeping data relatively fresh. A null column deliberately never re-queues a row, because a null here is ambiguous ("not fetched yet" vs. legitimately empty — a film with no original score has no `composers`) and would re-queue a large slice of the cache every run, forever. Backfilling a newly added column onto older rows is an ad-hoc script's job, or `--reset_database`; see [`CACHE_COLUMNS.md`](CACHE_COLUMNS.md#refresh--backfill--which-source-re-runs).
 
-3. **Parallel Fetching** - `asyncio` with a semaphore bounding 20 slugs in flight. The blocking Letterboxd scrape runs per slug via `asyncio.to_thread`; the two TMDB lookups for a movie run concurrently in a nested `TaskGroup` over one shared `httpx.AsyncClient`, so connections are pooled across the whole batch. One `append_to_response=credits,videos,keywords` request fills up to thirteen columns at once (`cast`, the four crew columns, `trailer_url`, and — under the matching `TMDB_COLUMN_GROUPS` group — the five territory columns and `genres`/`keywords`, all read off the base payload or an appended block); the other exists only because `language=fr-FR` is needed for `french_title` and would localise person names if applied to the credits (see [`CACHE_COLUMNS.md`](CACHE_COLUMNS.md#quirks-that-bite)).
+3. **Parallel Fetching** - `asyncio` with a semaphore bounding 20 slugs in flight. The blocking Letterboxd scrape runs per slug via `asyncio.to_thread`; the two TMDB lookups for a movie run concurrently in a nested `TaskGroup` over one shared `httpx.AsyncClient`, so connections are pooled across the whole batch. One `append_to_response=credits,videos,keywords` request fills fifteen columns at once (`cast`, the four crew columns, `trailer_url`, the five territory columns and `genres`/`keywords`, all read off the base payload or an appended block); the other exists only because `language=fr-FR` is needed for `french_title` and would localise person names if applied to the credits (see [`CACHE_COLUMNS.md`](CACHE_COLUMNS.md#quirks-that-bite)).
 
 4. **Unified DataFrame** - Ratings and watchlist rows are stacked into one DataFrame before any API calls. A single enrichment join produces both outputs, avoiding redundant merges.
 

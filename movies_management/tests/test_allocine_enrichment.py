@@ -244,7 +244,7 @@ def test_enrich_resolves_new_slugs_and_calls_get_letterboxd_data(mocker, tmp_pat
 
     enrich_cache_from_showtimes(showtimes_path, cache_path, tmp_path / "unresolved.parquet")
 
-    get_data_mock.assert_called_once_with(["parasite-2019"], cache_path, "", tmdb_groups=frozenset())
+    get_data_mock.assert_called_once_with(["parasite-2019"], cache_path, "")
 
 
 def test_enrich_stamps_allocine_source_on_new_rows(mocker, tmp_path):

@@ -170,7 +170,13 @@ def _genre_bubble_chart(ratings_df: pd.DataFrame) -> None:
 
 
 def _runtime_stats(ratings_df: pd.DataFrame) -> None:
-    """P25/P50/P75 plus a compact 3-bucket runtime bar — a small CSS list, not a full-width chart."""
+    """P25/P50/P75 plus a compact 3-bucket runtime bar — a small caption + CSS list, not a headline card.
+
+    Deliberately not ``.kpi-card``: that class is sized for the four
+    top-of-page headline stats (1.85rem bold serif), which read as an
+    oversized block for a minor in-column figure — a plain caption line
+    keeps this section's visual weight in line with the frequency bars below it.
+    """
     if "runtime" not in ratings_df.columns:
         st.caption("No runtime data.")
         return
@@ -179,11 +185,7 @@ def _runtime_stats(ratings_df: pd.DataFrame) -> None:
         st.caption("No runtime data.")
         return
     p25, p50, p75 = (int(runtimes.quantile(q)) for q in (0.25, 0.5, 0.75))
-    st.markdown(
-        f"<div class='kpi-card'><div class='kpi-label'>P25/P50/P75</div>"
-        f"<div class='kpi-value'>{format_runtime(p25)} · {format_runtime(p50)} · {format_runtime(p75)}</div></div>",
-        unsafe_allow_html=True,
-    )
+    st.caption(f"P25/P50/P75 · {format_runtime(p25)} · {format_runtime(p50)} · {format_runtime(p75)}")
     bucket_html = frequency_bars_html(runtime_bucket_counts(ratings_df), label_col="bucket", count_col="count")
     if bucket_html:
         st.markdown(bucket_html, unsafe_allow_html=True)

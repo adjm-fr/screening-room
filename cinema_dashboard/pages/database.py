@@ -26,6 +26,13 @@ import plotly.express as px
 import streamlit as st
 
 from config import settings
+from core.library import (
+    decade_profile,
+    delta_summary,
+    explode_tags,
+    rating_disagreements,
+    rating_histogram,
+)
 from sources.loader import (
     attach_streaming,
     build_taste_profile,
@@ -38,8 +45,10 @@ from sources.loader import (
     load_watchlist,
 )
 from ui import (
+    decade_profile_html,
     format_runtime,
     movie_href,
+    rating_histogram_html,
     rating_to_hsl,
     render_empty_state,
     render_freshness_banner,
@@ -103,10 +112,6 @@ def _with_detail_url(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out.insert(0, "detail_url", out["slug"].map(lambda s: movie_href(s) if isinstance(s, str) and s else ""))
     return out
-
-
-def _explode_tags(series: pd.Series, separator: str = ", ") -> pd.Series:
-    return series.dropna().astype(str).str.split(separator).explode().str.strip().pipe(lambda s: s[s != ""])
 
 
 def _genre_bubble_chart(ratings_df: pd.DataFrame) -> None:
@@ -200,7 +205,7 @@ def _top_themes(cache_df: pd.DataFrame) -> list[tuple[str, int]]:
     """Most frequent themes as ``(name, film count)`` — a frequency, not a rating, so it never rides the rating ramp."""
     if "themes" not in cache_df.columns:
         return []
-    counts = _explode_tags(cache_df["themes"]).value_counts().head(8)
+    counts = explode_tags(cache_df["themes"]).value_counts().head(8)
     return [(str(name), int(count)) for name, count in counts.items()]
 
 
@@ -278,6 +283,56 @@ def main() -> None:
             f"The Discover tab also includes your watchlist ({len(watchlist_df)} films)."
         )
 
+        hist_col, decade_col = st.columns(2)
+        with hist_col:
+            st.markdown("##### Your rating scale")
+            hist_html = rating_histogram_html(rating_histogram(ratings_df))
+            if hist_html:
+                st.markdown(hist_html, unsafe_allow_html=True)
+                if avg_rating is not None:
+                    st.caption(
+                        f"μ {avg_rating:.2f} across {len(ratings_df)} films — on your ladder 2.5–3 already means "
+                        f'"good", so the low average is the scale working, not disappointment.'
+                    )
+            else:
+                st.caption("No ratings counted yet.")
+        with decade_col:
+            st.markdown("##### By decade")
+            decades_html = decade_profile_html(decade_profile(ratings_df))
+            if decades_html:
+                st.markdown(decades_html, unsafe_allow_html=True)
+                st.caption("Bar length is how many films you rated from that decade; color is the mean rating you gave.")
+            else:
+                st.caption("No release years to bucket.")
+
+        st.markdown("##### You vs Letterboxd")
+        summary = delta_summary(ratings_df)
+        if summary["n"]:
+            st.caption(
+                f"Your rating sits below the community average on {summary['share_below']:.0%} of "
+                f"{int(summary['n'])} comparable films (mean gap {summary['mean_delta']:+.2f}) — the tier ladder at "
+                "work, since your scale centers near 2.5 where Letterboxd's centers near 3.5. "
+                "Below, the films you disagree on hardest, both ways."
+            )
+            disagreements = _with_detail_url(rating_disagreements(ratings_df)).drop(columns=["slug", "direction"])
+            st.dataframe(
+                disagreements,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "detail_url": st.column_config.LinkColumn("Details", display_text="View ↗"),
+                    "poster_url": st.column_config.ImageColumn("Poster", width="small"),
+                    "title": st.column_config.TextColumn("Title"),
+                    "directors": st.column_config.TextColumn("Director(s)"),
+                    "release_year": st.column_config.NumberColumn("Year", format="%d"),
+                    "user_rating": st.column_config.NumberColumn("You", format="%.1f"),
+                    "letterboxd_avg_rating": st.column_config.NumberColumn("Letterboxd", format="%.1f"),
+                    "delta": st.column_config.NumberColumn("Δ", format="%+.1f"),
+                },
+            )
+        else:
+            st.caption("No community ratings to compare against yet.")
+
         st.markdown("##### Genre × avg rating (rated films only)")
         _genre_bubble_chart(ratings_df)
 
@@ -301,8 +356,8 @@ def main() -> None:
 
     with tab_discover:
         st.markdown("##### Filter your watchlist + ratings")
-        all_genres = sorted(_explode_tags(cache_df.get("genres", pd.Series(dtype=str))).unique().tolist())
-        all_directors = sorted(_explode_tags(cache_df.get("directors", pd.Series(dtype=str))).unique().tolist())
+        all_genres = sorted(explode_tags(cache_df.get("genres", pd.Series(dtype=str))).unique().tolist())
+        all_directors = sorted(explode_tags(cache_df.get("directors", pd.Series(dtype=str))).unique().tolist())
         f1, f2, f3 = st.columns([2, 2, 2])
         with f1:
             sel_genres = st.pills("Genre", options=all_genres, selection_mode="multi", key="db_genre")

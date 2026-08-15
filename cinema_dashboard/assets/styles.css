@@ -736,6 +736,53 @@ html, body, .stMarkdown, .stText {
   font-size: 0.9rem;
 }
 
+/* Library stat bars (database page) -------------------------------------- */
+/* Cloned from the .contrib-* vocabulary above; unlike contrib rows the bar
+ * IS the data here (a histogram), so mobile keeps it and the label column is
+ * narrow (star values / decades, not people's names). Fill width+color come
+ * inline from ui/stats.py (rating_to_hsl), always paired with hist-value. */
+
+.hist-group { margin-bottom: 0.9rem; }
+.hist-group-head {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.6;
+  margin-bottom: 0.3rem;
+}
+.hist-group-range { margin-left: 0.5rem; opacity: 0.75; text-transform: none; letter-spacing: 0; }
+.hist-row {
+  display: grid;
+  grid-template-columns: minmax(3.6rem, max-content) minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.15rem 0;
+  font-size: 0.88rem;
+}
+.hist-label { min-width: 0; white-space: nowrap; }
+.hist-sub {
+  display: block;
+  font-size: 0.72rem;
+  opacity: 0.55;
+}
+.hist-bar {
+  height: 8px;
+  border-radius: var(--r-chip);
+  background: rgba(127, 127, 127, 0.18);
+  overflow: hidden;
+}
+.hist-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-chip);
+  transition: width var(--t-med);
+}
+.hist-value {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
 /* Freshness banner ------------------------------------------------------ */
 
 .freshness-banner {
@@ -771,6 +818,7 @@ html, body, .stMarkdown, .stText {
   .hero-card--linked { transition: none; }
   .hero-card--linked:hover { transform: none; }
   .contrib-fill { transition: none; }
+  .hist-fill { transition: none; }
   .detail-back__arrow { transition: none; }
   .detail-back:hover .detail-back__arrow { transform: none; }
   .skeleton { animation: none; }

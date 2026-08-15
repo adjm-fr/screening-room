@@ -68,21 +68,29 @@ def test_data_letterboxd_declares_the_stable_core_columns() -> None:
             "cast",
             "composers",
             "trailer_url",
+            "studio",
+            "country",
+            "origin_country",
+            "language",
+            "original_language",
             "integration_date",
             "source",
         }
     )
 
 
-def test_data_letterboxd_excludes_dynamic_detail_columns() -> None:
-    # studio/country/language come from **details_by_type and aren't guaranteed
-    # on every row, unlike the stable core above.
-    assert "studio" not in DATA_LETTERBOXD.required_columns
-    assert "country" not in DATA_LETTERBOXD.required_columns
-    assert "language" not in DATA_LETTERBOXD.required_columns
+def test_data_letterboxd_requires_the_tmdb_territory_columns() -> None:
+    # These five moved off Letterboxd's dynamic **details_by_type expansion onto the TMDB
+    # bundle, where _fetch_movie seeds each as None on every row — so unlike before, their
+    # presence is guaranteed and the contract can enforce it.
+    for column in ("studio", "country", "origin_country", "language", "original_language"):
+        assert column in DATA_LETTERBOXD.required_columns
 
 
-def test_data_letterboxd_notes_flag_the_dynamic_detail_columns() -> None:
-    assert "details_by_type" in DATA_LETTERBOXD.notes
+def test_data_letterboxd_notes_distinguish_the_two_country_columns() -> None:
+    # The whole reason this column move needed an analysis: production_countries and
+    # origin_country are different fields, and the notes must say so.
+    assert "production_countries" in DATA_LETTERBOXD.notes
+    assert "origin_country" in DATA_LETTERBOXD.notes
     assert "original_title" in DATA_LETTERBOXD.notes
     assert isinstance(DATA_LETTERBOXD, ParquetContract)

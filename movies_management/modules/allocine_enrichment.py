@@ -253,6 +253,8 @@ def enrich_cache_from_showtimes(
     cache_path: str | os.PathLike,
     unresolved_path: str | os.PathLike,
     api_key: str = "",
+    *,
+    use_tmdb_territories: bool = False,
 ) -> None:
     """Expand the Letterboxd metadata cache with films found in a showtimes parquet.
 
@@ -349,7 +351,7 @@ def enrich_cache_from_showtimes(
     logger.info("Resolved %d new slugs; %d unresolvable", len(resolved), len(unresolved))
 
     if resolved:
-        cache_df = get_letterboxd_data(resolved, cache_path, api_key)
+        cache_df = get_letterboxd_data(resolved, cache_path, api_key, use_tmdb_territories=use_tmdb_territories)
         if not cache_df.empty:
             # Stamp the rows this pipeline just added. `resolved` slugs were absent from
             # the cache (filtered against `cached_slugs` above) so they carry no prior

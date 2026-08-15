@@ -147,8 +147,8 @@ def _runtime_sparkline(ratings_df: pd.DataFrame) -> None:
         return
     p25, p50, p75 = (int(runtimes.quantile(q)) for q in (0.25, 0.5, 0.75))
     st.markdown(
-        f"<div class='kpi-label'>Runtime · P25/P50/P75</div>"
-        f"<div class='kpi-value'>{format_runtime(p25)} · {format_runtime(p50)} · {format_runtime(p75)}</div>",
+        f"<div class='kpi-card'><div class='kpi-label'>Runtime · P25/P50/P75</div>"
+        f"<div class='kpi-value'>{format_runtime(p25)} · {format_runtime(p50)} · {format_runtime(p75)}</div></div>",
         unsafe_allow_html=True,
     )
     bins = list(range(0, int(runtimes.max()) + 30, 30))
@@ -159,14 +159,18 @@ def _runtime_sparkline(ratings_df: pd.DataFrame) -> None:
     st.plotly_chart(spark, width="stretch")
 
 
-def _chip_cloud(items: list[tuple[str, float]], *, kind: str = "genre", max_items: int = 8) -> None:
-    """Render a static chip cloud where chip color saturation reflects the score."""
+def _chip_cloud(items: list[tuple[str, float]], *, kind: str = "genre", max_items: int = 8, scale_max: float = 5.0) -> None:
+    """Render a static chip cloud where chip color saturation reflects a 0–``scale_max`` rating.
+
+    The score must be an actual rating (user means are 0–5) — the amber ramp
+    is the rating heatmap, so a non-rating quantity may not ride through here.
+    """
     if not items:
         st.caption("Not enough data.")
         return
     chips_html = ""
     for name, score in items[:max_items]:
-        bg = rating_to_hsl(score)
+        bg = rating_to_hsl(score, scale_max=scale_max)
         cls = f"chip chip--{kind} chip--rating"
         chips_html += f'<span class="{cls}" style="background:{bg}">{html.escape(name)} · {score:.1f}</span>'
     st.markdown(chips_html, unsafe_allow_html=True)
@@ -192,14 +196,12 @@ def _top_directors(ratings_df: pd.DataFrame, *, min_films: int = 2) -> list[tupl
     return [(str(idx), float(row["mean"])) for idx, row in summary.iterrows()]
 
 
-def _top_themes(cache_df: pd.DataFrame) -> list[tuple[str, float]]:
+def _top_themes(cache_df: pd.DataFrame) -> list[tuple[str, int]]:
+    """Most frequent themes as ``(name, film count)`` — a frequency, not a rating, so it never rides the rating ramp."""
     if "themes" not in cache_df.columns:
         return []
     counts = _explode_tags(cache_df["themes"]).value_counts().head(8)
-    if counts.empty:
-        return []
-    max_count = float(counts.iloc[0])
-    return [(str(name), (count / max_count) * 10.0) for name, count in counts.items()]
+    return [(str(name), int(count)) for name, count in counts.items()]
 
 
 def _unresolved_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -288,7 +290,14 @@ def main() -> None:
         with c3:
             st.markdown("<div class='kpi-label'>Top themes</div>", unsafe_allow_html=True)
             themes_source = ratings_df if "themes" in ratings_df.columns else cache_df
-            _chip_cloud(_top_themes(themes_source), kind="theme")
+            top_themes = _top_themes(themes_source)
+            if top_themes:
+                st.markdown(
+                    "".join(f'<span class="chip chip--theme">{html.escape(name)} · {count}</span>' for name, count in top_themes),
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("Not enough data.")
 
     with tab_discover:
         st.markdown("##### Filter your watchlist + ratings")
@@ -315,10 +324,14 @@ def main() -> None:
         if pool.empty:
             render_empty_state("🔍", "No matches", "Loosen the filters to see more films.")
         else:
+            # Rank rather than show concat order: the rail shows 18 of possibly
+            # hundreds, so the slice must be a best-of, not an arbitrary head.
+            if "letterboxd_avg_rating" in pool.columns:
+                pool = pool.sort_values("letterboxd_avg_rating", ascending=False, na_position="last")
             sample = pool.head(18).copy()
             if "title" in sample.columns and "letterboxd_title" not in sample.columns:
                 sample["letterboxd_title"] = sample["title"]
-            render_poster_rail(sample, title=f"{len(pool)} films match")
+            render_poster_rail(sample, title=f"{len(pool)} films match · top-rated first")
 
     with tab_tables:
         subscribed = settings.streaming_service_slugs

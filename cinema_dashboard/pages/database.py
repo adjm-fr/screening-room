@@ -12,7 +12,7 @@ computation behind them lives in :mod:`core.library` (pure stats) and
 - **Taste** — the affinity profile behind every match badge, one signed-bar
   block per dimension (same ``.contrib-*`` vocabulary as the movie detail
   page's score breakdown), liked/disliked judged tier-relatively.
-- **Discover** — chip filters (genre, director, min Letterboxd/your-rating
+- **Discover** — chip filters (genre, director, Letterboxd/your-rating range
   sliders) over a ranked poster rail of matching films.
 - **Tables** — the three raw dataframes behind a search box + column presets,
   with poster + a "Details" link into the movie detail page +
@@ -401,12 +401,13 @@ def main() -> None:
         with f2:
             sel_directors = st.multiselect("Director", options=all_directors, placeholder="Search directors…", key="db_director")
         with f3:
-            min_rating = st.slider("Min Letterboxd rating", 0.0, 5.0, 0.0, 0.5, key="db_minrating")
+            lb_rating_range = st.slider("Letterboxd rating", 0.0, 5.0, (0.0, 5.0), 0.5, key="db_lb_rating_range")
         with f4:
             # Only films you've actually rated carry user_rating — watchlist-only
-            # films are naturally excluded once this is raised above 0, which is
-            # the point: "min your rating" is a rewatch/favorites filter.
-            min_user_rating = st.slider("Min your rating", 0.0, 5.0, 0.0, 0.5, key="db_min_user_rating")
+            # films are naturally excluded once the lower bound is raised above 0,
+            # which is the point: narrowing this turns the tab into a
+            # rewatch (low range) or favorites (high range) filter.
+            user_rating_range = st.slider("Your rating", 0.0, 5.0, (0.0, 5.0), 0.5, key="db_user_rating_range")
 
         pool = pd.concat([watchlist_df, ratings_df], ignore_index=True).drop_duplicates(subset=["slug"])
         if sel_genres and "genres" in pool.columns:
@@ -415,10 +416,10 @@ def main() -> None:
         if sel_directors and "directors" in pool.columns:
             pattern = "|".join(re.escape(d) for d in sel_directors)
             pool = pool[pool["directors"].fillna("").str.contains(pattern, case=False, regex=True)]
-        if min_rating > 0 and "letterboxd_avg_rating" in pool.columns:
-            pool = pool[pool["letterboxd_avg_rating"].fillna(0) >= min_rating]
-        if min_user_rating > 0 and "user_rating" in pool.columns:
-            pool = pool[pool["user_rating"].fillna(0) >= min_user_rating]
+        if "letterboxd_avg_rating" in pool.columns:
+            pool = pool[pool["letterboxd_avg_rating"].fillna(0).between(*lb_rating_range)]
+        if "user_rating" in pool.columns:
+            pool = pool[pool["user_rating"].fillna(0).between(*user_rating_range)]
 
         if pool.empty:
             render_empty_state("🔍", "No matches", "Loosen the filters to see more films.")

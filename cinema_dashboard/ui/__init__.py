@@ -27,6 +27,7 @@ from ui.chips import (
     render_kpi_strip,
 )
 from ui.ics import ADS_MINUTES_CHAIN, ADS_MINUTES_DEFAULT, build_csv_rows, build_ics_events, screening_end, to_ics
+from ui.stats import decade_profile_html, rating_histogram_html
 from ui.theme import MOVIE_QUERY_PARAM, format_runtime, inject_css, movie_href, rating_to_hsl, row_slug
 
 __all__ = [
@@ -46,6 +47,8 @@ __all__ = [
     "render_plan_agenda",
     "render_cart_panel",
     "match_chips_html",
+    "rating_histogram_html",
+    "decade_profile_html",
     "render_chip_filter",
     "render_kpi_strip",
     "render_empty_state",

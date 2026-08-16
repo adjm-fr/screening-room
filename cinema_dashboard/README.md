@@ -49,10 +49,11 @@ The page is backed by `data_letterboxd.parquet`, which is a superset of the rati
 
 ### Movies Database (📊)
 
-Four tabs in place of the old chart wall:
-- **Overview** — Genre × avg rating chart (rated films only) + micro-card insights (runtime distribution sparkline, top directors chip cloud, top themes chip cloud). A caption below the title clarifies the stats are based on your rated films count.
-- **Discover** — chip filters (genre, director multiselect with live search, min-rating slider) over a poster rail of matching films. Each card shows your own star rating as a green chip (Letterboxd convention) next to the amber Letterboxd community average; both ratings are on the same 0–5 scale.
-- **Tables** — raw dataframes with poster, a "Details" link into the film's [movie detail page](#movie-detailmovieslug), IMDB, TMDB, and Letterboxd link columns. A "Streaming on" column lists, per film, the subscribed services currently carrying it (when `STREAMING_SERVICES` is set) plus every no-cost provider suffixed `(free)` (e.g. `netflix, arte-tv (free)`) — free platforms always show, subscription-gated ones don't.
+Five tabs; the computation behind them lives in `core/library.py` (pure stats) and `ui/stats.py` (pure HTML builders), so the page module only renders:
+- **Overview** — the ratings breakdown: a half-star histogram of your ratings grouped under the tier-ladder headers (Masterpiece 4.5–5 down to Don't bother 0.5–1, CSS bars colored by the same 0–5 amber heatmap as the rating chips), a by-decade profile (bar length = films rated from that decade, color = mean rating you gave — `release_year` is the only temporal axis, there is no watched date in the data), and a "You vs Letterboxd" section: mean gap + share-rated-below caption (pre-empting the "am I harsh?" misreading — the tier ladder centers near 2.5 where the community centers near 3.5) over a table of the films you disagree on hardest, both directions, with poster and detail links. Below that, the Genre × avg rating chart, then two compact frequency bars side by side — a 3-bucket runtime distribution and your most-watched genres by count — both in the app's flat red accent rather than the amber rating ramp, since a count isn't a rating.
+- **Taste** — the affinity profile behind every ◎ match badge, surfaced on the page that owns the ratings history. One signed-bar block per taste dimension (directors, genres, themes, cast, decades, countries, languages — each with its blend weight, in the same `.contrib-*` visual vocabulary as the movie detail page's score breakdown): the top-5 liked and 3 most-disliked values, ✓/✗ sentiment judged tier-relatively (`SENTIMENT_PIVOT`), which is why a liked value can still carry a small negative bar. Directors/cast require ≥2 rated films, matching the LLM taste-profile string.
+- **Discover** — chip filters (genre, director multiselect with live search, Letterboxd rating range, your-rating range) over a poster rail of matching films, ranked by Letterboxd community rating (best first). Both rating filters are two-handle range sliders (`st.slider` with a tuple default), independent of each other: Letterboxd rating range narrows by community reception across the whole watchlist+ratings pool, while your-rating range (only films you've actually rated carry one — unrated films collapse to 0 and drop out once the lower bound rises above it) turns the tab into a rewatch (low range) or favorites (high range) filter. Each card shows your own star rating as a green chip (Letterboxd convention) next to the amber Letterboxd community average; both ratings are on the same 0–5 scale.
+- **Tables** — raw dataframes behind a search box (case-insensitive, matches both title spellings + directors) and a column-preset chip row (Essentials / Links / Full metadata / All — presets intersect with each frame's actual columns, so the cache/ratings/watchlist differences never error). Columns include poster, a "Details" link into the film's [movie detail page](#movie-detailmovieslug), IMDB, TMDB, and Letterboxd link columns. A "Streaming on" column lists, per film, the subscribed services currently carrying it (when `STREAMING_SERVICES` is set) plus every no-cost provider suffixed `(free)` (e.g. `netflix, arte-tv (free)`) — free platforms always show, subscription-gated ones don't.
 - **Unmatched** — surfaces `unresolved_allocine.parquet`: Allocine screenings whose title/director combination `movies_management`'s Allocine cache enrichment couldn't resolve to a Letterboxd film, otherwise invisible everywhere else in the dashboard. `sources.loader.load_unresolved_allocine` reads the parquet (a missing file is the normal "nothing unresolved" case, not an error — it returns an empty frame) and `build_unresolved_showtimes` joins it back onto the raw `showtimes.parquet` on the exact `(movie, original_title, director, release_year)` tuple the enrichment step read it from, dropping screenings already in the past (`Europe/Paris` wall-clock, same rule as everywhere else). The page groups that to one row per film — title, director, year, theater(s), next upcoming showtime, and screening count — via `pages.database._unresolved_summary`, and renders a designed "✅ every screening matched" empty state when there's nothing to review.
 
 **Requires**: `OUTPUT_PATH` (+ `ALLOCINE_OUTPUT_PATH` for theater/showtime context on the Unmatched tab — without it the tab still reports the raw unresolved count, just without screening details)
@@ -187,7 +188,7 @@ cinema_dashboard/
 ├── pages/
 │   ├── __init__.py               # Makes `pages` a real package (app.py imports pages.movie — see the module docstring)
 │   ├── 0_home.py                 # Home — hero "tonight" card, poster rails, KPI strip
-│   ├── database.py               # Movies Database page (Overview / Discover / Tables / Unmatched)
+│   ├── database.py               # Movies Database page (Overview / Taste / Discover / Tables / Unmatched)
 │   ├── calendar.py               # Watchlist Showtimes page (top toolbar, day strip, vertical agenda, Time/Match sort, export popover, map view)
 │   ├── movie.py                  # Movie detail page — routed by ?movie=<slug>, not by st.navigation (no import-time main())
 │   ├── paris.py                  # Screening in Paris page — full showtimes×cache discovery, one agenda behind new/second-chance/rewatch lenses
@@ -199,6 +200,7 @@ cinema_dashboard/
 │   ├── availability.py           # Free-time mask (weekend/holiday/day-off/after-cutoff, minus unavailable days)
 │   ├── agenda.py                 # Calendar day grouping, friendly day labels, time/runtime buckets, the one filter chain
 │   ├── lenses.py                 # Screening in Paris lens vocabulary — categorize, drop_uninteresting_seen, lens_counts
+│   ├── library.py                # Movies Database stats — rating histogram/tiers, you-vs-Letterboxd deltas, decade profile, table presets
 │   ├── cart.py                   # Showtimes cart — stable showtime ids, snapshots, reconciliation, ICS frame, persistence
 │   └── backtest.py               # Held-out evaluation of the taste-ranker constants (used by backtest.py)
 ├── sources/                      # Cached parquet readers + joins. Named `sources`, not `data` — the
@@ -223,6 +225,7 @@ cinema_dashboard/
 │   ├── cards.py                    # render_movie_card, render_compact_movie_card, render_poster_rail, render_hero_card
 │   ├── agenda.py                   # render_agenda, render_day_strip, agenda row/day HTML, time pills
 │   ├── chips.py                    # match_chips_html, render_chip_filter, render_kpi_strip, render_empty_state, render_freshness_banner
+│   ├── stats.py                    # Database page stat bars — rating_histogram_html, decade_profile_html, signed affinity blocks
 │   ├── availability.py             # "Only times I'm free" control (render_free_time_filter / FreeTimeSelection)
 │   ├── ics.py                      # screening_end, to_ics, build_ics_events, build_csv_rows, ad-block sizing
 │   └── cmdk.py                     # Global Cmd+K command palette (st.dialog + hand-rolled st.iframe shortcut)

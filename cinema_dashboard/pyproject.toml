@@ -54,7 +54,7 @@ dev = [
     # Lower bound 0.3 — earlier 0.0.x releases use @root_validator() without
     # ``skip_on_failure=True``, which pydantic 2.13 promoted from deprecation
     # to a hard error at class definition time.
-    "langchain>=0.3,<1",
+    "langchain>=0.3,<2",
     # deepeval's pytest plugin imports ``llama_index.core.query_engine`` at
     # startup; that namespace landed in llama-index 0.10. Without a lower
     # bound uv picks the pre-namespace 0.9.x release and pytest fails to load.

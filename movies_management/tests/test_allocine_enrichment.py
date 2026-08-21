@@ -261,15 +261,31 @@ def _bergman_film(**overrides):
     return film | overrides
 
 
-def test_match_cache_falls_back_to_runtime_when_the_year_disagrees():
+def test_match_cache_crosses_a_year_disagreement():
     # Allocine says 1973, the cache row says 1974 — without the fallback this film
     # misses the cache and the live search resolves the 281-min TV entry instead.
     assert _match_cache(_bergman_film(), _build_cache_index(_bergman_cache())) == "scenes-from-a-marriage"
 
 
-def test_match_cache_tier1_wins_when_the_year_matches():
-    # Two candidates: the exact-year one has a far-off runtime, the other is within
-    # tolerance. The year must decide — runtime is never consulted while it can.
+def test_match_cache_prefers_the_exact_year_candidate():
+    # Two candidates identical on title, director and runtime; only the year differs.
+    # The exact-year one must win by more than matching.MARGIN — this is the property
+    # the old tier ordering ("never consult runtime while a year still can") encoded,
+    # restated for a scorer that weighs the terms together instead of in sequence.
+    cache_df = pd.DataFrame(
+        [
+            {"slug": "right-year", "title": "Twin", "directors": "A Director", "release_year": 1980, "runtime": 100.0},
+            {"slug": "wrong-year", "title": "Twin", "directors": "A Director", "release_year": 1999, "runtime": 100.0},
+        ]
+    )
+    film = {"title": "Twin", "original_title": None, "director": "A Director", "release_year": 1980, "runtime": "1h 40min"}
+    assert _match_cache(film, _build_cache_index(cache_df)) == "right-year"
+
+
+def test_match_cache_veto_outranks_an_exact_year_match():
+    # The veto is absolute: an exact-year, exact-title, exact-director candidate whose
+    # runtime is 100 minutes off is a different cut, and no other agreement rescues it.
+    # The rival is 19 years out, so the correct answer is neither — abstain.
     cache_df = pd.DataFrame(
         [
             {"slug": "right-year", "title": "Twin", "directors": "A Director", "release_year": 1980, "runtime": 200.0},
@@ -277,10 +293,10 @@ def test_match_cache_tier1_wins_when_the_year_matches():
         ]
     )
     film = {"title": "Twin", "original_title": None, "director": "A Director", "release_year": 1980, "runtime": "1h 40min"}
-    assert _match_cache(film, _build_cache_index(cache_df)) == "right-year"
+    assert _match_cache(film, _build_cache_index(cache_df)) is None
 
 
-def test_match_cache_refuses_when_two_candidates_are_within_tolerance():
+def test_match_cache_refuses_when_two_candidates_are_indistinguishable():
     # The real `Paranoia` collision: two different Umberto Lenzi films released in
     # France under the same title, 3 minutes apart. Only the year ever separated
     # them, so when the year matches neither, refusing beats guessing.
@@ -306,32 +322,37 @@ def test_match_cache_refuses_when_two_candidates_are_within_tolerance():
     assert _match_cache(film, _build_cache_index(cache_df)) is None
 
 
-def test_match_cache_tier2_ignores_candidates_outside_tolerance():
-    # 169 vs 120 min is not the same film, whatever the title and director say.
+def test_match_cache_vetoes_a_gross_runtime_mismatch():
+    # 169 vs 120 min is a different cut, whatever the title and director say. The
+    # weighted mean alone would still accept it (~0.82, runtime is only 0.09 of the
+    # weight) — matching.RUNTIME_VETO_MINUTES is what rejects it.
     assert _match_cache(_bergman_film(runtime="2h 00min"), _build_cache_index(_bergman_cache())) is None
 
 
 @pytest.mark.parametrize("runtime", [None, float("nan"), "", "unknown", 168])
-def test_match_cache_tier2_skipped_without_a_parseable_allocine_runtime(runtime):
-    # A null runtime is contract-legal — it must skip the tier, never raise.
-    assert _match_cache(_bergman_film(runtime=runtime), _build_cache_index(_bergman_cache())) is None
+def test_match_cache_resolves_a_year_disagreement_without_runtime_evidence(runtime):
+    # A null/unparseable runtime is contract-legal. The old tier 2 needed runtime to
+    # cross a year disagreement at all, so all of these used to miss; the scorer
+    # simply renormalises the term away and resolves on title + director + year.
+    # This is the *Scenes from a Marriage* case the old fallback was written for.
+    assert _match_cache(_bergman_film(runtime=runtime), _build_cache_index(_bergman_cache())) == "scenes-from-a-marriage"
 
 
-def test_match_cache_tier2_skipped_when_the_cache_row_has_no_runtime():
+def test_match_cache_resolves_when_the_cache_row_has_no_runtime():
     cache_df = _bergman_cache()
     cache_df["runtime"] = float("nan")
-    assert _match_cache(_bergman_film(), _build_cache_index(cache_df)) is None
+    assert _match_cache(_bergman_film(), _build_cache_index(cache_df)) == "scenes-from-a-marriage"
 
 
-def test_match_cache_tier2_missing_runtime_key_does_not_raise():
-    # Callers that build a film dict by hand (as several tests here do) simply get
-    # tier 1 — the fallback is opt-in on the key's presence, not a required field.
+def test_match_cache_tolerates_a_film_dict_without_a_runtime_key():
+    # Callers that build a film dict by hand (as several tests here do) must not
+    # raise — the key is read with .get(), so its absence is just "no runtime".
     film = _bergman_film()
     del film["runtime"]
-    assert _match_cache(film, _build_cache_index(_bergman_cache())) is None
+    assert _match_cache(film, _build_cache_index(_bergman_cache())) == "scenes-from-a-marriage"
 
 
-def test_match_cache_tier2_counts_one_cache_row_once():
+def test_match_cache_counts_one_cache_row_once():
     # _build_cache_index files a row under every title spelling it carries, so this
     # row is reachable via both `title` and `original_title`. Counting entries
     # rather than slugs would call it ambiguous and refuse a legitimate match.
@@ -361,13 +382,13 @@ def test_match_cache_tier2_counts_one_cache_row_once():
 def test_build_cache_index_tolerates_a_non_numeric_cache_runtime():
     # The cache's `runtime` is float64, but index building must not crash the whole
     # enrichment run on a malformed cell — the same tolerance the adjacent
-    # `release_year` parse has always had. The row just loses its tier-2 eligibility.
+    # `release_year` parse has always had. The row just scores without a runtime term.
     cache_df = _bergman_cache()
     cache_df["runtime"] = "not a number"
-    assert _match_cache(_bergman_film(), _build_cache_index(cache_df)) is None
+    assert _match_cache(_bergman_film(), _build_cache_index(cache_df)) == "scenes-from-a-marriage"
 
 
-def test_match_cache_tier2_still_requires_director_overlap():
+def test_match_cache_still_requires_director_overlap():
     assert _match_cache(_bergman_film(director="Someone Else"), _build_cache_index(_bergman_cache())) is None
 
 

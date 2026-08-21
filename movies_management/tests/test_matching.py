@@ -40,9 +40,28 @@ def test_title_term_tolerates_word_order():
     assert s.title > 0.8
 
 
-def test_title_term_is_low_for_unrelated_titles():
+def test_title_term_is_absent_for_unrelated_titles():
+    # Below TITLE_EVIDENCE_FLOOR the term reports None (absent), not a low float:
+    # one film is routinely catalogued under wholly unrelated names in two
+    # languages, so a low similarity is no evidence either way and must not drag
+    # the total down. See matching.TITLE_EVIDENCE_FLOOR.
     s = score(_query(titles=("Paprika",)), _candidate(titles=("The Godfather",)))
-    assert s.title < 0.4
+    assert s.title is None
+
+
+def test_title_term_still_discriminates_above_the_floor():
+    close = score(_query(titles=("The Misfits",)), _candidate(titles=("The Misfits",)))
+    apart = score(_query(titles=("The Misfits",)), _candidate(titles=("The Misfits 2021",)))
+    assert close.title == 1.0
+    assert apart.title is not None and apart.title < close.title
+
+
+def test_a_candidate_without_a_year_is_penalised_not_excused():
+    # A year-less Letterboxd record is a stub for an unreleased film. Renormalising
+    # the term away would reward it for carrying less data and let it trip MARGIN
+    # against the real match — measured on `cosmos-1`/`untitled-undertone-prequel`.
+    stub = score(_query(year=2026), _candidate(year=None))
+    assert stub.year == 0.0
 
 
 def test_director_containment_shortcut_scores_one():

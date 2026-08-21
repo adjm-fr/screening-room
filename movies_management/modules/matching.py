@@ -25,8 +25,16 @@ the numbers to regress against:
   three genuinely-different-film pairs ``paranoia-1969``/
   ``a-quiet-place-to-kill``, ``wild-and-woolfy``/``little-red-walking-hood``
   and ``who-killed-who``/``thugs-with-dirty-mugs``), each probed in both
-  directions and at year offsets 0/+1/-1. Result: 38 correct, 94 abstain,
+  directions and at year offsets 0/+1/-1. Result: 44 correct, 88 abstain,
   **0 wrong**. Abstaining on a genuine collision is the designed answer.
+* End-to-end over the whole feed, cache path only (no network): 292 films
+  resolved before, 296 after, **0 resolved to a different slug**. The six gains
+  are cross-source drift the old exact matching could not cross —
+  ``Andreï Zviaguintsev``/``Andrey Zvyagintsev`` (*Le Retour*), ``Loulou``/
+  ``Pandora's Box``, a missing ``"Le"`` in the cache's *Cadet d'eau douce* — and
+  the two losses are the duplicate rows below. On the search path 15 films that
+  previously failed now resolve, including a correct ``None`` for one genuinely
+  absent from Letterboxd.
 * The two "false negatives" are **duplicate cache rows for one film**
   (``the-hero-of-friedrichstrasse-station``/``berlin-hero`` and
   ``jim-queen``/``jim-queen-and-the-quest-for-chloroqueer``): identical on
@@ -53,6 +61,27 @@ from rapidfuzz import fuzz
 #: zero. 3.0 gives 1.0 / 0.67 / 0.33 / 0 at deltas 0/1/2/3 — the observed
 #: Allocine-vs-Letterboxd disagreement maxes out at 2 years across the feed.
 YEAR_TAPER = 3.0
+
+#: Below this title similarity the title term counts as *absent* rather than
+#: contradictory. Two sources legitimately carry one film under wholly unrelated
+#: names — ``Dans la ville blanche``/``In the White City``, ``Loulou``/
+#: ``Pandora's Box``, ``Les Désaxés``/``The Misfits`` — so a low score is
+#: absence of evidence, not evidence of mismatch, and letting it drag the total
+#: down rejects correct cross-language matches (measured: the Tanner film scored
+#: 0.66 against a 0.75 bar on an otherwise perfect director + adjacent year).
+#: Above the floor the term still discriminates normally.
+TITLE_EVIDENCE_FLOOR = 0.55
+
+#: A runtime gap this large vetoes the match outright, whatever the other terms
+#: say. The weighted mean alone cannot express this: runtime carries 0.09 of the
+#: weight, so an exact title + exact director + adjacent year still scores ~0.82
+#: with a 49-minute discrepancy — and same-title/same-director/adjacent-year is
+#: precisely the theatrical-cut-vs-TV-cut shape (*Scenes from a Marriage*: a
+#: 169-min film and a 281-min television version) the old runtime tier existed to
+#: reject. Measured over the 289 genuine matches with a runtime on both sides:
+#: p50 1.0, p90 4.0, p95 7.6, p99 16.4, **max 37.0** minutes, and zero above 45 —
+#: so this vetoes no real match while keeping the guard the tiers used to provide.
+RUNTIME_VETO_MINUTES = 45.0
 
 #: How many minutes apart two runtimes can sit before the runtime term goes to
 #: zero. 15.0 sits just above the p99 (14.8 min) of the runtime gap measured
@@ -124,28 +153,39 @@ class Score:
     """A match score, broken down by term. ``total`` is what callers compare."""
 
     total: float
-    title: float
+    title: float | None
     director: float
     year: float | None
     runtime: float | None
 
 
-def _title_term(q_titles: tuple[str, ...], c_titles: tuple[str, ...]) -> float:
+def _title_term(q_titles: tuple[str, ...], c_titles: tuple[str, ...]) -> float | None:
     """Max ``token_sort_ratio`` over every (query title, candidate title) pair.
+
+    ``None`` when either side carries no usable title at all, so the term is
+    renormalised away exactly like ``year``/``runtime`` are. Absent evidence is
+    not the same as contradictory evidence: scoring a missing title as 0.0
+    would let it veto an otherwise perfect director+year match. Every real
+    cache row and every real Letterboxd search hit carries a title, so this
+    only guards the degenerate case.
 
     ``token_sort_ratio`` (not a plain ratio) tolerates word-order differences
     between sources — e.g. subtitle punctuation or article placement — the
     same tolerance the old exact-normalised-title blocking step relied on,
     just continuous instead of binary.
     """
-    best = 0.0
+    best: float | None = None
     for qt in q_titles:
         if not qt:
             continue
         for ct in c_titles:
             if not ct:
                 continue
-            best = max(best, fuzz.token_sort_ratio(qt, ct) / 100.0)
+            score = fuzz.token_sort_ratio(qt, ct) / 100.0
+            best = score if best is None else max(best, score)
+    if best is not None and best < TITLE_EVIDENCE_FLOOR:
+        # See TITLE_EVIDENCE_FLOOR: too low to mean anything either way.
+        return None
     return best
 
 
@@ -179,12 +219,32 @@ def _director_term(q_tokens: tuple[frozenset[str], ...], c_tokens: tuple[frozens
 
 
 def _year_term(q_year: int | None, c_year: int | None) -> float | None:
-    if q_year is None or c_year is None:
+    """Year proximity, or ``None`` when the *query* carries no year to compare.
+
+    A candidate that has no year while the query does scores **0.0**, not
+    ``None``. Renormalising it away would reward a record for carrying less
+    data: on Letterboxd a year-less entry is a stub for an unreleased or
+    unnamed film (``cosmos-1``, ``untitled-undertone-prequel``), and those were
+    measured scoring 0.72-0.76 on title and director alone — close enough to
+    the correct match to trip MARGIN and force an abstention. Absence on the
+    candidate side is informative; absence on the query side is not.
+    """
+    if q_year is None:
         return None
+    if c_year is None:
+        return 0.0
     return max(0.0, 1.0 - abs(q_year - c_year) / YEAR_TAPER)
 
 
 def _runtime_term(q_runtime: float | None, c_runtime: float | None) -> float | None:
+    """Runtime proximity, or ``None`` when either side lacks one.
+
+    Deliberately *not* the asymmetric rule :func:`_year_term` uses. A missing
+    runtime on a candidate carries no signal: the Letterboxd search API returns
+    ``slug``/``title``/``year``/``directors`` and never a runtime, so scoring
+    its absence as 0.0 would tax every search hit identically rather than
+    discriminate between them.
+    """
     if q_runtime is None or c_runtime is None:
         return None
     return max(0.0, 1.0 - abs(q_runtime - c_runtime) / RUNTIME_TAPER)
@@ -210,8 +270,11 @@ def score(q: Query, c: Candidate, *, weights: dict[str, float] | None = None) ->
     year = _year_term(q.year, c.year)
     runtime = _runtime_term(q.runtime, c.runtime)
 
-    numerator = w["title"] * title + w["director"] * director
-    denominator = w["title"] + w["director"]
+    numerator = w["director"] * director
+    denominator = w["director"]
+    if title is not None:
+        numerator += w["title"] * title
+        denominator += w["title"]
     if year is not None:
         numerator += w["year"] * year
         denominator += w["year"]
@@ -220,6 +283,11 @@ def score(q: Query, c: Candidate, *, weights: dict[str, float] | None = None) ->
         denominator += w["runtime"]
 
     total = numerator / denominator if denominator else 0.0
+    if q.runtime is not None and c.runtime is not None and abs(q.runtime - c.runtime) > RUNTIME_VETO_MINUTES:
+        # See RUNTIME_VETO_MINUTES: a gross runtime mismatch is a different cut of
+        # the film, not the film, and no amount of title/director agreement should
+        # outvote it.
+        total = 0.0
     return Score(total=total, title=title, director=director, year=year, runtime=runtime)
 
 

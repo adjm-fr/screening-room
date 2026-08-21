@@ -83,30 +83,6 @@ class SweepCandidate:
     margin: float
 
 
-def _cache_titles_by_slug(cache_df: pd.DataFrame) -> dict[str, tuple[str, ...]]:
-    """Map each cache ``slug`` to its non-null title spellings (title/french_title/original_title)."""
-    titles: dict[str, tuple[str, ...]] = {}
-    for row in cache_df.itertuples():
-        slug = getattr(row, "slug", None)
-        if not slug or pd.isna(slug):
-            continue
-        vals = tuple(
-            str(v) for col in ("title", "french_title", "original_title") if (v := getattr(row, col, None)) and pd.notna(v)
-        )
-        titles[slug] = vals
-    return titles
-
-
-def _candidate_from_entry(entry: dict, titles_by_slug: dict[str, tuple[str, ...]]) -> matching.Candidate:
-    return matching.Candidate(
-        slug=entry["slug"],
-        titles=titles_by_slug.get(entry["slug"], ()),
-        year=entry["release_year"],
-        director_tokens=tuple(entry["director_tokens"]),
-        runtime=entry["runtime"],
-    )
-
-
 def build_labeled_pairs(showtimes_df: pd.DataFrame, cache_df: pd.DataFrame) -> tuple[list[Pair], list[Pair]]:
     """Derive (positives, negatives) ground truth from the real showtimes + cache parquets.
 
@@ -117,7 +93,6 @@ def build_labeled_pairs(showtimes_df: pd.DataFrame, cache_df: pd.DataFrame) -> t
     wouldn't have found.
     """
     cache_index = ae._build_cache_index(cache_df)
-    titles_by_slug = _cache_titles_by_slug(cache_df)
 
     key_cols = [c for c in ("movie", "original_title", "director", "release_year", "runtime") if c in showtimes_df.columns]
     unique_films = showtimes_df[key_cols].drop_duplicates().reset_index(drop=True)
@@ -147,12 +122,25 @@ def build_labeled_pairs(showtimes_df: pd.DataFrame, cache_df: pd.DataFrame) -> t
         if not allocine_tokens:
             continue
 
-        candidates = ae._confirmed_candidates(film, cache_index, allocine_tokens)
-        tier1 = [c for c in candidates if c["release_year"] == year]
+        # Ground truth is the OLD two-tier definition: title-blocked, director-
+        # confirmed, exact release_year, first match in title-then-original_title
+        # order. Reimplemented here rather than imported, because the shipping code
+        # no longer has those tiers — this harness is precisely what proves the
+        # scorer reproduces them, so the definition must be pinned independently of
+        # whatever allocine_enrichment does now.
+        confirmed: dict[str, matching.Candidate] = {}
+        for t in (title, original_title):
+            norm = ae._normalize_title(t)
+            if not norm:
+                continue
+            for cand in cache_index.get(norm, []):
+                if cand.slug in confirmed:
+                    continue
+                if ae._directors_overlap(list(allocine_tokens), list(cand.director_tokens)):
+                    confirmed[cand.slug] = cand
+        tier1 = [c for c in confirmed.values() if c.year == year]
         if not tier1:
             continue
-        # Mirrors _match_cache: the first tier-1 candidate in _confirmed_candidates'
-        # title-then-original_title order is the one the shipping code would pick.
         match = tier1[0]
 
         query = matching.Query(
@@ -161,18 +149,18 @@ def build_labeled_pairs(showtimes_df: pd.DataFrame, cache_df: pd.DataFrame) -> t
             director_tokens=tuple(allocine_tokens),
             runtime=ae._parse_runtime(film["runtime"]),
         )
-        positives.append(Pair(query=query, candidate=_candidate_from_entry(match, titles_by_slug), label=True))
+        positives.append(Pair(query=query, candidate=match, label=True))
 
-        seen_slugs = {match["slug"]}
+        seen_slugs = {match.slug}
         for t in (title, original_title):
             norm = ae._normalize_title(t)
             if not norm:
                 continue
-            for entry in cache_index.get(norm, []):
-                if entry["slug"] in seen_slugs:
+            for cand in cache_index.get(norm, []):
+                if cand.slug in seen_slugs:
                     continue
-                seen_slugs.add(entry["slug"])
-                negatives.append(Pair(query=query, candidate=_candidate_from_entry(entry, titles_by_slug), label=False))
+                seen_slugs.add(cand.slug)
+                negatives.append(Pair(query=query, candidate=cand, label=False))
 
     return positives, negatives
 

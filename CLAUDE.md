@@ -901,6 +901,49 @@ typecheck (mypy blocking + ty advisory), security, test.
   `Ringo Lam Ling-Tung`) still matches while genuinely different directors are still rejected. Don't tighten
   this back to exact-key equality — that silently drops legitimately-screening films (the bug that motivated
   the containment relaxation). A missing/blank director on *either* side rejects the row.
+- **`movies_management/modules/matching.py` is one combined scorer, and it replaced
+  `allocine_enrichment`'s two hand-tuned tiers** (exact-year + director-containment, then a
+  uniqueness-gated runtime-proximity fallback). `Query`/`Candidate`/`score`/`best_match` are pure (no I/O,
+  no pandas) and weigh title/director/year/runtime as a renormalized weighted mean, accepting only when a
+  candidate clears `ACCEPT` **and** leads the runner-up by `MARGIN` — the continuous analogue of the old
+  "exactly one qualifying candidate, or nothing" guard. Retrieval is still two-source (cache index first,
+  live Letterboxd search only on a miss); it is the *scoring* that unified. **The cache-first short-circuit
+  is load-bearing** — without it a run makes 328 searches instead of ~40.
+  Calibrated against the real parquets (2026-08-22) by `modules/match_calibration.py`: **precision 1.0000,
+  recall 0.9931**, 0 wrong picks; cache path end-to-end 292 → 296 films resolved with **0 resolved to a
+  different slug**; 15 previously-failing films now resolve on the search path.
+  Five things not to undo, each measured:
+  **`MARGIN` carries precision, not `ACCEPT`.** The joint sweep is flat in `ACCEPT` (0.60–0.80 all give
+  recall 0.9931) but breaks in `MARGIN`: at 0.03/0.05 the cache's 22 same-title/overlapping-director
+  collision pairs produce 2–4 wrong picks at *every* `ACCEPT`. Only ≥0.08 reaches zero, and 0.08 holds
+  solely at `WEIGHTS["year"] == 0.20`; 0.12 is zero-wrong at both year weights tried. Don't lower it to buy
+  recall — there is no recall to buy.
+  **The director term's containment shortcut must stay ahead of the fuzzy ratio.** It scores `1.0` on the
+  existing `_directors_overlap` rule, so every pair matching before still scores full marks and fuzzy can
+  only add resolution *below* today's pass bar. That is what makes fuzzy matching safe here rather than the
+  usual way wrong films get attached.
+  **`RUNTIME_VETO_MINUTES` (45) is a hard veto, not a term.** Runtime carries 0.09 of the weight, so an
+  exact title + exact director + adjacent year still scores ~0.82 with a 49-minute gap — and that shape is
+  precisely a theatrical-cut-vs-TV-cut collision (*Scenes from a Marriage*, 169 min vs a 281-min TV
+  version). Genuine matches measured over 289 positives: p99 16.4, **max 37.0** minutes, zero above 45, so
+  the veto rejects no real match.
+  **`TITLE_EVIDENCE_FLOOR` (0.55) turns a low title score into `None`, not a penalty.** One film is
+  routinely catalogued under unrelated names in two languages (`Dans la ville blanche`/`In the White City`,
+  `Loulou`/`Pandora's Box`, `Les Désaxés`/`The Misfits`), so a low similarity is absence of evidence. Before
+  the floor the Tanner film scored 0.66 against a 0.75 bar on an otherwise perfect director + adjacent year.
+  **`_year_term` and `_runtime_term` treat a missing candidate value differently, on purpose.** A candidate
+  with no year while the query has one scores **0.0**, not `None`: on Letterboxd a year-less entry is a stub
+  for an unreleased film (`cosmos-1`, `untitled-undertone-prequel`), and renormalising it away rewarded it
+  for carrying less data — measured at 0.72–0.76 on title+director alone, close enough to trip `MARGIN`
+  against the real match. Runtime does the opposite and renormalises, because the search API *never*
+  returns one, so penalising its absence would tax every search hit identically. Absence is informative on
+  the candidate side only when the field is normally present.
+  Search hits carry no runtime, so `_rescore_with_runtimes` fetches it for the **top two candidates only**,
+  and only when they cleared `ACCEPT` but sat inside `MARGIN` — a tiebreak that costs a request exactly when
+  it can change the answer. The two remaining recall misses are **duplicate cache rows for one film**
+  (`the-hero-of-friedrichstrasse-station`/`berlin-hero`, `jim-queen`/`jim-queen-and-the-quest-for-chloroqueer`),
+  identical on every term, where abstaining is correct; effective recall on distinct films is 288/288.
+  Re-run `python match_calibration.py --showtimes-path …` (and `--sweep`) after touching any constant.
 - **Ratings are on a 0–5 scale, not 0–10.** Both `user_rating` (0.5–5.0, half-star steps) and
   `letterboxd_avg_rating` (community weighted average, ~1.2–4.7 in practice) are 0–5. `ui.theme.rating_to_hsl`
   takes a `scale_max` (default 10 for the 0–100 match heatmap) — the rating chips pass `scale_max=5.0`, and

@@ -11,37 +11,32 @@ import logging
 import os
 import re
 import unicodedata
+from dataclasses import replace
 
 import pandas as pd
 from common.parquet_io import read_parquet_validated, write_parquet_validated
 from contracts import DATA_LETTERBOXD, SHOWTIMES
 from letterboxdpy.search import Search, SearchFilter
+from rapidfuzz import fuzz, process
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from modules.get_letterboxd_data import get_letterboxd_data
+from modules import matching
+from modules.get_letterboxd_data import _build_movie, get_letterboxd_data
 
 logger = logging.getLogger(__name__)
-
-#: How far Allocine's runtime may sit from the cache's before the runtime-proximity
-#: fallback (:func:`_match_by_runtime`) stops believing two rows are the same film.
-#: Calibrated on the real parquets (Aug 2026) over the 308 films tier 1 matches
-#: today: |Δ| is p50 1.0, p90 4.0, p95 8.0, p99 14.8, max 37.0 minutes, so ±10
-#: covers 97.7% of genuine matches.
-#:
-#: The tolerance is *not* what makes the fallback safe — uniqueness is. A sweep of
-#: the cache for same-title/overlapping-director pairs found 36, of which 30 sit
-#: within this tolerance of each other, including the three that are genuinely
-#: different films (``paranoia-1969``/``a-quiet-place-to-kill`` at 3 min,
-#: ``wild-and-woolfy``/``little-red-walking-hood`` at 1, ``who-killed-who``/
-#: ``thugs-with-dirty-mugs`` at 0). Tightening this number protects none of them;
-#: refusing to choose between two qualifying candidates does.
-RUNTIME_TOLERANCE_MINUTES = 10.0
 
 #: Allocine's ``runtime`` display string, e.g. ``"2h 48min"`` (the only shape in the
 #: real feed: all 107 distinct values match it, none null). Anchored end-to-end on
 #: purpose — a string this doesn't fully account for parses to ``None`` and simply
 #: skips tier 2, rather than silently yielding a wrong number of minutes (an
 #: unanchored ``(\d+)\s*h`` would read ``"2h12"`` as 120).
+#: Minimum rapidfuzz ratio, and how many title keys to take, for the fuzzy
+#: title-blocking fallback in :func:`_cache_candidates`. Deliberately tight:
+#: blocking only has to *reach* the right row, the scorer still has to accept
+#: it, so a loose cutoff buys nothing but a bigger candidate list to out-margin.
+_FUZZY_TITLE_CUTOFF = 88
+_FUZZY_TITLE_LIMIT = 5
+
 _RUNTIME_RE = re.compile(r"^\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*min)?\s*$", re.IGNORECASE)
 
 
@@ -51,25 +46,74 @@ def _search_films(query: str) -> list[dict]:
     return Search(query, SearchFilter.FILMS).results.get("results", [])
 
 
-def _director_tokens(name: str) -> frozenset[str]:
-    """Return the set of normalised name tokens for a single director.
+#: Characters NFKD combining-strip cannot decompose (they aren't combining-mark
+#: compositions, they're distinct letters with no canonical decomposition), plus
+#: the two-letter Latin transliterations for the digraphs among them. Measured
+#: against the real cache (Aug 2026): 12 rows carry ``ø``/``ł``/``Ø``/``ı``
+#: (Rønning, Żuławski, Øvredal, Yılmaz Güney) that the accent strip alone leaves
+#: untouched, which is what let ``Andrzej Zulawski`` vs ``Andrzej Żuławski`` keep
+#: failing containment even after normalisation.
+_EXTRA_LETTER_TRANSLATION = str.maketrans(
+    {
+        "ł": "l",
+        "Ł": "L",
+        "ø": "o",
+        "Ø": "O",
+        "ı": "i",
+        "İ": "I",
+        "đ": "d",
+        "Đ": "D",
+        "ħ": "h",
+        "ŧ": "t",
+        "æ": "ae",
+        "œ": "oe",
+    }
+)
 
-    NFKD normalises accents; non-alpha chars become spaces (so hyphens, dotted
-    initials, and parenthetical suffixes like ``"(II)"`` all split into
-    tokens); everything is lower-cased. A token *set* (not a joined string)
-    lets :func:`_directors_overlap` test containment, which tolerates the
+
+def _director_tokens(name: str) -> list[frozenset[str]]:
+    """Return the normalised name-token variants for a single director.
+
+    NFKD normalises accents; the extra Latin-transliteration table above
+    handles the letters NFKD can't (see :data:`_EXTRA_LETTER_TRANSLATION`);
+    non-alpha chars become spaces (so hyphens, dotted initials, and
+    parenthetical suffixes like ``"(II)"`` all split into tokens); everything
+    is lower-cased. A token *set* (not a joined string) lets
+    :func:`_directors_overlap` test containment, which tolerates the
     name-form drift between Allocine and Letterboxd that exact-string
     equality could not — e.g. Allocine's ``"S.S. Rajamouli"`` vs
     Letterboxd's ``"S. S. Rajamouli"``.
+
+    Returns a **list of variant token sets**, not one set: when the name
+    contains an apostrophe or hyphen, a second variant is added with that
+    punctuation's tokens joined rather than split (``"Shin'ichirô Watanabe"``
+    → both ``{shin, ichiro, watanabe}`` and ``{shinichiro, watanabe}``), so a
+    match succeeds against either a source that splits on it
+    (``"Park Sye-young"``) or one that doesn't (``"Syeyoung Park"``). The
+    split variant is always kept *alongside* the joined one, never replaced —
+    collapsing ``"Jean-Luc"`` to ``"jeanluc"`` outright would break
+    ``"Jean-Luc Godard"`` vs ``"Jean Luc Godard (II)"``, whose split tokens
+    are what makes one side a subset of the other; see
+    ``test_director_tokens_keeps_the_split_variant_for_containment``.
     """
     s = unicodedata.normalize("NFKD", name)
     s = "".join(c for c in s if not unicodedata.combining(c))
-    s = "".join(c if c.isalpha() else " " for c in s).lower()
-    return frozenset(s.split())
+    s = s.translate(_EXTRA_LETTER_TRANSLATION)
+    split_form = "".join(c if c.isalpha() else " " for c in s).lower()
+    variants = [frozenset(split_form.split())]
+
+    if "'" in s or "-" in s:
+        joined_form = "".join(c if c.isalpha() or c in "'-" else " " for c in s).lower()
+        joined_form = joined_form.replace("'", "").replace("-", "")
+        joined = frozenset(joined_form.split())
+        if joined and joined not in variants:
+            variants.append(joined)
+
+    return [v for v in variants if v]
 
 
 def _split_director_tokens(value: object, sep: str) -> list[frozenset[str]]:
-    """Split a director string on ``sep`` into one token set per director.
+    """Split a director string on ``sep`` into token-set variants, one group per director.
 
     ``isinstance`` (not just truthiness) guards against a NaN ``directors``
     cell from a real cache DataFrame — ``bool(float("nan"))`` is ``True``, so
@@ -77,12 +121,12 @@ def _split_director_tokens(value: object, sep: str) -> list[frozenset[str]]:
     """
     if not isinstance(value, str) or not value:
         return []
-    return [tokens for name in value.split(sep) if (tokens := _director_tokens(name))]
+    return [variant for name in value.split(sep) for variant in _director_tokens(name)]
 
 
 def _letterboxd_result_director_tokens(item: dict) -> list[frozenset[str]]:
-    """Extract one token set per director from a Letterboxd search result."""
-    return [tokens for d in item.get("directors") or [] if (name := d.get("name")) and (tokens := _director_tokens(name))]
+    """Extract token-set variants for every director in a Letterboxd search result."""
+    return [variant for d in item.get("directors") or [] if (name := d.get("name")) for variant in _director_tokens(name)]
 
 
 def _directors_overlap(a_tokens: list[frozenset[str]], b_tokens: list[frozenset[str]]) -> bool:
@@ -95,9 +139,16 @@ def _directors_overlap(a_tokens: list[frozenset[str]], b_tokens: list[frozenset[
     return any(a <= b or b <= a for a in a_tokens for b in b_tokens)
 
 
-def _search_letterboxd_slug(query: str, year_str: str | None, director: str | None) -> str | None:
-    """Search Letterboxd for a film slug, scoring candidates by year and director match."""
+def _search_letterboxd_slug(query: str, year_str: str | None, director: str | None, runtime: float | None = None) -> str | None:
+    """Search Letterboxd for a film slug and pick a match with the combined scorer.
 
+    The search API returns only ``slug``/``title``/``year``/``directors`` — no
+    runtime — so the scorer runs with its runtime term absent (renormalised
+    away) on the first pass. Only when that leaves the top two candidates inside
+    ``matching.MARGIN`` does :func:`_rescore_with_runtimes` fetch runtime, for
+    those two rows alone: it is a tiebreak, so it costs a request exactly when
+    it can change the answer and none otherwise.
+    """
     if not year_str or not director:
         logger.debug("Letterboxd search skipped: query=%r year=%s director=%s", query, year_str, director)
         return None
@@ -110,21 +161,86 @@ def _search_letterboxd_slug(query: str, year_str: str | None, director: str | No
         return None
 
     logger.debug("  → %d candidates for query=%r", len(results), query)
-    allocine_tokens = _split_director_tokens(director, "|")
+    allocine_tokens = tuple(_split_director_tokens(director, "|"))
+    if not allocine_tokens:
+        return None
+    try:
+        year = int(year_str)
+    except (TypeError, ValueError):
+        return None
 
-    for item in results:
-        item_year = str(item.get("year", ""))
-        if item_year != year_str:
-            logger.debug("    skip slug=%s: year %s ≠ %s", item.get("slug"), item_year, year_str)
-            continue
-        lb_tokens = _letterboxd_result_director_tokens(item)
-        if _directors_overlap(allocine_tokens, lb_tokens):
-            slug = item.get("slug") or None
-            logger.debug("    match slug=%s (directors %s)", slug, allocine_tokens)
-            return slug
-        logger.debug("    skip slug=%s: no director overlap (%s vs %s)", item.get("slug"), allocine_tokens, lb_tokens)
+    q = matching.Query(titles=(query,), year=year, director_tokens=allocine_tokens, runtime=runtime)
+    candidates = [c for item in results if (c := _candidate_from_search_result(item)) is not None]
+    if not candidates:
+        return None
 
-    return None
+    result = matching.best_match(q, candidates) or _rescore_with_runtimes(q, candidates)
+    if result is None:
+        logger.debug("    search scorer declined %r among %d candidates", query, len(candidates))
+        return None
+    candidate, score = result
+    logger.debug("    search scorer matched %r → %s (total %.3f)", query, candidate.slug, score.total)
+    return candidate.slug
+
+
+def _candidate_from_search_result(item: dict) -> matching.Candidate | None:
+    """Build a scorer candidate from one Letterboxd search hit, or ``None`` without a slug.
+
+    The hit's ``title`` is used rather than discarded: it is the only title
+    signal the search side carries, and the title term is what separates a
+    same-year same-director sequel from the film actually asked for.
+    """
+    slug = item.get("slug")
+    if not slug:
+        return None
+    raw_year = item.get("year")
+    try:
+        year = int(raw_year) if raw_year is not None else None
+    except (TypeError, ValueError):
+        year = None
+    title = item.get("title")
+    return matching.Candidate(
+        slug=str(slug),
+        titles=(str(title),) if title else (),
+        year=year,
+        runtime=None,
+        director_tokens=tuple(_letterboxd_result_director_tokens(item)),
+    )
+
+
+def _rescore_with_runtimes(
+    q: matching.Query, candidates: list[matching.Candidate]
+) -> tuple[matching.Candidate, matching.Score] | None:
+    """Break a two-way near-tie among search hits by fetching their runtimes.
+
+    Fires only when the Allocine side has a runtime to compare against *and* the
+    top two candidates cleared ACCEPT but sat inside MARGIN — exactly the case
+    where the search API's missing runtime is what left the scorer unable to
+    choose. Two film pages are fetched, never the whole result list. A failed
+    fetch leaves that candidate's runtime ``None``, which simply reproduces the
+    abstention rather than inventing a winner.
+    """
+    if q.runtime is None or len(candidates) < 2:
+        return None
+    scored = sorted(((matching.score(q, c).total, c) for c in candidates), key=lambda pair: pair[0], reverse=True)
+    (top_score, top), (second_score, second) = scored[0], scored[1]
+    if top_score < matching.ACCEPT or (top_score - second_score) >= matching.MARGIN:
+        return None
+    logger.debug("    near-tie %s/%s (%.3f vs %.3f) — fetching runtimes", top.slug, second.slug, top_score, second_score)
+    return matching.best_match(q, [_with_runtime(top), _with_runtime(second)])
+
+
+def _with_runtime(candidate: matching.Candidate) -> matching.Candidate:
+    """Return ``candidate`` with its runtime filled in from its Letterboxd page."""
+    try:
+        runtime = _build_movie(candidate.slug).runtime
+    except Exception as e:
+        logger.debug("    runtime fetch failed for %s: %s", candidate.slug, e)
+        return candidate
+    try:
+        return replace(candidate, runtime=float(runtime) if runtime is not None else None)
+    except (TypeError, ValueError):
+        return candidate
 
 
 async def resolve_slug_from_allocine_tuple(
@@ -132,6 +248,7 @@ async def resolve_slug_from_allocine_tuple(
     original_title: str | None,
     director: str | None,
     release_year: int | str | None,
+    runtime: object = None,
 ) -> str | None:
     """Resolve a Letterboxd slug from an Allocine film tuple.
 
@@ -151,6 +268,9 @@ async def resolve_slug_from_allocine_tuple(
         original_title: Original-language title (may be None or identical to title).
         director: Director name string from Allocine (used for post-filtering).
         release_year: 4-digit release year (int or str).  May be None.
+        runtime: Allocine's raw runtime display string (``"2h 48min"``). Parsed by
+            :func:`_parse_runtime` and used only to break a two-way near-tie among
+            search hits — see :func:`_rescore_with_runtimes`. May be None.
 
     Returns:
         A Letterboxd slug string, or ``None`` if resolution failed.
@@ -159,11 +279,12 @@ async def resolve_slug_from_allocine_tuple(
         year_str = str(int(release_year)) if release_year else None
     except (TypeError, ValueError):
         year_str = str(release_year) if release_year else None
+    runtime_minutes = _parse_runtime(runtime)
 
-    slug = await asyncio.to_thread(_search_letterboxd_slug, title, year_str, director)
+    slug = await asyncio.to_thread(_search_letterboxd_slug, title, year_str, director, runtime_minutes)
     if not slug and original_title and original_title != title:
         logger.debug("title miss for %r, trying original_title=%r", title, original_title)
-        slug = await asyncio.to_thread(_search_letterboxd_slug, original_title, year_str, director)
+        slug = await asyncio.to_thread(_search_letterboxd_slug, original_title, year_str, director, runtime_minutes)
 
     logger.debug("resolved %r → %s", title, slug)
     return slug
@@ -185,7 +306,7 @@ async def _resolve_all_slugs(films: list[dict], concurrency: int = 10) -> list[s
         nonlocal done
         async with sem:
             results[i] = await resolve_slug_from_allocine_tuple(
-                film["title"], film["original_title"], film["director"], film["release_year"]
+                film["title"], film["original_title"], film["director"], film["release_year"], film.get("runtime")
             )
         done += 1
         if done % 50 == 0 or done == total:
@@ -232,8 +353,8 @@ def _parse_runtime(raw: object) -> float | None:
     return float((int(hours) * 60 if hours else 0) + (int(minutes) if minutes else 0))
 
 
-def _build_cache_index(cache_df: pd.DataFrame) -> dict[str, list[dict]]:
-    """Index the existing cache by normalised title for cache-first matching.
+def _build_cache_index(cache_df: pd.DataFrame) -> dict[str, list[matching.Candidate]]:
+    """Index the existing cache by normalised title, as scorer candidates.
 
     Maps each normalised ``title``/``french_title``/``original_title`` to the
     cache rows that carry it, so a showtimes film can be matched directly
@@ -241,149 +362,135 @@ def _build_cache_index(cache_df: pd.DataFrame) -> dict[str, list[dict]]:
     film already in the cache under a slightly different director spelling
     (see :func:`_director_tokens`) would otherwise be re-searched and dropped
     as unresolved on every run.
+
+    This is a *blocking* step, not the match: it narrows 6.7k cache rows to the
+    handful sharing a title spelling, which :func:`_match_cache` then scores.
+    One :class:`matching.Candidate` per row is filed under every spelling that
+    row carries, so the same object can surface from either lookup and
+    :func:`_cache_candidates` dedupes on ``slug``.
     """
-    index: dict[str, list[dict]] = {}
+    index: dict[str, list[matching.Candidate]] = {}
     for row in cache_df.itertuples():
         slug = getattr(row, "slug", None)
         if not slug or pd.isna(slug):
             continue
         raw_year = getattr(row, "release_year", None)
         try:
-            release_year = int(raw_year) if raw_year is not None else None
+            release_year = int(raw_year) if raw_year is not None and pd.notna(raw_year) else None
         except (TypeError, ValueError):
             release_year = None
         # Cache `runtime` is float64 minutes; a NaN cell must become None, not nan —
-        # every arithmetic comparison against nan is False, which would read as
-        # "out of tolerance" rather than "no runtime to compare".
+        # every arithmetic comparison against nan is False, which the scorer's runtime
+        # term would read as "maximally far apart" rather than "nothing to compare".
         raw_runtime = getattr(row, "runtime", None)
         try:
             runtime = None if raw_runtime is None or pd.isna(raw_runtime) else float(raw_runtime)
         except (TypeError, ValueError):
             runtime = None
-        entry = {
-            "slug": slug,
-            "release_year": release_year,
-            "runtime": runtime,
-            "director_tokens": _split_director_tokens(getattr(row, "directors", None), ", "),
-        }
+        titles = tuple(
+            str(v)
+            for col in ("title", "french_title", "original_title")
+            if (v := getattr(row, col, None)) is not None and pd.notna(v) and str(v)
+        )
+        candidate = matching.Candidate(
+            slug=str(slug),
+            titles=titles,
+            year=release_year,
+            runtime=runtime,
+            director_tokens=tuple(_split_director_tokens(getattr(row, "directors", None), ", ")),
+        )
         for col in ("title", "french_title", "original_title"):
             norm = _normalize_title(getattr(row, col, None))
             if norm:
-                index.setdefault(norm, []).append(entry)
+                index.setdefault(norm, []).append(candidate)
     return index
 
 
-def _confirmed_candidates(film: dict, index: dict[str, list[dict]], allocine_tokens: list[frozenset[str]]) -> list[dict]:
-    """Cache entries sharing a normalised title with ``film`` and a confirmed director.
+def _query_from_film(film: dict) -> matching.Query | None:
+    """Build the Allocine-side :class:`matching.Query`, or ``None`` if unusable.
 
-    Deduped by slug and ordered ``title`` before ``original_title``, because
-    :func:`_build_cache_index` files one entry under every title spelling the row
-    carries: a cache row whose ``title`` and ``original_title`` both normalise to
-    the Allocine title would otherwise be counted twice, and
-    :func:`_match_by_runtime` would refuse it as "ambiguous" against itself.
-    """
-    confirmed: dict[str, dict] = {}
-    for title in (film["title"], film["original_title"]):
-        norm = _normalize_title(title)
-        if not norm:
-            continue
-        for candidate in index.get(norm, []):
-            if candidate["slug"] in confirmed:
-                continue
-            if _directors_overlap(allocine_tokens, candidate["director_tokens"]):
-                confirmed[candidate["slug"]] = candidate
-    return list(confirmed.values())
-
-
-def _match_by_runtime(film: dict, candidates: list[dict]) -> str | None:
-    """Pick the single candidate whose runtime is within tolerance of Allocine's.
-
-    The fallback tier, reached only when no candidate's ``release_year`` matched
-    exactly. Allocine sometimes carries a film's *production* year where
-    Letterboxd carries its *release* year (Bergman's *Scenes from a Marriage*:
-    Allocine 1973, cache 1974), and the resulting miss is worse than a bare
-    non-match — the film falls through to :func:`_search_letterboxd_slug`, whose
-    identical hard year filter then resolves the *other* Letterboxd entry for the
-    same film (``scenes-from-a-marriage-1973-1``, the 281-minute TV cut, which
-    TMDB catalogues under ``/tv/`` and so carries no ``tmdb_id`` and no TMDB
-    columns at all).
-
-    **Exactly one qualifying candidate, or nothing.** Two or more means the title
-    and director alone don't identify the film and only the year ever did, so
-    guessing would attach a wrong film's metadata silently and permanently — the
-    same call ``chat.pins.resolve_pin`` makes in ``cinema_dashboard``, where an
-    unlinked pin beats a wrong one. See :data:`RUNTIME_TOLERANCE_MINUTES` for why
-    the guard is uniqueness rather than a tighter tolerance.
-    """
-    allocine_runtime = _parse_runtime(film.get("runtime"))
-    if allocine_runtime is None:
-        return None
-
-    close = [
-        candidate
-        for candidate in candidates
-        if candidate["runtime"] is not None and abs(candidate["runtime"] - allocine_runtime) <= RUNTIME_TOLERANCE_MINUTES
-    ]
-    if len(close) != 1:
-        if close:
-            logger.debug(
-                "    runtime fallback declined for %r: %d candidates within %g min (%s)",
-                film["title"],
-                len(close),
-                RUNTIME_TOLERANCE_MINUTES,
-                [c["slug"] for c in close],
-            )
-        return None
-
-    match = close[0]
-    logger.debug(
-        "    runtime fallback matched %r → %s (cache year %s ≠ allocine %s, Δruntime %g min)",
-        film["title"],
-        match["slug"],
-        match["release_year"],
-        film["release_year"],
-        abs(match["runtime"] - allocine_runtime),
-    )
-    return match["slug"]
-
-
-def _match_cache(film: dict, index: dict[str, list[dict]]) -> str | None:
-    """Resolve a film directly against the cache index, confirmed by director overlap.
-
-    Two tiers, both requiring a normalised title hit and director-token overlap:
-
-    1. **Exact ``release_year``** — handles ~99% of traffic (308 of 351 films in
-       the real feed) and is what keeps every same-title/overlapping-director
-       collision in the cache separated.
-    2. **Runtime proximity** (:func:`_match_by_runtime`), only when tier 1 found
-       nothing and only when exactly one candidate qualifies.
-
-    The order matters and is not interchangeable: runtime cannot separate 30 of
-    the 36 colliding pairs in the cache, so it must never be consulted while a
-    year still can.
-
-    Rejects a match with no parseable ``release_year`` or no director tokens on
-    either side — the same precision-first rule :func:`_search_letterboxd_slug`
-    applies to a live search, needed here too so a recurring French title
-    (e.g. ``"Le Retour"``, two unrelated films from 2003 and 2023) can't
-    attach to the wrong cache row. Note that a *missing* year still rejects
-    outright rather than falling through to tier 2: the fallback exists for the
-    measured case where the two sources disagree about a year, not for films that
-    carry none, which nothing here has ever matched.
+    Rejects a film with no parseable ``release_year`` or no director tokens —
+    the precision-first rule both matching paths applied before the scorer
+    existed, and the one the calibration was measured under. A recurring French
+    title (``"Le Retour"``, two unrelated films from 2003 and 2023) clears the
+    title term on its own, so the year and the director are what keep it honest.
     """
     try:
         year = int(film["release_year"])
     except (TypeError, ValueError):
         return None
-    allocine_tokens = _split_director_tokens(film["director"], "|")
-    if not allocine_tokens:
+    tokens = tuple(_split_director_tokens(film["director"], "|"))
+    if not tokens:
         return None
+    titles = tuple(t for t in (film["title"], film.get("original_title")) if t)
+    if not titles:
+        return None
+    return matching.Query(titles=titles, year=year, director_tokens=tokens, runtime=_parse_runtime(film.get("runtime")))
 
-    candidates = _confirmed_candidates(film, index, allocine_tokens)
-    for candidate in candidates:
-        if candidate["release_year"] == year:
-            return candidate["slug"]
-    return _match_by_runtime(film, candidates)
+
+def _cache_candidates(film: dict, index: dict[str, list[matching.Candidate]]) -> list[matching.Candidate]:
+    """Cache candidates for ``film``: exact title blocking, then fuzzy as a fallback.
+
+    Exact normalised-title lookup is the fast path and covers the overwhelming
+    majority. Only when it finds nothing at all does a
+    :func:`rapidfuzz.process.extract` pass over the index's ~6.7k title keys
+    run, so its cost is paid on the miss path only — and it is what lets a cache
+    row whose title merely *differs* in punctuation or spelling still reach the
+    scorer instead of forcing a live search.
+
+    Deduped by slug because :func:`_build_cache_index` files one candidate under
+    every title spelling it carries: a row whose ``title`` and ``original_title``
+    both normalise to the Allocine title would otherwise appear twice and defeat
+    MARGIN by being its own runner-up.
+    """
+    candidates: dict[str, matching.Candidate] = {}
+    for title in (film["title"], film.get("original_title")):
+        norm = _normalize_title(title)
+        if not norm:
+            continue
+        for candidate in index.get(norm, []):
+            candidates.setdefault(candidate.slug, candidate)
+    if candidates:
+        return list(candidates.values())
+
+    keys = list(index)
+    for title in (film["title"], film.get("original_title")):
+        norm = _normalize_title(title)
+        if not norm:
+            continue
+        for key, _score, _pos in process.extract(
+            norm, keys, scorer=fuzz.ratio, score_cutoff=_FUZZY_TITLE_CUTOFF, limit=_FUZZY_TITLE_LIMIT
+        ):
+            for candidate in index[key]:
+                candidates.setdefault(candidate.slug, candidate)
+    if candidates:
+        logger.debug("fuzzy title blocking surfaced %d cache candidates for %r", len(candidates), film["title"])
+    return list(candidates.values())
+
+
+def _match_cache(film: dict, index: dict[str, list[matching.Candidate]]) -> str | None:
+    """Resolve a film against the cache with the combined scorer.
+
+    Replaces the two hand-tuned tiers this function used to run (exact
+    ``release_year`` + director containment, then a uniqueness-gated
+    runtime-proximity fallback) with one :func:`matching.best_match` call that
+    weighs title, director, year and runtime together and abstains rather than
+    choose between two close candidates. See ``modules/matching.py`` for the
+    measured calibration behind its constants.
+    """
+    query = _query_from_film(film)
+    if query is None:
+        return None
+    candidates = _cache_candidates(film, index)
+    if not candidates:
+        return None
+    result = matching.best_match(query, candidates)
+    if result is None:
+        logger.debug("    cache scorer declined %r among %d candidates", film["title"], len(candidates))
+        return None
+    candidate, score = result
+    logger.debug("    cache scorer matched %r → %s (total %.3f)", film["title"], candidate.slug, score.total)
+    return candidate.slug
 
 
 def enrich_cache_from_showtimes(

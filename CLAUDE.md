@@ -901,6 +901,38 @@ typecheck (mypy blocking + ty advisory), security, test.
   `Ringo Lam Ling-Tung`) still matches while genuinely different directors are still rejected. Don't tighten
   this back to exact-key equality — that silently drops legitimately-screening films (the bug that motivated
   the containment relaxation). A missing/blank director on *either* side rejects the row.
+- **`movies_management/modules/matching.py` is a combined scorer meant to replace `allocine_enrichment`'s
+  two hand-tuned tiers (exact-year + director-containment, then a uniqueness-gated runtime-proximity
+  fallback), but as of this writing it is built and tested, *not yet wired in*.** Diagnosis behind it: 28
+  showtimes films fail to resolve today, 15 because the live-search year filter is hard equality
+  (`item_year != year_str`) while the correct film sits in the results 1–2 years off (Allocine sometimes
+  carries production year where Letterboxd carries release year — the same gap `_match_by_runtime` exists
+  for on the cache side, just unhandled on the search side), and 5 on director name-form gaps token
+  containment can't bridge (`ł`/`ø`/`ı` etc. have no NFKD decomposition; apostrophes/hyphens split a name
+  into extra tokens on one source but not the other; one pair is a genuine one-letter transliteration
+  difference). `Query`/`Candidate`/`score`/`best_match` are pure (no I/O, no pandas) and score
+  title/director/year/runtime as a renormalized weighted mean, accepting a candidate only when it clears
+  `ACCEPT` *and* leads the runner-up by `MARGIN` — the continuous analogue of the old tiers' "exactly one
+  qualifying candidate, or nothing" guard. The director term is `1.0` on the existing containment rule
+  (ported from `_directors_overlap`) else a `rapidfuzz` fuzzy ratio — the containment shortcut is
+  load-bearing: every pair that matches today still scores a full 1.0, so fuzzy can only add resolution
+  *below* today's pass bar, never regress an existing match. `allocine_enrichment._director_tokens` was
+  fixed alongside it (an `str.maketrans` table for the NFKD-resistant letters, plus an additional *joined*
+  token variant when a name contains an apostrophe/hyphen) — additive, never a replacement, because
+  collapsing `Jean-Luc` to `jeanluc` outright would break `Jean-Luc Godard` vs `Jean Luc Godard (II)`
+  containment (pinned by
+  `test_director_tokens_keeps_the_split_variant_for_containment`/`test_jean_luc_hyphen_variant_does_not_break_containment_in_the_scorer`).
+  **The constants (`WEIGHTS`/`ACCEPT`/`MARGIN`/`YEAR_TAPER`/`RUNTIME_TAPER`) are explicitly marked
+  `UNCALIBRATED`** in `matching.py`'s module docstring: `modules/match_calibration.py` (ground truth =
+  the current tier-1 resolver's positives, negatives = every other cache row sharing a positive's
+  normalised title — the ~36 same-title collisions `_match_by_runtime`'s docstring documents, including 3
+  genuinely different films) and its CLI exist and are tested, but the calibration sweep this design
+  requires — 100% precision on the negatives at or above today's recall, *then* an explicit check that an
+  exact-year candidate always outranks an otherwise-identical Δ1-year one — has never actually been run
+  against the real parquets. Don't wire `matching.best_match` into `allocine_enrichment` (deleting
+  `_match_by_runtime`/`_confirmed_candidates` and the live-search year filter) until that sweep has run and
+  the comment on each constant in `matching.py` cites real measured numbers instead of saying
+  `UNCALIBRATED`.
 - **Ratings are on a 0–5 scale, not 0–10.** Both `user_rating` (0.5–5.0, half-star steps) and
   `letterboxd_avg_rating` (community weighted average, ~1.2–4.7 in practice) are 0–5. `ui.theme.rating_to_hsl`
   takes a `scale_max` (default 10 for the 0–100 match heatmap) — the rating chips pass `scale_max=5.0`, and

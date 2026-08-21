@@ -64,31 +64,88 @@ def _normalize_title(raw: object) -> str:
     return " ".join(s.split())
 
 
-def _director_tokens(name: str) -> frozenset[str]:
-    """Return the set of normalised name tokens for a single director.
+# NFKD only decomposes precomposed base+combining-mark pairs, so letters that
+# carry no combining mark of their own — a stroke, a missing dot — survive it
+# untouched: Allocine's "Andrzej Zulawski" and TMDB's "Andrzej Żuławski" tokenise
+# to different sets even after the combining-mark strip below, because "ł" has
+# no accent to strip. This table maps the handful of such Latin letters found in
+# the real cache (plus their common relatives) onto a plain-ASCII fallback, applied
+# *after* the NFKD/combining-mark strip so it only ever has to handle characters
+# that strip left untouched.
+_LATIN_LETTER_FALLBACKS = str.maketrans(
+    {
+        "ł": "l",
+        "Ł": "L",
+        "ø": "o",
+        "Ø": "O",
+        "ı": "i",
+        "İ": "I",
+        "đ": "d",
+        "Đ": "D",
+        "ħ": "h",
+        "ŧ": "t",
+        "æ": "ae",
+        "Æ": "AE",
+        "œ": "oe",
+        "Œ": "OE",
+        "ß": "ss",
+    }
+)
 
-    NFKD normalises accents; non-alpha chars become spaces (so hyphens,
-    parenthetical disambiguators like ``"(II)"``, and dotted initials all
-    split into tokens); everything is lower-cased. Returning an unordered
-    *set* rather than a sorted string lets :func:`_directors_overlap` test
-    token containment, which tolerates the name-form drift between sources
-    (extra middle names, ``"Jr."``/``"(II)"`` suffixes) that exact-key
-    equality could not.
+
+def _director_tokens(name: str) -> list[frozenset[str]]:
+    """Return candidate normalised token-set variants for a single director.
+
+    NFKD normalises accents, :data:`_LATIN_LETTER_FALLBACKS` maps the Latin
+    letters accents can't reach (see its docstring) onto plain ASCII, and
+    everything is lower-cased. The *split* variant then turns every non-alpha
+    char (hyphens, parenthetical disambiguators like ``"(II)"``, dotted
+    initials, apostrophes) into a space, so it tokenises on all of them.
+
+    A single name can legitimately arrive tokenised two different ways
+    depending on the source, though: a hyphen or apostrophe *inside one
+    person's name* — romanised Japanese ``"Shin'ichirô"``, hyphenated Korean
+    ``"Sye-young"`` — is sometimes written joined (``"Shinichiro"``,
+    ``"Syeyoung"``) and sometimes split, and the split variant alone never
+    matches the joined spelling. So when the name contains an apostrophe or
+    hyphen, a second *joined* variant is appended with those characters
+    removed (not turned into a separator) before tokenising — merging only the
+    parts they directly connect, leaving space-separated words as separate
+    tokens (``"Park Sye-young"`` -> ``{park, syeyoung}``).
+
+    This is returned as a **list of variants, always led by the split form**,
+    never a replacement of it: :func:`_directors_overlap` tests containment
+    against every variant, so a match that only the split form produces (e.g.
+    ``"Jean-Luc Godard"`` vs ``"Jean Luc Godard (II)"``, where the joined
+    ``{jeanluc, godard}`` is not a subset of ``{jean, luc, godard, ii}`` either
+    way) still succeeds via the split variant. :func:`_director_key` uses only
+    ``variants[0]`` (the split form), unaffected by the joined addition.
     """
     s = unicodedata.normalize("NFKD", name)
     s = "".join(c for c in s if not unicodedata.combining(c))
-    s = "".join(c if c.isalpha() else " " for c in s).lower()
-    return frozenset(s.split())
+    s = s.translate(_LATIN_LETTER_FALLBACKS)
+
+    split_form = frozenset("".join(c if c.isalpha() else " " for c in s).lower().split())
+    variants = [split_form]
+
+    if "'" in s or "-" in s:
+        joined = "".join("" if c in "'-" else (c if (c.isalpha() or c.isspace()) else " ") for c in s).lower()
+        joined_form = frozenset(joined.split())
+        if joined_form and joined_form != split_form:
+            variants.append(joined_form)
+
+    return variants
 
 
 def _director_key(name: str) -> str:
     """Return a canonical sort key for a single director name.
 
-    NFKD normalises accents; non-alpha chars become spaces; tokens are sorted
-    alphabetically so ``"Bong Joon-ho"`` and ``"Joon Ho Bong"`` both map to
-    ``"bong ho joon"``.
+    Uses only the split token variant (see :func:`_director_tokens`) — this is
+    a *sort* key, not a containment test, so the joined apostrophe/hyphen
+    variant has no role here. Tokens are sorted alphabetically so
+    ``"Bong Joon-ho"`` and ``"Joon Ho Bong"`` both map to ``"bong ho joon"``.
     """
-    return " ".join(sorted(_director_tokens(name)))
+    return " ".join(sorted(_director_tokens(name)[0]))
 
 
 def _directors_overlap(allocine: str | float | None, letterboxd: str | float | None) -> bool:
@@ -113,12 +170,19 @@ def _directors_overlap(allocine: str | float | None, letterboxd: str | float | N
     dropped. Genuinely different directors on a title collision (Murnau vs
     Eggers, Spielberg vs Haskin) share no containment relationship and are
     still rejected, so precision is preserved.
+
+    Each name yields one or more token-set *variants* (:func:`_director_tokens`
+    — a split form always, plus a joined form for names containing an
+    apostrophe or hyphen, e.g. ``"Shin'ichirô Watanabe"`` vs
+    ``"Shinichiro Watanabe"``). Every variant of every name on one side is
+    tested against every variant of every name on the other; a match on *any*
+    pairing counts as that director pair matching.
     """
     if pd.isna(allocine) or pd.isna(letterboxd):
         return False
-    alloc_names = [t for n in str(allocine).split(" | ") if (t := _director_tokens(n))]
-    lb_names = [t for n in str(letterboxd).split(", ") if (t := _director_tokens(n))]
-    return any(a <= b or b <= a for a in alloc_names for b in lb_names)
+    alloc_variants = [v for n in str(allocine).split(" | ") for v in _director_tokens(n) if v]
+    lb_variants = [v for n in str(letterboxd).split(", ") for v in _director_tokens(n) if v]
+    return any(a <= b or b <= a for a in alloc_variants for b in lb_variants)
 
 
 def get_paths() -> tuple[Path | None, Path | None, Path | None]:

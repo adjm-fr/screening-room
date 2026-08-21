@@ -556,6 +556,65 @@ def test_directors_overlap_disjoint_names_still_rejected():
 
 
 # ---------------------------------------------------------------------------
+# _directors_overlap — non-decomposable Latin letters (NFKD can't reach these)
+# ---------------------------------------------------------------------------
+
+
+def test_directors_overlap_l_with_stroke():
+    # "ł" has no combining mark to strip; needs the explicit fallback table.
+    assert _directors_overlap("Andrzej Zulawski", "Andrzej Żuławski") is True
+
+
+def test_directors_overlap_o_with_stroke():
+    assert _directors_overlap("Espen Sandberg | Joachim Ronning", "Espen Sandberg, Joachim Rønning") is True
+
+
+def test_directors_overlap_o_with_stroke_uppercase():
+    assert _directors_overlap("Andre Ovredal", "André Øvredal") is True
+
+
+def test_directors_overlap_dotless_i():
+    # Turkish dotless "ı" is a base letter, not an accented one.
+    assert _directors_overlap("Yilmaz Guney | Serif Goren", "Yılmaz Güney, Şerif Gören") is True
+
+
+def test_directors_overlap_d_with_stroke():
+    assert _directors_overlap("Doan Ba Do", "Đoàn Bá Đô") is True
+
+
+def test_directors_overlap_ae_ligature():
+    assert _directors_overlap("Aevar Gunnarsson", "Ævar Gunnarsson") is True
+
+
+def test_directors_overlap_eszett():
+    assert _directors_overlap("Florian Weiss", "Florian Weiß") is True
+
+
+# ---------------------------------------------------------------------------
+# _directors_overlap — apostrophe/hyphen joined-name variants (additive)
+# ---------------------------------------------------------------------------
+
+
+def test_directors_overlap_apostrophe_joined_variant():
+    # "Shin'ichirô" (split by the old code into "shin"/"ichiro") must also
+    # match the joined spelling "Shinichiro".
+    assert _directors_overlap("Shin'ichiro Watanabe", "Shinichiro Watanabe") is True
+
+
+def test_directors_overlap_hyphen_joined_variant():
+    assert _directors_overlap("Park Sye-young", "Syeyoung Park") is True
+
+
+def test_directors_overlap_jean_luc_regression_split_form_still_wins():
+    # The additive-variant guard: collapsing "Jean-Luc" to "jeanluc" and
+    # dropping the split form would break this real case, since neither
+    # {jeanluc, godard} <= {jean, luc, godard, ii} nor the reverse holds.
+    # The split variant {jean, luc, godard} <= {jean, luc, godard, ii} must
+    # still be present in the candidate list for the match to succeed.
+    assert _directors_overlap("Jean-Luc Godard", "Jean Luc Godard (II)") is True
+
+
+# ---------------------------------------------------------------------------
 # _director_key
 # ---------------------------------------------------------------------------
 

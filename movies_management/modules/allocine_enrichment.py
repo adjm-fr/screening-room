@@ -51,25 +51,74 @@ def _search_films(query: str) -> list[dict]:
     return Search(query, SearchFilter.FILMS).results.get("results", [])
 
 
-def _director_tokens(name: str) -> frozenset[str]:
-    """Return the set of normalised name tokens for a single director.
+#: Characters NFKD combining-strip cannot decompose (they aren't combining-mark
+#: compositions, they're distinct letters with no canonical decomposition), plus
+#: the two-letter Latin transliterations for the digraphs among them. Measured
+#: against the real cache (Aug 2026): 12 rows carry ``ø``/``ł``/``Ø``/``ı``
+#: (Rønning, Żuławski, Øvredal, Yılmaz Güney) that the accent strip alone leaves
+#: untouched, which is what let ``Andrzej Zulawski`` vs ``Andrzej Żuławski`` keep
+#: failing containment even after normalisation.
+_EXTRA_LETTER_TRANSLATION = str.maketrans(
+    {
+        "ł": "l",
+        "Ł": "L",
+        "ø": "o",
+        "Ø": "O",
+        "ı": "i",
+        "İ": "I",
+        "đ": "d",
+        "Đ": "D",
+        "ħ": "h",
+        "ŧ": "t",
+        "æ": "ae",
+        "œ": "oe",
+    }
+)
 
-    NFKD normalises accents; non-alpha chars become spaces (so hyphens, dotted
-    initials, and parenthetical suffixes like ``"(II)"`` all split into
-    tokens); everything is lower-cased. A token *set* (not a joined string)
-    lets :func:`_directors_overlap` test containment, which tolerates the
+
+def _director_tokens(name: str) -> list[frozenset[str]]:
+    """Return the normalised name-token variants for a single director.
+
+    NFKD normalises accents; the extra Latin-transliteration table above
+    handles the letters NFKD can't (see :data:`_EXTRA_LETTER_TRANSLATION`);
+    non-alpha chars become spaces (so hyphens, dotted initials, and
+    parenthetical suffixes like ``"(II)"`` all split into tokens); everything
+    is lower-cased. A token *set* (not a joined string) lets
+    :func:`_directors_overlap` test containment, which tolerates the
     name-form drift between Allocine and Letterboxd that exact-string
     equality could not — e.g. Allocine's ``"S.S. Rajamouli"`` vs
     Letterboxd's ``"S. S. Rajamouli"``.
+
+    Returns a **list of variant token sets**, not one set: when the name
+    contains an apostrophe or hyphen, a second variant is added with that
+    punctuation's tokens joined rather than split (``"Shin'ichirô Watanabe"``
+    → both ``{shin, ichiro, watanabe}`` and ``{shinichiro, watanabe}``), so a
+    match succeeds against either a source that splits on it
+    (``"Park Sye-young"``) or one that doesn't (``"Syeyoung Park"``). The
+    split variant is always kept *alongside* the joined one, never replaced —
+    collapsing ``"Jean-Luc"`` to ``"jeanluc"`` outright would break
+    ``"Jean-Luc Godard"`` vs ``"Jean Luc Godard (II)"``, whose split tokens
+    are what makes one side a subset of the other; see
+    ``test_director_tokens_keeps_the_split_variant_for_containment``.
     """
     s = unicodedata.normalize("NFKD", name)
     s = "".join(c for c in s if not unicodedata.combining(c))
-    s = "".join(c if c.isalpha() else " " for c in s).lower()
-    return frozenset(s.split())
+    s = s.translate(_EXTRA_LETTER_TRANSLATION)
+    split_form = "".join(c if c.isalpha() else " " for c in s).lower()
+    variants = [frozenset(split_form.split())]
+
+    if "'" in s or "-" in s:
+        joined_form = "".join(c if c.isalpha() or c in "'-" else " " for c in s).lower()
+        joined_form = joined_form.replace("'", "").replace("-", "")
+        joined = frozenset(joined_form.split())
+        if joined and joined not in variants:
+            variants.append(joined)
+
+    return [v for v in variants if v]
 
 
 def _split_director_tokens(value: object, sep: str) -> list[frozenset[str]]:
-    """Split a director string on ``sep`` into one token set per director.
+    """Split a director string on ``sep`` into token-set variants, one group per director.
 
     ``isinstance`` (not just truthiness) guards against a NaN ``directors``
     cell from a real cache DataFrame — ``bool(float("nan"))`` is ``True``, so
@@ -77,12 +126,12 @@ def _split_director_tokens(value: object, sep: str) -> list[frozenset[str]]:
     """
     if not isinstance(value, str) or not value:
         return []
-    return [tokens for name in value.split(sep) if (tokens := _director_tokens(name))]
+    return [variant for name in value.split(sep) for variant in _director_tokens(name)]
 
 
 def _letterboxd_result_director_tokens(item: dict) -> list[frozenset[str]]:
-    """Extract one token set per director from a Letterboxd search result."""
-    return [tokens for d in item.get("directors") or [] if (name := d.get("name")) and (tokens := _director_tokens(name))]
+    """Extract token-set variants for every director in a Letterboxd search result."""
+    return [variant for d in item.get("directors") or [] if (name := d.get("name")) for variant in _director_tokens(name)]
 
 
 def _directors_overlap(a_tokens: list[frozenset[str]], b_tokens: list[frozenset[str]]) -> bool:

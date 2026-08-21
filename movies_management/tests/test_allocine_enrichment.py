@@ -24,9 +24,37 @@ from modules.allocine_enrichment import (
 
 
 def test_director_tokens_strips_accents_and_punctuation():
-    assert _director_tokens("S.S. Rajamouli") == frozenset({"s", "rajamouli"})
-    assert _director_tokens("S. S. Rajamouli") == frozenset({"s", "rajamouli"})
+    assert _director_tokens("S.S. Rajamouli") == [frozenset({"s", "rajamouli"})]
+    assert _director_tokens("S. S. Rajamouli") == [frozenset({"s", "rajamouli"})]
     assert _director_tokens("Víctor Erice") == _director_tokens("Victor Erice")
+
+
+def test_director_tokens_handles_letters_nfkd_cannot_decompose():
+    # ł/ø/ı etc. have no canonical decomposition, so the NFKD combining-strip
+    # alone leaves them untouched — the extra translation table is what closes
+    # Andrzej Zulawski vs Andrzej Żuławski.
+    assert _director_tokens("Andrzej Żuławski") == _director_tokens("Andrzej Zulawski")
+    assert _director_tokens("André Øvredal") == _director_tokens("Andre Ovredal")
+
+
+def test_director_tokens_adds_a_joined_variant_for_apostrophes_and_hyphens():
+    # Both split and joined forms are returned; the joined one lets a source
+    # that doesn't split on the punctuation still match.
+    variants = _director_tokens("Shin'ichirô Watanabe")
+    assert frozenset({"shin", "ichiro", "watanabe"}) in variants
+    assert frozenset({"shinichiro", "watanabe"}) in variants
+
+    hyphen_variants = _director_tokens("Park Sye-young")
+    assert frozenset({"park", "sye", "young"}) in hyphen_variants
+    assert frozenset({"park", "syeyoung"}) in hyphen_variants
+
+
+def test_director_tokens_keeps_the_split_variant_for_containment():
+    # Regression guard: collapsing "Jean-Luc" to "jeanluc" outright would break
+    # "Jean-Luc Godard" vs "Jean Luc Godard (II)" containment, since the joined
+    # set is a subset of neither the suffixed split set nor vice versa. The
+    # split variant must always ride along so containment still holds.
+    assert _directors_overlap(_split_director_tokens("Jean-Luc Godard", "|"), _split_director_tokens("Jean Luc Godard (II)", "|"))
 
 
 def test_directors_overlap_is_containment_not_equality():

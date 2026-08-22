@@ -19,6 +19,30 @@ from modules.allocine_enrichment import (
     enrich_cache_from_showtimes,
     resolve_slug_from_allocine_tuple,
 )
+from modules.get_letterboxd_data import _SCHEMA_MIGRATION_COLUMNS
+
+_CACHE_READ_COLUMNS = sorted(DATA_LETTERBOXD.required_columns - frozenset(_SCHEMA_MIGRATION_COLUMNS))
+
+
+def _valid_cache(rows: list[dict] | pd.DataFrame) -> pd.DataFrame:
+    """Pad synthetic cache rows out to the columns the cache read validates.
+
+    `enrich_cache_from_showtimes` now reads through `read_parquet_validated`, so a
+    hand-written three-column frame is no longer a usable stand-in for a cache. Padded
+    from the contract rather than listed literally, so a new required column cannot
+    quietly invalidate every fixture here.
+    """
+    df = rows.copy() if isinstance(rows, pd.DataFrame) else pd.DataFrame(rows)
+    for column in _CACHE_READ_COLUMNS:
+        if column not in df.columns:
+            df[column] = None
+    return df
+
+
+def _empty_cache() -> pd.DataFrame:
+    """A contract-valid cache holding no films — "the pipeline ran, nothing matches yet"."""
+    return pd.DataFrame({column: pd.Series(dtype="object") for column in _CACHE_READ_COLUMNS})
+
 
 # ── director token matching ───────────────────────────────────────────────────
 
@@ -366,7 +390,7 @@ def test_enrich_resolves_from_cache_without_a_live_search(mocker, tmp_path):
     showtimes_path = tmp_path / "showtimes.parquet"
     showtimes.to_parquet(showtimes_path)
 
-    cache_df = pd.DataFrame([{"slug": "rrr", "title": "RRR", "directors": "S. S. Rajamouli", "release_year": 2022}])
+    cache_df = _valid_cache([{"slug": "rrr", "title": "RRR", "directors": "S. S. Rajamouli", "release_year": 2022}])
     cache_path = tmp_path / "cache.parquet"
     cache_df.to_parquet(cache_path)
 
@@ -403,7 +427,7 @@ def test_enrich_resolves_from_cache_via_the_runtime_fallback(mocker, tmp_path):
     showtimes.to_parquet(showtimes_path)
 
     cache_path = tmp_path / "cache.parquet"
-    _bergman_cache().to_parquet(cache_path)
+    _valid_cache(_bergman_cache()).to_parquet(cache_path)
 
     resolve_mock = mocker.patch("modules.allocine_enrichment.resolve_slug_from_allocine_tuple", new_callable=AsyncMock)
     get_data_mock = mocker.patch("modules.allocine_enrichment.get_letterboxd_data")
@@ -437,11 +461,14 @@ def test_enrich_unresolved_parquet_keeps_the_four_tuple_key(mocker, tmp_path):
     showtimes_path = tmp_path / "showtimes.parquet"
     showtimes.to_parquet(showtimes_path)
 
+    cache_path = tmp_path / "cache.parquet"
+    _empty_cache().to_parquet(cache_path)
+
     mocker.patch("modules.allocine_enrichment.resolve_slug_from_allocine_tuple", new_callable=AsyncMock, return_value=None)
     mocker.patch("modules.allocine_enrichment.get_letterboxd_data")
 
     unresolved_path = tmp_path / "unresolved.parquet"
-    enrich_cache_from_showtimes(showtimes_path, tmp_path / "cache.parquet", unresolved_path)
+    enrich_cache_from_showtimes(showtimes_path, cache_path, unresolved_path)
 
     assert list(pd.read_parquet(unresolved_path).columns) == ["movie", "original_title", "director", "release_year"]
 
@@ -461,8 +488,9 @@ def test_enrich_resolves_new_slugs_and_calls_get_letterboxd_data(mocker, tmp_pat
     showtimes_path = tmp_path / "showtimes.parquet"
     showtimes.to_parquet(showtimes_path)
 
-    # Empty cache (no pre-existing slugs)
+    # Contract-valid cache holding no films: enrichment expands a cache, it never creates one.
     cache_path = tmp_path / "cache.parquet"
+    _empty_cache().to_parquet(cache_path)
 
     mocker.patch(
         "modules.allocine_enrichment.resolve_slug_from_allocine_tuple",
@@ -494,6 +522,7 @@ def test_enrich_stamps_allocine_source_on_new_rows(mocker, tmp_path):
     showtimes_path = tmp_path / "showtimes.parquet"
     showtimes.to_parquet(showtimes_path)
     cache_path = tmp_path / "cache.parquet"
+    _empty_cache().to_parquet(cache_path)
 
     mocker.patch(
         "modules.allocine_enrichment.resolve_slug_from_allocine_tuple",
@@ -535,7 +564,7 @@ def test_enrich_skips_already_cached_slugs(mocker, tmp_path):
     showtimes.to_parquet(showtimes_path)
 
     # Cache already contains this slug
-    cache_df = pd.DataFrame([{"slug": "parasite-2019", "tmdb_id": "496243"}])
+    cache_df = _valid_cache([{"slug": "parasite-2019", "tmdb_id": "496243"}])
     cache_path = tmp_path / "cache.parquet"
     cache_df.to_parquet(cache_path)
 
@@ -565,11 +594,14 @@ def test_enrich_writes_unresolved_parquet(mocker, tmp_path):
     showtimes_path = tmp_path / "showtimes.parquet"
     showtimes.to_parquet(showtimes_path)
 
+    cache_path = tmp_path / "cache.parquet"
+    _empty_cache().to_parquet(cache_path)
+
     mocker.patch("modules.allocine_enrichment.resolve_slug_from_allocine_tuple", new_callable=AsyncMock, return_value=None)
     mocker.patch("modules.allocine_enrichment.get_letterboxd_data")
 
     unresolved_path = tmp_path / "unresolved.parquet"
-    enrich_cache_from_showtimes(showtimes_path, tmp_path / "cache.parquet", unresolved_path)
+    enrich_cache_from_showtimes(showtimes_path, cache_path, unresolved_path)
 
     unresolved_df = pd.read_parquet(unresolved_path)
     assert len(unresolved_df) == 1
@@ -622,6 +654,7 @@ def test_enrich_rejects_a_cache_write_missing_a_required_column(mocker, tmp_path
     showtimes_path = tmp_path / "showtimes.parquet"
     showtimes.to_parquet(showtimes_path)
     cache_path = tmp_path / "cache.parquet"
+    _empty_cache().to_parquet(cache_path)
 
     mocker.patch(
         "modules.allocine_enrichment.resolve_slug_from_allocine_tuple",
@@ -638,3 +671,98 @@ def test_enrich_rejects_a_cache_write_missing_a_required_column(mocker, tmp_path
 
     with pytest.raises(SchemaValidationError, match="title"):
         enrich_cache_from_showtimes(showtimes_path, cache_path, tmp_path / "unresolved.parquet")
+
+
+def test_enrich_skips_entirely_when_there_is_no_cache(mocker, tmp_path):
+    """Enrichment expands a cache the user-data pipeline owns; it never creates one.
+
+    Building one here would hold only the films currently screening, and the write below
+    stamps every new row `source="allocine_showtimes"` — wrong provenance for rows the
+    ratings/watchlist pipeline should own.
+    """
+    showtimes = pd.DataFrame(
+        [
+            {
+                "movie": "Unknown Film",
+                "original_title": "Unknown Film",
+                "director": "Nobody",
+                "release_year": 2024,
+                "theater_id": "t1",
+                "theater_name": "Cinema One",
+                "runtime": "1h 30min",
+                "showtimes": ["2026-08-10T20:00"],
+            }
+        ]
+    )
+    showtimes_path = tmp_path / "showtimes.parquet"
+    showtimes.to_parquet(showtimes_path)
+    resolve = mocker.patch("modules.allocine_enrichment.resolve_slug_from_allocine_tuple", new_callable=AsyncMock)
+    get_data = mocker.patch("modules.allocine_enrichment.get_letterboxd_data")
+
+    unresolved_path = tmp_path / "unresolved.parquet"
+    enrich_cache_from_showtimes(showtimes_path, tmp_path / "missing.parquet", unresolved_path)
+
+    resolve.assert_not_called()
+    get_data.assert_not_called()
+    assert not unresolved_path.exists()
+
+
+def test_enrich_raises_on_an_unreadable_cache_instead_of_rebuilding(mocker, tmp_path):
+    """A cache that exists but will not parse stops the run.
+
+    The `try/except Exception` this replaces read it as "start fresh": the index came up
+    empty, every film went to a live search, every resolved slug looked new, and
+    `get_letterboxd_data` then overwrote thousands of rows with the few hundred fetched.
+    """
+    showtimes = pd.DataFrame(
+        [
+            {
+                "movie": "Unknown Film",
+                "original_title": "Unknown Film",
+                "director": "Nobody",
+                "release_year": 2024,
+                "theater_id": "t1",
+                "theater_name": "Cinema One",
+                "runtime": "1h 30min",
+                "showtimes": ["2026-08-10T20:00"],
+            }
+        ]
+    )
+    showtimes_path = tmp_path / "showtimes.parquet"
+    showtimes.to_parquet(showtimes_path)
+    cache_path = tmp_path / "cache.parquet"
+    cache_path.write_bytes(b"not a parquet file")
+    resolve = mocker.patch("modules.allocine_enrichment.resolve_slug_from_allocine_tuple", new_callable=AsyncMock)
+
+    with pytest.raises(Exception, match="(?i)parquet|magic|arrow"):
+        enrich_cache_from_showtimes(showtimes_path, cache_path, tmp_path / "unresolved.parquet")
+
+    resolve.assert_not_called()
+
+
+def test_enrich_raises_when_the_cache_breaks_the_contract(mocker, tmp_path):
+    """Same rule for a readable cache missing a contract column."""
+    showtimes = pd.DataFrame(
+        [
+            {
+                "movie": "Unknown Film",
+                "original_title": "Unknown Film",
+                "director": "Nobody",
+                "release_year": 2024,
+                "theater_id": "t1",
+                "theater_name": "Cinema One",
+                "runtime": "1h 30min",
+                "showtimes": ["2026-08-10T20:00"],
+            }
+        ]
+    )
+    showtimes_path = tmp_path / "showtimes.parquet"
+    showtimes.to_parquet(showtimes_path)
+    cache_path = tmp_path / "cache.parquet"
+    _empty_cache().drop(columns=["letterboxd_url"]).to_parquet(cache_path)
+    resolve = mocker.patch("modules.allocine_enrichment.resolve_slug_from_allocine_tuple", new_callable=AsyncMock)
+
+    with pytest.raises(SchemaValidationError, match="letterboxd_url"):
+        enrich_cache_from_showtimes(showtimes_path, cache_path, tmp_path / "unresolved.parquet")
+
+    resolve.assert_not_called()

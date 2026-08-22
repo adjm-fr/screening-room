@@ -182,7 +182,14 @@ typecheck (mypy blocking + ty advisory), security, test.
     It validates against the contract **minus `_SCHEMA_MIGRATION_COLUMNS`**, since a cache predating
     those columns is legitimate and the seeding loop right below is what adds them — enforcing them
     on read would raise on exactly the caches that migration path exists to rescue.
-    `allocine_enrichment.enrich_cache_from_showtimes` still reads unvalidated inside a `try/except`. `ratings_with_letterboxd.parquet` /
+    `allocine_enrichment.enrich_cache_from_showtimes` follows the same rule with a different
+    remedy: **no cache means it skips entirely and returns**, because that step *expands* a cache the
+    user-data pipeline owns and never creates one — a cache built from there would hold only the few
+    hundred films currently screening, every row stamped `source="allocine_showtimes"`, which is the
+    wrong provenance for rows ratings/watchlist should own. A cache that exists is read validated, and
+    a bad one raises. Its old `except` was the more dangerous of the two: an empty index sent every
+    film to a live search, made every resolved slug look new, and had `get_letterboxd_data` overwrite
+    thousands of rows with the few hundred that run fetched. `ratings_with_letterboxd.parquet` /
     `watchlist_with_letterboxd.parquet` (`movies_management/modules/utils.py`'s `save_parquet`) have no
     contract yet — a follow-up, not covered here.
 

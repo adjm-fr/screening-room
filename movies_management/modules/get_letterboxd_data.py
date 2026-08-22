@@ -13,6 +13,8 @@ from typing import NamedTuple
 
 import httpx
 import pandas as pd
+from common.parquet_io import read_parquet_validated
+from contracts import DATA_LETTERBOXD
 from letterboxdpy.movie import Movie
 from pydantic import ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -564,17 +566,31 @@ def get_letterboxd_data(
         letterboxd_avg_rating, directors, imdb_id, tmdb_id, letterboxd_url, imdb_url,
         tmdb_url, integration_date. The caller persists it (and assigns ``source``).
     """
-    # Load existing cache to avoid refetching. Deliberately unvalidated: this is the
-    # "no existing cache, start fresh" path (missing file, corrupt file, first run).
-    # If schema validation raised here it would be swallowed by the except below and
-    # silently rebuild the entire multi-thousand-film cache from scratch on what might
-    # be a transient/partial read — a catastrophic, expensive, silent failure. The
-    # single cache write each caller performs (write_parquet_validated against
-    # DATA_LETTERBOXD) is what actually enforces the contract.
-    try:
-        data_df = pd.read_parquet(output_path)
+    # Load existing cache to avoid refetching. **Absence of the file is the only
+    # legitimate "start fresh" signal** — `--reset_database` unlinks it precisely to
+    # produce one. A cache that exists but will not read, or that reads but breaks the
+    # contract, is corruption or an I/O fault and raises here.
+    #
+    # The `try/except Exception` this replaces treated both cases as "first run": a
+    # transient permission error or a partial write silently refetched every film and
+    # then overwrote the multi-thousand-row cache with whatever this run happened to
+    # retrieve. `write_parquet_validated` did not catch it either, because the contract
+    # checks columns, not row count. (Observed for real: macOS revoking Documents access
+    # mid-session makes `pd.read_parquet` raise `PermissionError`.)
+    #
+    # Validated against the contract MINUS `_SCHEMA_MIGRATION_COLUMNS`: a cache written
+    # before those columns existed legitimately lacks them, and the seeding loop below is
+    # what adds them. Enforcing them here would raise on exactly the caches that
+    # migration path exists to rescue, which is why this read could not be validated
+    # while the `except` was still swallowing the result.
+    if os.path.exists(output_path):
+        data_df = read_parquet_validated(
+            output_path,
+            required_columns=DATA_LETTERBOXD.required_columns - frozenset(_SCHEMA_MIGRATION_COLUMNS),
+            label="data_letterboxd cache",
+        )
         logger.info("Loaded existing cache: %d movies", data_df.shape[0])
-    except Exception:
+    else:
         logger.info("No existing cache found — starting fresh")
         data_df = pd.DataFrame()
 

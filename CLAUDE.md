@@ -169,12 +169,20 @@ typecheck (mypy blocking + ty advisory), security, test.
     repo can mirror it without pandas — so nullability is unaffected and pydantic plays no part here (that
     lives in `movies_management/modules/tmdb.py`, validating the TMDB *wire* payload). Write-validated at both cache writers:
     `movies_management/main.py` (the user-data pipeline) and `allocine_enrichment.py`'s
-    `enrich_cache_from_showtimes`. **Two cache reads are deliberately left unvalidated** — the
-    "no existing cache, start fresh" branches in `get_letterboxd_data.get_letterboxd_data` and
-    `allocine_enrichment.enrich_cache_from_showtimes`, each inside a `try/except` whose except-branch
-    means exactly that. If validation raised there it would be swallowed by the `except` and silently
-    rebuild the entire multi-thousand-film cache from scratch — a catastrophic, expensive, silent
-    failure; the enforcement point is the write, not these reads. `ratings_with_letterboxd.parquet` /
+    `enrich_cache_from_showtimes`. **The cache read in `get_letterboxd_data` is validated too, and
+    absence of the file is the only thing that starts a rebuild.** It used to sit in a
+    `try/except Exception` whose except-branch meant "no existing cache, start fresh" — but that
+    swallowed a corrupt parquet, a partial write and a transient `PermissionError` alike, refetching
+    every film and then overwriting the multi-thousand-row cache with whatever that run retrieved.
+    `write_parquet_validated` did not catch it, because the contract checks columns, not row count.
+    An `os.path.exists` check now separates the two cases: absent → build (which is what
+    `--reset_database` produces, by unlinking), present → `read_parquet_validated`, and anything
+    wrong with it raises. That is also what *unblocked* validating this read: the old objection was
+    that a `SchemaValidationError` would be swallowed by the very `except` that no longer exists.
+    It validates against the contract **minus `_SCHEMA_MIGRATION_COLUMNS`**, since a cache predating
+    those columns is legitimate and the seeding loop right below is what adds them — enforcing them
+    on read would raise on exactly the caches that migration path exists to rescue.
+    `allocine_enrichment.enrich_cache_from_showtimes` still reads unvalidated inside a `try/except`. `ratings_with_letterboxd.parquet` /
     `watchlist_with_letterboxd.parquet` (`movies_management/modules/utils.py`'s `save_parquet`) have no
     contract yet — a follow-up, not covered here.
 

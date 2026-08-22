@@ -9,6 +9,7 @@ import logging
 from datetime import date
 
 import httpx
+import modules.get_letterboxd_data as gld
 import pandas as pd
 import pytest
 import respx
@@ -175,7 +176,7 @@ def test_no_new_slugs_returns_cache_unchanged(tmp_path, cache_df):
     assert set(result["slug"]) == {"slug-a", "slug-b"}
 
 
-def test_schema_migration_columns_seeded_with_nothing_to_fetch(tmp_path, cache_df):
+def test_schema_migration_columns_seeded_with_nothing_to_fetch(tmp_path, cache_df, monkeypatch):
     """The quiet run is the one that breaks: nothing new, nothing stale, and a full cache.
 
     Age is the only refresh trigger, so a cache just rewritten by a backfill has no stale
@@ -184,9 +185,12 @@ def test_schema_migration_columns_seeded_with_nothing_to_fetch(tmp_path, cache_d
     `write_parquet_validated` with a pre-migration frame and fails the contract every time,
     with `--reset_database` as the only exit.
     """
+    # Patched rather than read from the constant: _SCHEMA_MIGRATION_COLUMNS is empty
+    # whenever every cache in use has caught up, so pinning the mechanism to whatever
+    # happens to be migrating today would delete this test at the next cleanup.
+    monkeypatch.setattr(gld, "_SCHEMA_MIGRATION_COLUMNS", ("origin_country", "original_language"))
     cache_path = str(tmp_path / "cache.parquet")
-    cache_df.to_parquet(cache_path, index=False)
-    assert "origin_country" not in cache_df.columns
+    cache_df.drop(columns=["origin_country", "original_language"], errors="ignore").to_parquet(cache_path, index=False)
 
     result = get_letterboxd_data(["slug-a", "slug-b"], cache_path)
 
@@ -196,8 +200,9 @@ def test_schema_migration_columns_seeded_with_nothing_to_fetch(tmp_path, cache_d
         assert result[column].isna().all()
 
 
-def test_schema_migration_leaves_a_populated_column_alone(tmp_path, cache_df):
+def test_schema_migration_leaves_a_populated_column_alone(tmp_path, cache_df, monkeypatch):
     """Seeding must never clobber values a previous migrated run already wrote."""
+    monkeypatch.setattr(gld, "_SCHEMA_MIGRATION_COLUMNS", ("origin_country", "original_language"))
     cache_path = str(tmp_path / "cache.parquet")
     migrated = cache_df.assign(origin_country=["US", "FR"], original_language=["en", "fr"])
     migrated.to_parquet(cache_path, index=False)

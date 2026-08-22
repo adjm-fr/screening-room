@@ -365,7 +365,16 @@ _TMDB_OWNED_DETAIL_TYPES = frozenset({"studio", "country", "language"})
 #
 # Values are NOT backfilled here: null means "not migrated yet" and the real values arrive
 # with the one-pass backfill. Drop an entry once no cache in use predates it.
-_SCHEMA_MIGRATION_COLUMNS = ("origin_country", "original_language", "keywords")
+#
+# Currently empty, and that is the expiry working as designed rather than a mechanism left
+# unused. Its last three entries — origin_country, original_language, keywords, from the
+# Aug 2026 TMDB territories/genres migration — were retired once the live cache carried all
+# three (verified: present on all 6,788 rows; nulls in `keywords` are TMDB's real ~91%
+# coverage, and the contract checks column presence, not values). The constant and this
+# comment stay because CACHE_COLUMNS.md makes adding an entry here a documented step of
+# introducing a cache column, and re-deriving why neither the new-slug concat nor the
+# stale-slug pre-seed covers a quiet cache is expensive. Adding a column? Add it here too.
+_SCHEMA_MIGRATION_COLUMNS: tuple[str, ...] = ()
 
 
 @retry(stop=_RETRY_STOP, wait=_RETRY_WAIT, reraise=True)

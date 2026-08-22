@@ -18,7 +18,7 @@ from contracts import DATA_LETTERBOXD, SHOWTIMES
 from letterboxdpy.search import Search, SearchFilter
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from modules.get_letterboxd_data import get_letterboxd_data
+from modules.get_letterboxd_data import _SCHEMA_MIGRATION_COLUMNS, get_letterboxd_data
 
 logger = logging.getLogger(__name__)
 
@@ -423,17 +423,27 @@ def enrich_cache_from_showtimes(
     unique_films = showtimes_df[key_cols].drop_duplicates().reset_index(drop=True)
     logger.info("Unique films in showtimes: %d", len(unique_films))
 
-    try:
-        # Deliberately unvalidated: this is the "no existing cache, start fresh" path.
-        # If schema validation raised here it would be swallowed by the except below and
-        # silently rebuild the entire 6,751-film cache from scratch on a transient/partial
-        # read — a catastrophic, expensive, silent failure. The cache write further down
-        # (write_parquet_validated) is what actually enforces the DATA_LETTERBOXD contract.
-        cache_df = pd.read_parquet(cache_path)
-        cached_slugs: set[str] = set(cache_df["slug"].dropna().unique())
-    except Exception:
-        cache_df = pd.DataFrame()
-        cached_slugs = set()
+    # This step *expands* a cache the user-data pipeline owns; it never creates one. No
+    # cache means there is nothing to enrich, so bail rather than build: a cache built
+    # from here would hold only the ~300 films currently screening, and every row would
+    # be stamped `source="allocine_showtimes"` by the write below — wrong provenance for
+    # rows the ratings/watchlist pipeline should own.
+    if not os.path.exists(cache_path):
+        logger.warning("No Letterboxd cache at %s — skipping Allocine enrichment", cache_path)
+        return
+
+    # A cache that exists but will not read, or that breaks the contract, is corruption
+    # or an I/O fault and stops the run. The `try/except Exception` this replaces treated
+    # it as "start fresh": the index came up empty, every film went to a live search
+    # instead of the cache, every resolved slug looked new, and `get_letterboxd_data`
+    # below then overwrote thousands of rows with the few hundred this run fetched —
+    # silently, since the contract checks columns and not row count.
+    cache_df = read_parquet_validated(
+        cache_path,
+        required_columns=DATA_LETTERBOXD.required_columns - frozenset(_SCHEMA_MIGRATION_COLUMNS),
+        label="data_letterboxd cache",
+    )
+    cached_slugs: set[str] = set(cache_df["slug"].dropna().unique())
     cache_index = _build_cache_index(cache_df)
     logger.debug("cached_slugs: %d preloaded", len(cached_slugs))
 

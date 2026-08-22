@@ -13,6 +13,8 @@ from typing import NamedTuple
 
 import httpx
 import pandas as pd
+from common.parquet_io import read_parquet_validated
+from contracts import DATA_LETTERBOXD
 from letterboxdpy.movie import Movie
 from pydantic import ValidationError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -363,7 +365,16 @@ _TMDB_OWNED_DETAIL_TYPES = frozenset({"studio", "country", "language"})
 #
 # Values are NOT backfilled here: null means "not migrated yet" and the real values arrive
 # with the one-pass backfill. Drop an entry once no cache in use predates it.
-_SCHEMA_MIGRATION_COLUMNS = ("origin_country", "original_language", "keywords")
+#
+# Currently empty, and that is the expiry working as designed rather than a mechanism left
+# unused. Its last three entries — origin_country, original_language, keywords, from the
+# Aug 2026 TMDB territories/genres migration — were retired once the live cache carried all
+# three (verified: present on all 6,788 rows; nulls in `keywords` are TMDB's real ~91%
+# coverage, and the contract checks column presence, not values). The constant and this
+# comment stay because CACHE_COLUMNS.md makes adding an entry here a documented step of
+# introducing a cache column, and re-deriving why neither the new-slug concat nor the
+# stale-slug pre-seed covers a quiet cache is expensive. Adding a column? Add it here too.
+_SCHEMA_MIGRATION_COLUMNS: tuple[str, ...] = ()
 
 
 @retry(stop=_RETRY_STOP, wait=_RETRY_WAIT, reraise=True)
@@ -564,17 +575,31 @@ def get_letterboxd_data(
         letterboxd_avg_rating, directors, imdb_id, tmdb_id, letterboxd_url, imdb_url,
         tmdb_url, integration_date. The caller persists it (and assigns ``source``).
     """
-    # Load existing cache to avoid refetching. Deliberately unvalidated: this is the
-    # "no existing cache, start fresh" path (missing file, corrupt file, first run).
-    # If schema validation raised here it would be swallowed by the except below and
-    # silently rebuild the entire multi-thousand-film cache from scratch on what might
-    # be a transient/partial read — a catastrophic, expensive, silent failure. The
-    # single cache write each caller performs (write_parquet_validated against
-    # DATA_LETTERBOXD) is what actually enforces the contract.
-    try:
-        data_df = pd.read_parquet(output_path)
+    # Load existing cache to avoid refetching. **Absence of the file is the only
+    # legitimate "start fresh" signal** — `--reset_database` unlinks it precisely to
+    # produce one. A cache that exists but will not read, or that reads but breaks the
+    # contract, is corruption or an I/O fault and raises here.
+    #
+    # The `try/except Exception` this replaces treated both cases as "first run": a
+    # transient permission error or a partial write silently refetched every film and
+    # then overwrote the multi-thousand-row cache with whatever this run happened to
+    # retrieve. `write_parquet_validated` did not catch it either, because the contract
+    # checks columns, not row count. (Observed for real: macOS revoking Documents access
+    # mid-session makes `pd.read_parquet` raise `PermissionError`.)
+    #
+    # Validated against the contract MINUS `_SCHEMA_MIGRATION_COLUMNS`: a cache written
+    # before those columns existed legitimately lacks them, and the seeding loop below is
+    # what adds them. Enforcing them here would raise on exactly the caches that
+    # migration path exists to rescue, which is why this read could not be validated
+    # while the `except` was still swallowing the result.
+    if os.path.exists(output_path):
+        data_df = read_parquet_validated(
+            output_path,
+            required_columns=DATA_LETTERBOXD.required_columns - frozenset(_SCHEMA_MIGRATION_COLUMNS),
+            label="data_letterboxd cache",
+        )
         logger.info("Loaded existing cache: %d movies", data_df.shape[0])
-    except Exception:
+    else:
         logger.info("No existing cache found — starting fresh")
         data_df = pd.DataFrame()
 

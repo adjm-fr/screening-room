@@ -332,6 +332,9 @@ every column above is refetched, not just the stale one. **Age is the only trigg
   expiry, not a permanent guard: drop an entry once no cache in use predates it (i.e. once every checkout's
   cache postdates 2026-08-15). Values are untouched, so a populated column is never clobbered. This applies
   to any cache built by an older version of this pipeline, independent of the now-removed flag.
+  **The tuple is currently empty** — its last three entries (`origin_country`, `original_language`,
+  `keywords`) were retired on 2026-08-22 once the live cache carried all three on every row. That is the
+  expiry working, not a dead mechanism: the constant stays so step 2 below remains a one-line change.
 - **`slug` is the requested slug, not the canonical one.** `_fetch_movie` stores its own argument, while
   `letterboxd_url` is the page's post-redirect URL. So an alias slug produces a row whose `slug` and
   `letterboxd_url` disagree.

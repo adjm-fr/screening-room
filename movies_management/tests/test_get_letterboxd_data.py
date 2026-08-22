@@ -9,11 +9,15 @@ import logging
 from datetime import date
 
 import httpx
+import modules.get_letterboxd_data as gld
 import pandas as pd
 import pytest
 import respx
 from common.logging import RedactingFormatter
+from common.parquet_io import SchemaValidationError
+from contracts import DATA_LETTERBOXD
 from modules.get_letterboxd_data import (
+    _SCHEMA_MIGRATION_COLUMNS,
     TMDB_API_URL,
     Credits,
     TmdbColumns,
@@ -33,13 +37,26 @@ from tenacity import wait_none
 
 @pytest.fixture
 def cache_df():
-    return pd.DataFrame(
+    """A two-row cache carrying exactly the columns a real cache read must satisfy.
+
+    Padded from ``DATA_LETTERBOXD`` rather than hand-listed, because
+    ``get_letterboxd_data`` now validates the cache it loads: a hand-written column
+    list would silently fall behind the contract and fail every test using this
+    fixture instead of the one test that cares. The migration columns are excluded
+    for the same reason the production read excludes them — a cache predating them
+    is legitimate, and the seeding loop is what adds them.
+    """
+    df = pd.DataFrame(
         {
             "slug": ["slug-a", "slug-b"],
             "title": ["Movie A", "Movie B"],
             "integration_date": pd.to_datetime(date(2024, 1, 1)),
         }
     )
+    for column in sorted(DATA_LETTERBOXD.required_columns - frozenset(_SCHEMA_MIGRATION_COLUMNS)):
+        if column not in df.columns:
+            df[column] = None
+    return df
 
 
 # ── _fetch_movie ──────────────────────────────────────────────────────────────
@@ -159,7 +176,7 @@ def test_no_new_slugs_returns_cache_unchanged(tmp_path, cache_df):
     assert set(result["slug"]) == {"slug-a", "slug-b"}
 
 
-def test_schema_migration_columns_seeded_with_nothing_to_fetch(tmp_path, cache_df):
+def test_schema_migration_columns_seeded_with_nothing_to_fetch(tmp_path, cache_df, monkeypatch):
     """The quiet run is the one that breaks: nothing new, nothing stale, and a full cache.
 
     Age is the only refresh trigger, so a cache just rewritten by a backfill has no stale
@@ -168,9 +185,12 @@ def test_schema_migration_columns_seeded_with_nothing_to_fetch(tmp_path, cache_d
     `write_parquet_validated` with a pre-migration frame and fails the contract every time,
     with `--reset_database` as the only exit.
     """
+    # Patched rather than read from the constant: _SCHEMA_MIGRATION_COLUMNS is empty
+    # whenever every cache in use has caught up, so pinning the mechanism to whatever
+    # happens to be migrating today would delete this test at the next cleanup.
+    monkeypatch.setattr(gld, "_SCHEMA_MIGRATION_COLUMNS", ("origin_country", "original_language"))
     cache_path = str(tmp_path / "cache.parquet")
-    cache_df.to_parquet(cache_path, index=False)
-    assert "origin_country" not in cache_df.columns
+    cache_df.drop(columns=["origin_country", "original_language"], errors="ignore").to_parquet(cache_path, index=False)
 
     result = get_letterboxd_data(["slug-a", "slug-b"], cache_path)
 
@@ -180,8 +200,9 @@ def test_schema_migration_columns_seeded_with_nothing_to_fetch(tmp_path, cache_d
         assert result[column].isna().all()
 
 
-def test_schema_migration_leaves_a_populated_column_alone(tmp_path, cache_df):
+def test_schema_migration_leaves_a_populated_column_alone(tmp_path, cache_df, monkeypatch):
     """Seeding must never clobber values a previous migrated run already wrote."""
+    monkeypatch.setattr(gld, "_SCHEMA_MIGRATION_COLUMNS", ("origin_country", "original_language"))
     cache_path = str(tmp_path / "cache.parquet")
     migrated = cache_df.assign(origin_country=["US", "FR"], original_language=["en", "fr"])
     migrated.to_parquet(cache_path, index=False)
@@ -236,6 +257,35 @@ def test_no_cache_file_starts_fresh(tmp_path, mocker):
 
     assert len(result) == 1
     assert result.iloc[0]["slug"] == "slug-a"
+
+
+def test_unreadable_cache_raises_instead_of_rebuilding(tmp_path, mocker):
+    """A cache that exists but will not parse must stop the run, not restart it.
+
+    The old `try/except Exception` read this as "first run": every film was refetched
+    and the result then overwrote the real cache. `write_parquet_validated` could not
+    catch it either, because the contract checks columns and not row count.
+    """
+    cache_path = tmp_path / "cache.parquet"
+    cache_path.write_bytes(b"not a parquet file")
+    fetch = mocker.patch("modules.get_letterboxd_data._fetch_movie")
+
+    with pytest.raises(Exception, match="(?i)parquet|magic|arrow"):
+        get_letterboxd_data(["slug-a"], str(cache_path))
+
+    fetch.assert_not_called()
+
+
+def test_cache_breaking_the_contract_raises_instead_of_rebuilding(tmp_path, cache_df, mocker):
+    """Same rule for a readable cache that lost a contract column."""
+    cache_path = tmp_path / "cache.parquet"
+    cache_df.drop(columns=["letterboxd_url"]).to_parquet(cache_path, index=False)
+    fetch = mocker.patch("modules.get_letterboxd_data._fetch_movie")
+
+    with pytest.raises(SchemaValidationError, match="letterboxd_url"):
+        get_letterboxd_data(["slug-a"], str(cache_path))
+
+    fetch.assert_not_called()
 
 
 # ── refresh_letterboxd_data ───────────────────────────────────────────────────
